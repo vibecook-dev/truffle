@@ -66,15 +66,39 @@ jobs:
             title=$(gh api \
               "repos/${GITHUB_REPOSITORY}/commits/${branch}" \
               --jq '.commit.message | split("\n")[0]')
-            pr_json=$(gh api \
-              --method POST \
-              "repos/${GITHUB_REPOSITORY}/pulls" \
-              -f "base=${GITHUB_REF_NAME}" \
-              -f "head=${branch}" \
-              -f "title=${title}" \
-              -f "body=Release Please generated this release branch; the workflow recovered the PR after its final GraphQL call failed.")
-            pr_url=$(jq -r '.html_url' <<< "${pr_json}")
-            pr_number=$(jq -r '.number' <<< "${pr_json}")
+            for attempt in $(seq 1 12); do
+              if pr_json=$(gh api \
+                --method POST \
+                "repos/${GITHUB_REPOSITORY}/pulls" \
+                -f "base=${GITHUB_REF_NAME}" \
+                -f "head=${branch}" \
+                -f "title=${title}" \
+                -f "body=Release Please generated this release branch; the workflow recovered the PR after its final GraphQL call failed." \
+                2>"${RUNNER_TEMP}/release-pr-create-error"); then
+                pr_url=$(jq -r '.html_url // empty' <<< "${pr_json}")
+                pr_number=$(jq -r '.number // empty' <<< "${pr_json}")
+              else
+                cat "${RUNNER_TEMP}/release-pr-create-error" >&2
+                pr_json=$(gh api \
+                  --method GET \
+                  "repos/${GITHUB_REPOSITORY}/pulls" \
+                  -f "base=${GITHUB_REF_NAME}" \
+                  -f "head=${GITHUB_REPOSITORY_OWNER}:${branch}" \
+                  -f "state=open")
+                pr_url=$(jq -r '.[0].html_url // empty' <<< "${pr_json}")
+                pr_number=$(jq -r '.[0].number // empty' <<< "${pr_json}")
+              fi
+
+              if [ -n "${pr_url}" ] && [ -n "${pr_number}" ]; then
+                break
+              fi
+              echo "GitHub did not create the release PR (${attempt}/12); retrying in 10 seconds..."
+              sleep 10
+            done
+            if [ -z "${pr_url}" ] || [ -z "${pr_number}" ]; then
+              echo "::error::GitHub did not create the recovered release PR after 12 attempts."
+              exit 1
+            fi
             gh api \
               --method POST \
               "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
