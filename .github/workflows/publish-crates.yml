@@ -23,6 +23,11 @@ jobs:
     needs: preflight
     runs-on: ubuntu-latest
     environment: release
+    env:
+      # cargo publish verifies packaged crates by compiling them. The GitHub
+      # release is still draft at that point, so the sidecar build script must
+      # use the trusted binary built below from the exact preflighted tag.
+      TRUFFLE_SIDECAR_PATH: ${{ github.workspace }}/packages/sidecar-slim/sidecar-slim
     permissions:
       id-token: write # Required for OIDC trusted publishing
       # GitHub intentionally hides draft release assets from read-only tokens.
@@ -95,7 +100,7 @@ jobs:
             exit 1
           fi
 
-      - name: Build Go sidecar (needed for truffle-core compilation)
+      - name: Build trusted local sidecar for Cargo package verification
         working-directory: packages/sidecar-slim
         run: |
           go build -o sidecar-slim .

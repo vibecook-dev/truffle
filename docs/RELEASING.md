@@ -74,8 +74,10 @@ the crates.io sparse index, waits for each dependency to become visible there,
 and skips only versions that are already present. Registry lookup failures and
 real `cargo publish` errors still fail the job. The sidecar crate permits a
 dirty package only after an allowlist proves its verified checksum map is the
-sole changed file. npm's provenance-enabled publish steps likewise skip only an
-exact version already in the registry.
+sole changed file. Cargo's package verification uses a local sidecar built from
+the exact tag because draft release assets are intentionally not public yet.
+npm's provenance-enabled publish steps likewise skip only an exact version
+already in the registry.
 
 If a release job fails, the GitHub release remains a draft. Do not move or
 replace its tag, and do not bypass the preflight by dispatching a downstream
