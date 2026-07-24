@@ -24,21 +24,75 @@ jobs:
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - id: release
+        continue-on-error: true
         uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Release Please occasionally leaves its fully generated branch behind
+      # when GitHub rejects the final PR API call without an error message.
+      # Recover only when that exact branch is ahead of main; release/tag
+      # failures remain fatal instead of being mistaken for PR preparation.
+      - name: Recover an orphaned release PR branch
+        id: release-recovery
+        if: ${{ steps.release.outcome == 'failure' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          branch="release-please--branches--${GITHUB_REF_NAME}--components--truffle"
+          if ! gh api \
+            "repos/${GITHUB_REPOSITORY}/branches/${branch}" \
+            >/dev/null; then
+            echo "::error::Release Please failed and did not leave a recoverable release branch."
+            exit 1
+          fi
+
+          status=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/compare/${GITHUB_REF_NAME}...${branch}" \
+            --jq '.status')
+          if [ "${status}" != "ahead" ]; then
+            echo "::error::Release Please failed and ${branch} is ${status}, not safely ahead of ${GITHUB_REF_NAME}."
+            exit 1
+          fi
+
+          pr_url=$(gh pr list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --base "${GITHUB_REF_NAME}" \
+            --head "${branch}" \
+            --state open \
+            --json url \
+            --jq '.[0].url // empty')
+          if [ -z "${pr_url}" ]; then
+            title=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/commits/${branch}" \
+              --jq '.commit.message | split("\n")[0]')
+            pr_url=$(gh pr create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --base "${GITHUB_REF_NAME}" \
+              --head "${branch}" \
+              --title "${title}" \
+              --label "autorelease: pending" \
+              --body "Release Please generated this release branch; the workflow recovered the PR after its final API call failed.")
+            echo "::warning::Recovered orphaned Release Please branch as ${pr_url}."
+          fi
+          echo "branch=${branch}" >> "${GITHUB_OUTPUT}"
+          echo "recovered=true" >> "${GITHUB_OUTPUT}"
 
       # Generic Release Please updaters cannot regenerate generated lockfiles.
       # Synchronize them on the bot PR, then explicitly dispatch validation
       # because pushes made with GITHUB_TOKEN do not trigger more workflows.
       - name: Resolve release PR branch
         id: release-pr
-        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        if: ${{ steps.release.outputs.prs_created == 'true' || steps.release-recovery.outputs.recovered == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_PR_JSON: ${{ steps.release.outputs.pr }}
+          RECOVERED_BRANCH: ${{ steps.release-recovery.outputs.branch }}
         run: |
-          branch=$(jq -r '.headBranchName // .headRefName // .head.ref // empty' <<< "${RELEASE_PR_JSON}")
+          branch="${RECOVERED_BRANCH}"
+          if [ -z "${branch}" ]; then
+            branch=$(jq -r '.headBranchName // .headRefName // .head.ref // empty' <<< "${RELEASE_PR_JSON}")
+          fi
           if [ -z "${branch}" ]; then
             branch=$(gh pr list \
               --repo "${GITHUB_REPOSITORY}" \
@@ -55,14 +109,14 @@ jobs:
           echo "branch=${branch}" >> "${GITHUB_OUTPUT}"
 
       - name: Checkout release PR
-        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        if: ${{ steps.release-pr.outputs.branch != '' }}
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v5
         with:
           ref: ${{ steps.release-pr.outputs.branch }}
           fetch-depth: 0
 
       - name: Synchronize generated release locks
-        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        if: ${{ steps.release-pr.outputs.branch != '' }}
         env:
           RELEASE_BRANCH: ${{ steps.release-pr.outputs.branch }}
         run: |
@@ -81,7 +135,7 @@ jobs:
           fi
 
       - name: Validate prepared release PR
-        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        if: ${{ steps.release-pr.outputs.branch != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_BRANCH: ${{ steps.release-pr.outputs.branch }}
