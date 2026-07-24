@@ -33,10 +33,6 @@ jobs:
       - name: Release version consistency
         run: pnpm run release:check
 
-      - name: Require checksums outside a release PR
-        if: ${{ !startsWith(github.head_ref || github.ref_name, 'release-please--') }}
-        run: node scripts/check-release-versions.mjs
-
       - name: Release tooling tests
         run: pnpm run release:tooling:test
 

@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { CHECKSUM_PATHS, validateReleaseChecksums } from './release-checksums.mjs';
+
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (path) => readFileSync(join(root, path), 'utf8');
 const readJson = (path) => JSON.parse(read(path));
@@ -69,36 +71,12 @@ for (const name of ['truffle', 'truffle-cli', 'truffle-core', 'truffle-napi', 't
   }
 }
 
-const assets = [
-  'tsnet-sidecar-darwin-arm64',
-  'tsnet-sidecar-darwin-amd64',
-  'tsnet-sidecar-linux-amd64',
-  'tsnet-sidecar-linux-arm64',
-  'tsnet-sidecar-windows-amd64.exe',
-];
-const checksumPaths = [
-  'packages/core/sidecar-checksums.json',
-  'crates/truffle-sidecar/sidecar-checksums.json',
-];
-const checksumMaps = checksumPaths.map(readJson);
-
-for (let index = 0; index < checksumMaps.length; index += 1) {
-  const entry = checksumMaps[index][expected];
-  for (const asset of assets) {
-    const digest = entry?.[asset];
-    if (!allowMissingChecksums && !/^[0-9a-f]{64}$/.test(digest ?? '')) {
-      errors.push(`${checksumPaths[index]}: missing valid ${expected}/${asset} checksum`);
-    }
-  }
-}
-
-for (const asset of assets) {
-  const jsDigest = checksumMaps[0][expected]?.[asset];
-  const rustDigest = checksumMaps[1][expected]?.[asset];
-  if ((jsDigest || rustDigest) && jsDigest !== rustDigest) {
-    errors.push(`sidecar checksum maps disagree for ${expected}/${asset}`);
-  }
-}
+const checksumMaps = CHECKSUM_PATHS.map(readJson);
+errors.push(
+  ...validateReleaseChecksums(checksumMaps, expected, {
+    allowMissingChecksums,
+  }),
+);
 
 const ref = process.env.GITHUB_REF_NAME;
 if (ref?.startsWith('truffle-v') && ref !== `truffle-v${expected}`) {
@@ -111,5 +89,9 @@ if (errors.length > 0) {
   process.exit(1);
 }
 
-const checksumStatus = allowMissingChecksums ? 'checksum maps agree when present' : 'checksums pinned';
-console.log(`[release:verify] all publishable artifacts are version ${expected}; ${checksumStatus}`);
+const checksumStatus = allowMissingChecksums
+  ? 'checksum maps are absent or complete and equal'
+  : 'checksums pinned';
+console.log(
+  `[release:verify] all publishable artifacts are version ${expected}; ${checksumStatus}`,
+);

@@ -41,7 +41,10 @@ the default branch only after every sidecar asset exists and is hashed.
    ```
 
    The checksum exception is intentional here: binaries for the new version
-   cannot exist before its tag.
+   cannot exist before its tag. This accepts only a version that is completely
+   absent from both checksum maps; a partial, malformed, or mismatched checksum
+   set still fails CI.
+
 3. Merge the Release Please PR. Release Please creates an immutable
    `truffle-v<version>` tag and a **draft** GitHub release. It waits for CI,
    real-network integration tests, and CodeQL on that exact commit before

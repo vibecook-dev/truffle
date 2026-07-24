@@ -43,7 +43,7 @@
     "format:check": "prettier --check 'packages/*/src/**/*.ts'",
     "release:prepare": "node scripts/sync-release-locks.mjs",
     "release:check": "node scripts/sync-release-locks.mjs --check && node scripts/check-release-versions.mjs --allow-missing-checksums",
-    "release:tooling:test": "node --test scripts/sync-release-locks.test.mjs",
+    "release:tooling:test": "node --test scripts/*.test.mjs",
     "release:verify": "node scripts/sync-release-locks.mjs --check && node scripts/check-release-versions.mjs && cargo metadata --locked --no-deps --format-version 1"
   },
   "devDependencies": {
