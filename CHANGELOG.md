@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.6](https://github.com/jamesyong-42/truffle/compare/truffle-v0.7.5...truffle-v0.7.6) (2026-07-24)
+
+
+### Bug Fixes
+
+* **release:** allow draft asset recovery ([4250098](https://github.com/jamesyong-42/truffle/commit/42500986b941abf3bc7c59c88408857619d404b9))
+* **release:** allow pre-artifact checksum phase ([d133e9e](https://github.com/jamesyong-42/truffle/commit/d133e9eb452ca13158457f5e235c50931bda8a70))
+* **release:** allow verified checksum injection ([fb2240c](https://github.com/jamesyong-42/truffle/commit/fb2240c7f76f3aa65acc5168463aedb302162ba9))
+* **release:** isolate recovery automation ([0285a21](https://github.com/jamesyong-42/truffle/commit/0285a21e69ec005e30eac14cb74b296893b6e237))
+* **release:** keep npm publish install offline ([bb2ec14](https://github.com/jamesyong-42/truffle/commit/bb2ec14ab9d8b698b614b5421e31641662dac7c1))
+* **release:** read crate version without comments ([dc72160](https://github.com/jamesyong-42/truffle/commit/dc7216057f6b001389c2a8e3dd2031f12e034bda))
+* **release:** use crates.io sparse index ([a1b05c4](https://github.com/jamesyong-42/truffle/commit/a1b05c4a17d8414fd6771c220c8c1e0553bfa195))
+* **release:** verify crates without draft downloads ([8109e86](https://github.com/jamesyong-42/truffle/commit/8109e86fa491acdb80be52bd6909a0e0172209ca))
+
 ## [0.7.5](https://github.com/jamesyong-42/truffle/compare/truffle-v0.7.4...truffle-v0.7.5) (2026-07-24)
 
 
