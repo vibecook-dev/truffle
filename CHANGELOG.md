@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.5](https://github.com/jamesyong-42/truffle/compare/truffle-v0.7.4...truffle-v0.7.5) (2026-07-24)
+
+
+### Bug Fixes
+
+* **ci:** use checkout sidecar before release ([faa9c2e](https://github.com/jamesyong-42/truffle/commit/faa9c2e473f46e4132bf1d85097f80f76bbe286c))
+* **release:** allow release PR labeling ([f50989d](https://github.com/jamesyong-42/truffle/commit/f50989d3ec8c8d953f675256af81232e36de984e))
+* **release:** make publishing fail closed ([dd0bc3d](https://github.com/jamesyong-42/truffle/commit/dd0bc3d3e7db8ac40e140c0970d2c0142626c963))
+* **release:** recover orphaned release branches ([9e38a6e](https://github.com/jamesyong-42/truffle/commit/9e38a6e359fc3a6f07d5bcc3f5be59f23279186c))
+* **release:** recover PR creation through REST ([9a2c0b6](https://github.com/jamesyong-42/truffle/commit/9a2c0b645596a789c5927bf435c53a682148efda))
+* **release:** retry transient PR creation failures ([9910e3d](https://github.com/jamesyong-42/truffle/commit/9910e3d5006212b5390a7b69b5d7c513dc25bb0f))
+
 ## [0.7.4](https://github.com/jamesyong-42/truffle/compare/truffle-v0.7.3...truffle-v0.7.4) (2026-07-24)
 
 
