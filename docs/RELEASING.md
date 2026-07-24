@@ -76,8 +76,10 @@ steps likewise skip only an exact version already in the registry.
 
 If a release job fails, the GitHub release remains a draft. Do not move or
 replace its tag, and do not bypass the preflight by dispatching a downstream
-publisher manually. Correct the automation on `main`; only rerun an existing
-tag when the source at that tag is valid and the failure was transient.
+publisher without its preflight. Correct the automation on `main`; the crate
+and primary npm workflows accept a `release_tag` input so their corrected
+workflow definitions can resume a draft release from `main` while checking out
+and verifying the unchanged immutable tag.
 
 If a registry has only part of a release, rerun the relevant workflow at the
 same tag. Never change a released artifact or reuse a version number.

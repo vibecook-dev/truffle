@@ -17,6 +17,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v5
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v5
         with:
@@ -30,12 +33,16 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
-            echo "::error::Release workflows must run from an immutable tag, not ${GITHUB_REF}."
+          tag_sha=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null || true)
+          head_sha=$(git rev-parse HEAD)
+          if [ -z "${tag_sha}" ] || [ "${head_sha}" != "${tag_sha}" ]; then
+            echo "::error::Checkout ${head_sha} is not immutable tag ${RELEASE_TAG} (${tag_sha:-missing})."
             exit 1
           fi
-          if [ "${GITHUB_REF_NAME}" != "${RELEASE_TAG}" ]; then
-            echo "::error::Workflow ref ${GITHUB_REF_NAME} does not match requested tag ${RELEASE_TAG}."
+
+          version=$(node -p "require('./packages/core/package.json').version")
+          if [ "${RELEASE_TAG}" != "truffle-v${version}" ]; then
+            echo "::error::Release tag ${RELEASE_TAG} does not match package version ${version}."
             exit 1
           fi
 

@@ -2,16 +2,21 @@ name: Publish to crates.io
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Immutable tag to publish (used to resume a draft release from main).
+        required: false
+        type: string
 
 concurrency:
-  group: crates-release-${{ github.ref }}
+  group: crates-release-${{ inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
   preflight:
     uses: ./.github/workflows/release-preflight.yml
     with:
-      release_tag: ${{ github.ref_name }}
+      release_tag: ${{ inputs.release_tag || github.ref_name }}
 
   publish:
     name: Publish crates
@@ -20,11 +25,16 @@ jobs:
     environment: release
     permissions:
       id-token: write # Required for OIDC trusted publishing
-      contents: read
+      # GitHub intentionally hides draft release assets from read-only tokens.
+      # Write access is required only so this job can download those assets;
+      # the release remains draft until the orchestrator verifies all publishers.
+      contents: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v5
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -43,10 +53,11 @@ jobs:
       - name: Pin checksums for this release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
-          VERSION="${GITHUB_REF_NAME##*v}"
+          VERSION="${RELEASE_TAG##*v}"
           mkdir -p /tmp/sidecar-assets
-          gh release download "${GITHUB_REF_NAME}" \
+          gh release download "${RELEASE_TAG}" \
             --repo "${{ github.repository }}" \
             --pattern 'tsnet-sidecar-*' \
             --dir /tmp/sidecar-assets

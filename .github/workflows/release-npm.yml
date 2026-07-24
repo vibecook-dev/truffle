@@ -2,27 +2,35 @@ name: Publish @vibecook/truffle to npm
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Immutable tag to publish (used to resume a draft release from main).
+        required: false
+        type: string
 
 concurrency:
-  group: npm-release-${{ github.ref }}
+  group: npm-release-${{ inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
   preflight:
     uses: ./.github/workflows/release-preflight.yml
     with:
-      release_tag: ${{ github.ref_name }}
+      release_tag: ${{ inputs.release_tag || github.ref_name }}
 
   publish:
     name: Publish @vibecook/truffle
     needs: preflight
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # Draft assets are hidden from read-only workflow tokens.
+      contents: write
       id-token: write
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v5
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - name: Install pnpm
         run: npm install -g pnpm@10.20.0
@@ -35,10 +43,11 @@ jobs:
       - name: Pin checksums for this release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
-          VERSION="${GITHUB_REF_NAME##*v}"
+          VERSION="${RELEASE_TAG##*v}"
           mkdir -p /tmp/sidecar-assets
-          gh release download "${GITHUB_REF_NAME}" \
+          gh release download "${RELEASE_TAG}" \
             --repo "${{ github.repository }}" \
             --pattern 'tsnet-sidecar-*' \
             --dir /tmp/sidecar-assets
