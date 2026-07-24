@@ -90,61 +90,37 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
         run: |
-          if ! HTTP_STATUS=$(curl --silent --show-error --output /tmp/crate-response --write-out '%{http_code}' \
-            "https://crates.io/api/v1/crates/truffle-core/${VERSION}"); then
-            cat /tmp/crate-response >&2
-            exit 1
-          fi
-          case "$HTTP_STATUS" in
-            200) echo "truffle-core ${VERSION} is already published; skipping." ;;
-            404) cargo publish --locked --package truffle-core ;;
-            *)
-              cat /tmp/crate-response >&2
-              echo "::error::crates.io lookup returned HTTP ${HTTP_STATUS}; refusing to publish blindly."
-              exit 1
-              ;;
+          CRATE_STATUS=$(node scripts/crates-io-version-status.mjs truffle-core "${VERSION}")
+          case "$CRATE_STATUS" in
+            published) echo "truffle-core ${VERSION} is already published; skipping." ;;
+            missing) cargo publish --locked --package truffle-core ;;
+            *) echo "::error::Unexpected sparse-index status: ${CRATE_STATUS}"; exit 1 ;;
           esac
 
-      - name: Wait for crates.io index
-        run: sleep 30
+      - name: Wait for truffle-core to reach the crates.io index
+        run: node scripts/crates-io-version-status.mjs --wait truffle-core "${VERSION}"
 
       - name: Publish truffle-sidecar
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
         run: |
-          if ! HTTP_STATUS=$(curl --silent --show-error --output /tmp/crate-response --write-out '%{http_code}' \
-            "https://crates.io/api/v1/crates/truffle-sidecar/${VERSION}"); then
-            cat /tmp/crate-response >&2
-            exit 1
-          fi
-          case "$HTTP_STATUS" in
-            200) echo "truffle-sidecar ${VERSION} is already published; skipping." ;;
-            404) cargo publish --locked --package truffle-sidecar ;;
-            *)
-              cat /tmp/crate-response >&2
-              echo "::error::crates.io lookup returned HTTP ${HTTP_STATUS}; refusing to publish blindly."
-              exit 1
-              ;;
+          CRATE_STATUS=$(node scripts/crates-io-version-status.mjs truffle-sidecar "${VERSION}")
+          case "$CRATE_STATUS" in
+            published) echo "truffle-sidecar ${VERSION} is already published; skipping." ;;
+            missing) cargo publish --locked --package truffle-sidecar ;;
+            *) echo "::error::Unexpected sparse-index status: ${CRATE_STATUS}"; exit 1 ;;
           esac
 
-      - name: Wait for crates.io index
-        run: sleep 30
+      - name: Wait for truffle-sidecar to reach the crates.io index
+        run: node scripts/crates-io-version-status.mjs --wait truffle-sidecar "${VERSION}"
 
       - name: Publish truffle
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
         run: |
-          if ! HTTP_STATUS=$(curl --silent --show-error --output /tmp/crate-response --write-out '%{http_code}' \
-            "https://crates.io/api/v1/crates/truffle/${VERSION}"); then
-            cat /tmp/crate-response >&2
-            exit 1
-          fi
-          case "$HTTP_STATUS" in
-            200) echo "truffle ${VERSION} is already published; skipping." ;;
-            404) cargo publish --locked --package truffle ;;
-            *)
-              cat /tmp/crate-response >&2
-              echo "::error::crates.io lookup returned HTTP ${HTTP_STATUS}; refusing to publish blindly."
-              exit 1
-              ;;
+          CRATE_STATUS=$(node scripts/crates-io-version-status.mjs truffle "${VERSION}")
+          case "$CRATE_STATUS" in
+            published) echo "truffle ${VERSION} is already published; skipping." ;;
+            missing) cargo publish --locked --package truffle ;;
+            *) echo "::error::Unexpected sparse-index status: ${CRATE_STATUS}"; exit 1 ;;
           esac

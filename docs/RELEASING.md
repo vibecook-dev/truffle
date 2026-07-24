@@ -69,10 +69,11 @@ the default branch only after every sidecar asset exists and is hashed.
 
 ## Reruns and failures
 
-Workflow reruns are safe. The crate publisher checks the exact version on
-crates.io and skips only versions that are already present; any real
-`cargo publish` error still fails the job. npm's provenance-enabled publish
-steps likewise skip only an exact version already in the registry.
+Workflow reruns are safe. The crate publisher checks the exact version through
+the crates.io sparse index, waits for each dependency to become visible there,
+and skips only versions that are already present. Registry lookup failures and
+real `cargo publish` errors still fail the job. npm's provenance-enabled
+publish steps likewise skip only an exact version already in the registry.
 
 If a release job fails, the GitHub release remains a draft. Do not move or
 replace its tag, and do not bypass the preflight by dispatching a downstream
