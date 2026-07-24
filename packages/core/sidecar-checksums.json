@@ -76,5 +76,12 @@
     "tsnet-sidecar-linux-amd64": "f4f4533eae2eb7f355c869d8ac161c3f2100260c77aabc75c5b37eebd6c5daa6",
     "tsnet-sidecar-linux-arm64": "e9dec71b880e28cc9692e6779d608ea8fb7f8c25598cafbdb951872a2dffb298",
     "tsnet-sidecar-windows-amd64.exe": "92931d04f453a230d454b926ddd1beadd89b6aa8810a5e09beee639156cc892b"
+  },
+  "0.7.6": {
+    "tsnet-sidecar-darwin-arm64": "43f723ff296e80847b14d3a76cdd56903b6f31a872ba32c5ed82f7c11cbc5243",
+    "tsnet-sidecar-darwin-amd64": "67ed4cecd571bde1826dcc32bf3a54faf91090fb8b1b56c7d70fce222eed2e9f",
+    "tsnet-sidecar-linux-amd64": "50c4383ffa076f21a2c63cb962d8019f6e30b8c09857ec9b2361e318292b647f",
+    "tsnet-sidecar-linux-arm64": "110dd0ec6f1837c2e4183dd24394990dfe9cdd7930671666fd6881edab9175cc",
+    "tsnet-sidecar-windows-amd64.exe": "52e8273a8945a3e7b62f82dbd3acebf7e2eca8e7a0e28e471f1e3e82d0e05b99"
   }
 }
