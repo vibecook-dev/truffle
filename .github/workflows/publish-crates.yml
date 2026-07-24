@@ -76,6 +76,25 @@ jobs:
           node scripts/update-sidecar-checksums.mjs "${VERSION}" /tmp/sidecar-assets
           node scripts/check-release-versions.mjs
 
+          # Checksum injection is the only permitted package-source mutation.
+          # The sidecar crate embeds its checksum map, so cargo will require
+          # --allow-dirty below; fail before publishing if anything else moved.
+          CHANGED_PACKAGE_PATHS=$(
+            git status --porcelain=v1 --untracked-files=all \
+              -- packages/core crates/truffle-core crates/truffle-sidecar crates/truffle |
+              cut -c4-
+          )
+          UNEXPECTED_CHANGES=$(
+            printf '%s\n' "${CHANGED_PACKAGE_PATHS}" |
+              grep -Ev '^(packages/core|crates/truffle-sidecar)/sidecar-checksums\.json$' ||
+              true
+          )
+          if [ -n "${UNEXPECTED_CHANGES}" ]; then
+            echo "::error::Unexpected source changes after checksum injection:"
+            echo "${UNEXPECTED_CHANGES}"
+            exit 1
+          fi
+
       - name: Build Go sidecar (needed for truffle-core compilation)
         working-directory: packages/sidecar-slim
         run: |
@@ -119,7 +138,9 @@ jobs:
           CRATE_STATUS=$(node .release-automation/scripts/crates-io-version-status.mjs truffle-sidecar "${VERSION}")
           case "$CRATE_STATUS" in
             published) echo "truffle-sidecar ${VERSION} is already published; skipping." ;;
-            missing) cargo publish --locked --package truffle-sidecar ;;
+            # The pre-publish allowlist proves the only dirty file in this
+            # package is its release checksum map.
+            missing) cargo publish --locked --allow-dirty --package truffle-sidecar ;;
             *) echo "::error::Unexpected sparse-index status: ${CRATE_STATUS}"; exit 1 ;;
           esac
 
