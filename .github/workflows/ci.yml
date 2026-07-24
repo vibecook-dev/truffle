@@ -55,6 +55,11 @@ jobs:
   cargo-lint:
     name: Rust lint & format
     runs-on: ubuntu-latest
+    # A release PR is validated before its sidecar artifacts and checksums can
+    # exist. Lint/doc builds never execute the sidecar, so keep them offline
+    # instead of weakening the crate's fail-closed download behavior.
+    env:
+      TRUFFLE_SIDECAR_SKIP_DOWNLOAD: '1'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v5
 
@@ -113,7 +118,10 @@ jobs:
         working-directory: packages/sidecar-slim
         env:
           CGO_ENABLED: '0'
-        run: mkdir -p bin && go build -ldflags "-s -w" -o bin/sidecar-slim .
+        run: |
+          mkdir -p bin
+          go build -ldflags "-s -w" -o bin/sidecar-slim .
+          echo "TRUFFLE_SIDECAR_PATH=${GITHUB_WORKSPACE}/packages/sidecar-slim/bin/sidecar-slim" >> "$GITHUB_ENV"
 
       - name: Build Go sidecar (Windows)
         if: runner.os == 'Windows'
@@ -123,6 +131,8 @@ jobs:
         run: |
           if (!(Test-Path bin)) { New-Item -ItemType Directory -Path bin }
           go build -ldflags "-s -w" -o bin/sidecar-slim.exe .
+          $sidecarPath = Join-Path $env:GITHUB_WORKSPACE 'packages\sidecar-slim\bin\sidecar-slim.exe'
+          Add-Content -Path $env:GITHUB_ENV -Value "TRUFFLE_SIDECAR_PATH=$sidecarPath"
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
