@@ -36,6 +36,18 @@ jobs:
         with:
           ref: ${{ inputs.release_tag || github.ref }}
 
+      # Recovery runs intentionally build package contents from the immutable
+      # release tag while using automation from the exact workflow commit.
+      # Keeping the second checkout isolated prevents control-plane fixes from
+      # changing any source that cargo publishes.
+      - name: Checkout release automation
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v5
+        with:
+          ref: ${{ github.sha }}
+          path: .release-automation
+          sparse-checkout: scripts/crates-io-version-status.mjs
+          sparse-checkout-cone-mode: false
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -90,7 +102,7 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
         run: |
-          CRATE_STATUS=$(node scripts/crates-io-version-status.mjs truffle-core "${VERSION}")
+          CRATE_STATUS=$(node .release-automation/scripts/crates-io-version-status.mjs truffle-core "${VERSION}")
           case "$CRATE_STATUS" in
             published) echo "truffle-core ${VERSION} is already published; skipping." ;;
             missing) cargo publish --locked --package truffle-core ;;
@@ -98,13 +110,13 @@ jobs:
           esac
 
       - name: Wait for truffle-core to reach the crates.io index
-        run: node scripts/crates-io-version-status.mjs --wait truffle-core "${VERSION}"
+        run: node .release-automation/scripts/crates-io-version-status.mjs --wait truffle-core "${VERSION}"
 
       - name: Publish truffle-sidecar
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
         run: |
-          CRATE_STATUS=$(node scripts/crates-io-version-status.mjs truffle-sidecar "${VERSION}")
+          CRATE_STATUS=$(node .release-automation/scripts/crates-io-version-status.mjs truffle-sidecar "${VERSION}")
           case "$CRATE_STATUS" in
             published) echo "truffle-sidecar ${VERSION} is already published; skipping." ;;
             missing) cargo publish --locked --package truffle-sidecar ;;
@@ -112,13 +124,13 @@ jobs:
           esac
 
       - name: Wait for truffle-sidecar to reach the crates.io index
-        run: node scripts/crates-io-version-status.mjs --wait truffle-sidecar "${VERSION}"
+        run: node .release-automation/scripts/crates-io-version-status.mjs --wait truffle-sidecar "${VERSION}"
 
       - name: Publish truffle
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
         run: |
-          CRATE_STATUS=$(node scripts/crates-io-version-status.mjs truffle "${VERSION}")
+          CRATE_STATUS=$(node .release-automation/scripts/crates-io-version-status.mjs truffle "${VERSION}")
           case "$CRATE_STATUS" in
             published) echo "truffle ${VERSION} is already published; skipping." ;;
             missing) cargo publish --locked --package truffle ;;

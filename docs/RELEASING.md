@@ -80,7 +80,9 @@ replace its tag, and do not bypass the preflight by dispatching a downstream
 publisher without its preflight. Correct the automation on `main`; the crate
 and primary npm workflows accept a `release_tag` input so their corrected
 workflow definitions can resume a draft release from `main` while checking out
-and verifying the unchanged immutable tag.
+and verifying the unchanged immutable tag. Recovery-only helper code is loaded
+from the exact workflow commit in an isolated checkout, so it cannot alter the
+tagged package source.
 
 If a registry has only part of a release, rerun the relevant workflow at the
 same tag. Never change a released artifact or reuse a version number.
