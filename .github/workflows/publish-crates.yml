@@ -69,19 +69,14 @@ jobs:
         run: |
           go build -o sidecar-slim .
 
-      - name: Verify crate versions match
+      - name: Export verified release version
         run: |
-          CORE_VER=$(grep '^version' crates/truffle-core/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-          SIDECAR_VER=$(grep '^version' crates/truffle-sidecar/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-          TRUFFLE_VER=$(grep '^version' crates/truffle/Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-          echo "truffle-core: $CORE_VER"
-          echo "truffle-sidecar: $SIDECAR_VER"
-          echo "truffle: $TRUFFLE_VER"
-          if [ "$CORE_VER" != "$SIDECAR_VER" ] || [ "$CORE_VER" != "$TRUFFLE_VER" ]; then
-            echo "::error::Version mismatch! All publishable crates must have the same version."
-            exit 1
-          fi
-          echo "VERSION=$CORE_VER" >> "$GITHUB_ENV"
+          # The preceding strict release check already proves every Cargo
+          # manifest matches this JSON version. Read JSON instead of parsing a
+          # release-please-annotated TOML line with shell tools.
+          VERSION=$(node -p "require('./packages/core/package.json').version")
+          echo "Publishing verified crate set ${VERSION}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
 
       # Obtain a short-lived crates.io token via OIDC (trusted publishing)
       # No secrets needed — the token is exchanged from GitHub's OIDC provider.
