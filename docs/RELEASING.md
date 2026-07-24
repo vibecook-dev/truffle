@@ -11,6 +11,12 @@ Every public artifact has the same version. `scripts/check-release-versions.mjs`
 enforces that invariant across package manifests, Cargo manifests, and
 `Cargo.lock`.
 
+Generated lockfiles are part of that contract. Run `pnpm release:prepare`
+after changing release versions; `pnpm release:check` fails if either
+`Cargo.lock` or `crates/truffle-napi/package-lock.json` is stale. Release
+Please performs this preparation on its PR and explicitly dispatches the CI
+workflows because a bot-token push does not trigger them automatically.
+
 Sidecar binaries are fail-closed:
 
 - A supported platform must have a SHA-256 checksum for the exact release
@@ -26,19 +32,20 @@ the default branch only after every sidecar asset exists and is hashed.
 ## Normal release
 
 1. Merge conventional commits to `main`.
-2. Review the Release Please PR. It must update every version marker and
-   `Cargo.lock`; CI validates the pre-tag graph with:
+2. Wait for Release Please to synchronize the generated lockfiles and
+   dispatch CI on its PR branch. Review the PR only after those runs are
+   green. The pre-tag graph is validated with:
 
    ```bash
-   node scripts/check-release-versions.mjs --allow-missing-checksums
-   cargo metadata --locked --no-deps --format-version 1
+   pnpm release:check
    ```
 
    The checksum exception is intentional here: binaries for the new version
    cannot exist before its tag.
-3. Merge the Release Please PR. Release Please creates
-   `truffle-v<version>` and dispatches the independent CLI, sidecar, and NAPI
-   builds.
+3. Merge the Release Please PR. Release Please creates an immutable
+   `truffle-v<version>` tag and a **draft** GitHub release. It waits for CI,
+   real-network integration tests, and CodeQL on that exact commit before
+   dispatching the CLI, sidecar, and NAPI workflows.
 4. The sidecar workflow builds all five targets, attaches them to the GitHub
    release, verifies their hashes, publishes the platform sidecar packages,
    and commits identical checksum maps for Rust and JavaScript consumers.
@@ -49,7 +56,9 @@ the default branch only after every sidecar asset exists and is hashed.
    node scripts/check-release-versions.mjs
    ```
 
-6. Confirm the GitHub release and all registries show the same version:
+6. The orchestrator publishes the draft GitHub release only after every
+   binary build and package publisher succeeds. Confirm the GitHub release
+   and all registries show the same version:
    crates.io (`truffle`, `truffle-core`, `truffle-sidecar`),
    npm (`@vibecook/truffle`, `@vibecook/truffle-react`,
    `@vibecook/truffle-native`, and all platform packages), and the CLI
@@ -62,9 +71,10 @@ crates.io and skips only versions that are already present; any real
 `cargo publish` error still fails the job. npm's provenance-enabled publish
 steps likewise skip only an exact version already in the registry.
 
-If a sidecar or checksum job fails, do not dispatch downstream publishers
-manually. Fix and rerun the sidecar workflow for the existing tag so the
-checksum gate remains the serialization point.
+If a release job fails, the GitHub release remains a draft. Do not move or
+replace its tag, and do not bypass the preflight by dispatching a downstream
+publisher manually. Correct the automation on `main`; only rerun an existing
+tag when the source at that tag is valid and the failure was transient.
 
 If a registry has only part of a release, rerun the relevant workflow at the
 same tag. Never change a released artifact or reuse a version number.
@@ -74,7 +84,9 @@ same tag. Never change a released artifact or reuse a version number.
 Before merging a release PR:
 
 ```bash
-pnpm install --frozen-lockfile
+pnpm release:check
+pnpm release:tooling:test
+pnpm install --frozen-lockfile --ignore-scripts
 pnpm run build
 pnpm run test
 cargo fmt --all -- --check

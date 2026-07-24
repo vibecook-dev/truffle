@@ -3,13 +3,23 @@ name: Publish to crates.io
 on:
   workflow_dispatch:
 
+concurrency:
+  group: crates-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  preflight:
+    uses: ./.github/workflows/release-preflight.yml
+    with:
+      release_tag: ${{ github.ref_name }}
+
   publish:
     name: Publish crates
+    needs: preflight
     runs-on: ubuntu-latest
     environment: release
     permissions:
-      id-token: write   # Required for OIDC trusted publishing
+      id-token: write # Required for OIDC trusted publishing
       contents: read
 
     steps:

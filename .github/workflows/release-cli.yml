@@ -13,12 +13,22 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: cli-release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   RELEASE_TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
 
 jobs:
+  preflight:
+    uses: ./.github/workflows/release-preflight.yml
+    with:
+      release_tag: ${{ github.event.inputs.release_tag || github.ref_name }}
+
   build:
     name: Build ${{ matrix.platform }}
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:

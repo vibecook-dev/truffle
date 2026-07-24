@@ -3,9 +3,19 @@ name: Publish @vibecook/truffle to npm
 on:
   workflow_dispatch:
 
+concurrency:
+  group: npm-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  preflight:
+    uses: ./.github/workflows/release-preflight.yml
+    with:
+      release_tag: ${{ github.ref_name }}
+
   publish:
     name: Publish @vibecook/truffle
+    needs: preflight
     runs-on: ubuntu-latest
     permissions:
       contents: read

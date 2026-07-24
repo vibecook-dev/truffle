@@ -11,8 +11,18 @@ permissions:
 on:
   workflow_dispatch:
 
+concurrency:
+  group: napi-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  preflight:
+    uses: ./.github/workflows/release-preflight.yml
+    with:
+      release_tag: ${{ github.ref_name }}
+
   build:
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:

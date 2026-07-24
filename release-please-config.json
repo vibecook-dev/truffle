@@ -4,13 +4,11 @@
     ".": {
       "release-type": "simple",
       "component": "truffle",
+      "draft": true,
+      "force-tag-creation": true,
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "extra-files": [
-        {
-          "type": "generic",
-          "path": "Cargo.lock"
-        },
         {
           "type": "generic",
           "path": "Cargo.toml"

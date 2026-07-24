@@ -10,9 +10,14 @@ permissions:
   pull-requests: write
   actions: write
 
+concurrency:
+  group: release-please-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
@@ -22,25 +27,211 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # When a release is created, dispatch the build workflows
-      # (GITHUB_TOKEN releases don't trigger 'release: created' events)
-      - name: Trigger CLI build
-        if: ${{ steps.release.outputs.release_created }}
+      # Generic Release Please updaters cannot regenerate generated lockfiles.
+      # Synchronize them on the bot PR, then explicitly dispatch validation
+      # because pushes made with GITHUB_TOKEN do not trigger more workflows.
+      - name: Resolve release PR branch
+        id: release-pr
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_PR_JSON: ${{ steps.release.outputs.pr }}
         run: |
-          gh workflow run release-cli.yml --repo "${{ github.repository }}" --ref "${{ steps.release.outputs.tag_name }}"
+          branch=$(jq -r '.headBranchName // .headRefName // .head.ref // empty' <<< "${RELEASE_PR_JSON}")
+          if [ -z "${branch}" ]; then
+            branch=$(gh pr list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --base "${GITHUB_REF_NAME}" \
+              --state open \
+              --label "autorelease: pending" \
+              --json headRefName,updatedAt \
+              --jq 'map(select(.headRefName | startswith("release-please--"))) | sort_by(.updatedAt) | last | .headRefName // empty')
+          fi
+          if [ -z "${branch}" ]; then
+            echo "::error::Release Please updated a PR but its branch could not be resolved."
+            exit 1
+          fi
+          echo "branch=${branch}" >> "${GITHUB_OUTPUT}"
 
-      - name: Trigger sidecar build
-        if: ${{ steps.release.outputs.release_created }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh workflow run release-sidecar.yml --repo "${{ github.repository }}" --ref "${{ steps.release.outputs.tag_name }}"
+      - name: Checkout release PR
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v5
+        with:
+          ref: ${{ steps.release-pr.outputs.branch }}
+          fetch-depth: 0
 
-      - name: Trigger NAPI build and publish
-        if: ${{ steps.release.outputs.release_created }}
+      - name: Synchronize generated release locks
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        env:
+          RELEASE_BRANCH: ${{ steps.release-pr.outputs.branch }}
+        run: |
+          node scripts/sync-release-locks.mjs
+          node scripts/sync-release-locks.mjs --check
+          node scripts/check-release-versions.mjs --allow-missing-checksums
+
+          if git diff --quiet -- Cargo.lock crates/truffle-napi/package-lock.json; then
+            echo "Generated release locks are already current."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Cargo.lock crates/truffle-napi/package-lock.json
+            git commit -m "chore(release): synchronize generated lockfiles"
+            git push origin "HEAD:${RELEASE_BRANCH}"
+          fi
+
+      - name: Validate prepared release PR
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_BRANCH: ${{ steps.release-pr.outputs.branch }}
         run: |
-          gh workflow run napi-build.yml --repo "${{ github.repository }}" --ref "${{ steps.release.outputs.tag_name }}"
+          gh workflow run ci.yml --repo "${GITHUB_REPOSITORY}" --ref "${RELEASE_BRANCH}"
+          gh workflow run integration-tests.yml --repo "${GITHUB_REPOSITORY}" --ref "${RELEASE_BRANCH}"
+          gh workflow run codeql.yml --repo "${GITHUB_REPOSITORY}" --ref "${RELEASE_BRANCH}"
+
+      # Release Please creates a draft release and immutable tag. Nothing is
+      # published until the exact tagged commit has passed its push workflows.
+      - name: Require green release commit
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          wait_for_push_workflow() {
+            workflow_file="$1"
+            workflow_label="$2"
+            for attempt in $(seq 1 120); do
+              run_json=$(gh run list \
+                --repo "${GITHUB_REPOSITORY}" \
+                --workflow "${workflow_file}" \
+                --commit "${RELEASE_SHA}" \
+                --event push \
+                --limit 10 \
+                --json databaseId,status,conclusion,url \
+                --jq 'sort_by(.databaseId) | last // {}' 2>/dev/null || true)
+              status=$(jq -r '.status // empty' <<< "${run_json}")
+              conclusion=$(jq -r '.conclusion // empty' <<< "${run_json}")
+              url=$(jq -r '.url // empty' <<< "${run_json}")
+              if [ "${status}" = "completed" ] && [ "${conclusion}" = "success" ]; then
+                echo "${workflow_label} passed: ${url}"
+                return 0
+              fi
+              if [ "${status}" = "completed" ] && [ "${conclusion}" != "success" ]; then
+                echo "::error::${workflow_label} failed for ${RELEASE_SHA}: ${url}"
+                return 1
+              fi
+              echo "Waiting for ${workflow_label} on ${RELEASE_SHA} (${attempt}/120)..."
+              sleep 10
+            done
+            echo "::error::Timed out waiting for ${workflow_label} on ${RELEASE_SHA}."
+            return 1
+          }
+
+          wait_for_push_workflow ci.yml "CI"
+          wait_for_push_workflow integration-tests.yml "Real-network integration"
+          wait_for_push_workflow codeql.yml "CodeQL"
+
+      # GITHUB_TOKEN-created releases do not trigger release events, so dispatch
+      # every publisher explicitly and capture the new run IDs.
+      - name: Dispatch release workflows
+        id: release-runs
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          latest_run_id() {
+            gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --workflow "$1" \
+              --commit "${RELEASE_SHA}" \
+              --event workflow_dispatch \
+              --limit 20 \
+              --json databaseId \
+              --jq 'map(.databaseId) | max // 0'
+          }
+
+          dispatch_and_capture() {
+            workflow_file="$1"
+            output_name="$2"
+            previous=$(latest_run_id "${workflow_file}")
+            gh workflow run "${workflow_file}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --ref "${RELEASE_TAG}"
+            for attempt in $(seq 1 60); do
+              current=$(latest_run_id "${workflow_file}")
+              if [ "${current}" -gt "${previous}" ]; then
+                echo "${output_name}=${current}" >> "${GITHUB_OUTPUT}"
+                return 0
+              fi
+              echo "Waiting for ${workflow_file} dispatch (${attempt}/60)..."
+              sleep 5
+            done
+            echo "::error::Could not find the new ${workflow_file} run."
+            return 1
+          }
+
+          echo "crates_before=$(latest_run_id publish-crates.yml)" >> "${GITHUB_OUTPUT}"
+          echo "npm_before=$(latest_run_id release-npm.yml)" >> "${GITHUB_OUTPUT}"
+          dispatch_and_capture release-cli.yml cli_run
+          dispatch_and_capture release-sidecar.yml sidecar_run
+          dispatch_and_capture napi-build.yml napi_run
+
+      - name: Require successful binary and native builds
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLI_RUN: ${{ steps.release-runs.outputs.cli_run }}
+          SIDECAR_RUN: ${{ steps.release-runs.outputs.sidecar_run }}
+          NAPI_RUN: ${{ steps.release-runs.outputs.napi_run }}
+        run: |
+          gh run watch "${CLI_RUN}" --repo "${GITHUB_REPOSITORY}" --exit-status
+          gh run watch "${SIDECAR_RUN}" --repo "${GITHUB_REPOSITORY}" --exit-status
+          gh run watch "${NAPI_RUN}" --repo "${GITHUB_REPOSITORY}" --exit-status
+
+      - name: Require successful package publication
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          CRATES_BEFORE: ${{ steps.release-runs.outputs.crates_before }}
+          NPM_BEFORE: ${{ steps.release-runs.outputs.npm_before }}
+        run: |
+          find_new_run() {
+            workflow_file="$1"
+            previous="$2"
+            for attempt in $(seq 1 120); do
+              current=$(gh run list \
+                --repo "${GITHUB_REPOSITORY}" \
+                --workflow "${workflow_file}" \
+                --commit "${RELEASE_SHA}" \
+                --event workflow_dispatch \
+                --limit 20 \
+                --json databaseId \
+                --jq 'map(.databaseId) | max // 0')
+              if [ "${current}" -gt "${previous}" ]; then
+                echo "${current}"
+                return 0
+              fi
+              echo "Waiting for ${workflow_file} publisher dispatch (${attempt}/120)..." >&2
+              sleep 5
+            done
+            return 1
+          }
+
+          crates_run=$(find_new_run publish-crates.yml "${CRATES_BEFORE}")
+          npm_run=$(find_new_run release-npm.yml "${NPM_BEFORE}")
+          gh run watch "${crates_run}" --repo "${GITHUB_REPOSITORY}" --exit-status
+          gh run watch "${npm_run}" --repo "${GITHUB_REPOSITORY}" --exit-status
+
+      - name: Publish verified GitHub release
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          gh release edit "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --draft=false \
+            --latest

@@ -10,8 +10,18 @@ permissions:
   id-token: write
   actions: write
 
+concurrency:
+  group: sidecar-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  preflight:
+    uses: ./.github/workflows/release-preflight.yml
+    with:
+      release_tag: ${{ github.ref_name }}
+
   build:
+    needs: preflight
     strategy:
       matrix:
         include:
@@ -192,7 +202,10 @@ jobs:
             --dir /tmp/sidecar-assets
 
       - name: Regenerate checksum files
-        run: node scripts/update-sidecar-checksums.mjs "${VERSION}" /tmp/sidecar-assets
+        run: |
+          node scripts/update-sidecar-checksums.mjs "${VERSION}" /tmp/sidecar-assets
+          node scripts/sync-release-locks.mjs --check
+          node scripts/check-release-versions.mjs
 
       - name: Commit checksums if changed
         run: |

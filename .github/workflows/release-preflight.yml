@@ -1,0 +1,46 @@
+name: Release source preflight
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Exact immutable tag being published.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify release source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v5
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v5
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Require an exact release tag checkout
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            echo "::error::Release workflows must run from an immutable tag, not ${GITHUB_REF}."
+            exit 1
+          fi
+          if [ "${GITHUB_REF_NAME}" != "${RELEASE_TAG}" ]; then
+            echo "::error::Workflow ref ${GITHUB_REF_NAME} does not match requested tag ${RELEASE_TAG}."
+            exit 1
+          fi
+
+      - name: Verify generated locks and release versions
+        run: |
+          node scripts/sync-release-locks.mjs --check
+          node scripts/check-release-versions.mjs --allow-missing-checksums
+          cargo metadata --locked --no-deps --format-version 1 >/dev/null
