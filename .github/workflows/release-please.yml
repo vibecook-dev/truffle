@@ -66,13 +66,20 @@ jobs:
             title=$(gh api \
               "repos/${GITHUB_REPOSITORY}/commits/${branch}" \
               --jq '.commit.message | split("\n")[0]')
-            pr_url=$(gh pr create \
-              --repo "${GITHUB_REPOSITORY}" \
-              --base "${GITHUB_REF_NAME}" \
-              --head "${branch}" \
-              --title "${title}" \
-              --label "autorelease: pending" \
-              --body "Release Please generated this release branch; the workflow recovered the PR after its final API call failed.")
+            pr_json=$(gh api \
+              --method POST \
+              "repos/${GITHUB_REPOSITORY}/pulls" \
+              -f "base=${GITHUB_REF_NAME}" \
+              -f "head=${branch}" \
+              -f "title=${title}" \
+              -f "body=Release Please generated this release branch; the workflow recovered the PR after its final GraphQL call failed.")
+            pr_url=$(jq -r '.html_url' <<< "${pr_json}")
+            pr_number=$(jq -r '.number' <<< "${pr_json}")
+            gh api \
+              --method POST \
+              "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
+              -f "labels[]=autorelease: pending" \
+              >/dev/null
             echo "::warning::Recovered orphaned Release Please branch as ${pr_url}."
           fi
           echo "branch=${branch}" >> "${GITHUB_OUTPUT}"
