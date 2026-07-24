@@ -86,7 +86,10 @@ jobs:
           done
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # The GitHub release is deliberately still a draft, so package
+        # postinstall must not try its public download URL. This publisher has
+        # already verified the draft assets and injected their checksums above.
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       # Generate fresh index.d.ts and index.js from the Rust NAPI crate.
       # This ensures TypeScript types match the current Rust code.
