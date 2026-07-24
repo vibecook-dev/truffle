@@ -1,6 +1,6 @@
 [package]
 name = "truffle"
-version = "0.7.3" # x-release-please-version
+version = "0.7.4" # x-release-please-version
 edition.workspace = true
 rust-version.workspace = true
 description = "P2P mesh networking for your devices, built on Tailscale"
@@ -13,8 +13,8 @@ categories = ["network-programming"]
 workspace = true
 
 [dependencies]
-truffle-core = { version = "0.7.3", path = "../truffle-core" }       # x-release-please-version
-truffle-sidecar = { version = "0.7.3", path = "../truffle-sidecar" } # x-release-please-version
+truffle-core = { version = "0.7.4", path = "../truffle-core" }       # x-release-please-version
+truffle-sidecar = { version = "0.7.4", path = "../truffle-sidecar" } # x-release-please-version
 
 [dev-dependencies]
 serde_json.workspace = true

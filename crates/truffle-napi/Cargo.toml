@@ -1,6 +1,6 @@
 [package]
 name = "truffle-napi"
-version = "0.7.3" # x-release-please-version
+version = "0.7.4" # x-release-please-version
 edition.workspace = true
 description = "NAPI-RS bindings for truffle-core (published to npm, not crates.io)"
 license.workspace = true

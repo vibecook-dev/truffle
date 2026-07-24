@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.7.4](https://github.com/jamesyong-42/truffle/compare/truffle-v0.7.3...truffle-v0.7.4) (2026-07-24)
+
+
+### Features
+
+* add production Apple mesh runtime ([957b61a](https://github.com/jamesyong-42/truffle/commit/957b61a7eaf5c2d7b04571cd7b7bbc17d8bb27ac))
+
+
+### Bug Fixes
+
+* **apple:** align example deployment target ([0569e96](https://github.com/jamesyong-42/truffle/commit/0569e96b4164abf0e23c881347202010debf0684))
+* **ci:** materialize Apple binary artifact ([6f5c895](https://github.com/jamesyong-42/truffle/commit/6f5c895a990da69d8f01b7db4cc67f4e54b266dc))
+* close failed Apple mesh listeners ([25afc54](https://github.com/jamesyong-42/truffle/commit/25afc540f179bab0fd5e7fe22ee056c58fb57281))
+* harden runtime and release pipeline ([b579f59](https://github.com/jamesyong-42/truffle/commit/b579f5934b06b1f7bf96d520d81c63d8d23108fd))
+* make Apple mesh artifact deterministic ([04c2fcf](https://github.com/jamesyong-42/truffle/commit/04c2fcff8b6378706dfef511576ad86f2a2f8541))
+* **playground:** correct startup path and health timing ([be7e9cc](https://github.com/jamesyong-42/truffle/commit/be7e9ccd6ad70b8ab593814a2e4c4ba70876b559))
+* preserve accepted peer identity on Apple ([071264b](https://github.com/jamesyong-42/truffle/commit/071264b02a2ee81bac3fb4255e40842e7af464fe))
+
 ## [0.7.3](https://github.com/jamesyong-42/truffle/compare/truffle-v0.7.2...truffle-v0.7.3) (2026-07-16)
 
 

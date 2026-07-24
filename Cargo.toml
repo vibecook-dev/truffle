@@ -112,8 +112,8 @@ tauri-plugin = { version = "2", features = ["build"] }
 ureq = "3"
 
 # Internal crates
-truffle-core = { version = "0.7.3", path = "crates/truffle-core" }       # x-release-please-version
-truffle-sidecar = { version = "0.7.3", path = "crates/truffle-sidecar" } # x-release-please-version
+truffle-core = { version = "0.7.4", path = "crates/truffle-core" }       # x-release-please-version
+truffle-sidecar = { version = "0.7.4", path = "crates/truffle-sidecar" } # x-release-please-version
 
 # Dev / test
 # (tokio dev features are added per-crate via `features = [...]`)

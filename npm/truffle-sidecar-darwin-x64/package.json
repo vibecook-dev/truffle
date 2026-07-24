@@ -1,6 +1,6 @@
 {
   "name": "@vibecook/truffle-sidecar-darwin-x64",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "Truffle sidecar binary for macOS x64 (Intel)",
   "license": "MIT",
   "author": "James Yong",

@@ -1,6 +1,6 @@
 [package]
 name = "truffle-cli"
-version = "0.7.3" # x-release-please-version
+version = "0.7.4" # x-release-please-version
 edition.workspace = true
 description = "CLI tool for Truffle mesh networking (Node API)"
 license.workspace = true

@@ -1,6 +1,6 @@
 {
   "name": "@vibecook/truffle",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "Mesh networking for local-first apps, built on Tailscale",
   "license": "MIT",
   "author": "James Yong",
