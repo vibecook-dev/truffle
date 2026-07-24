@@ -29,6 +29,11 @@ use truffle_core::network::{NetworkPeerEvent, NetworkProvider};
 /// Timeout for individual operations after the pair is up and rendezvoused.
 const OP_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Peer discovery can precede route convergence on a newly registered
+/// ephemeral node. Connectivity assertions retry within this separate,
+/// bounded window instead of treating one startup probe as definitive.
+const CONNECTIVITY_TIMEOUT: Duration = Duration::from_secs(45);
+
 // ---------------------------------------------------------------------------
 // Test 1: Start provider and verify auth + running state
 // ---------------------------------------------------------------------------
@@ -233,14 +238,35 @@ async fn test_ping() {
 
     let beta_ip = pair.beta_ip().await.to_string();
     eprintln!("  pinging beta at {beta_ip}");
-    let result = timeout(OP_TIMEOUT, pair.alpha.ping(&beta_ip))
-        .await
-        .expect("ping did not time out")
-        .expect("ping should succeed");
+    let deadline = tokio::time::Instant::now() + CONNECTIVITY_TIMEOUT;
+    let mut attempts = 0_u32;
+    let result = loop {
+        attempts += 1;
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match timeout(remaining, pair.alpha.ping(&beta_ip)).await {
+            Ok(Ok(result)) => break result,
+            Ok(Err(error)) if tokio::time::Instant::now() < deadline => {
+                eprintln!("  ping attempt {attempts} failed while route converges: {error}");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Ok(Err(error)) => {
+                panic!(
+                    "ping did not succeed within {CONNECTIVITY_TIMEOUT:?} \
+                     after {attempts} attempt(s): {error}"
+                );
+            }
+            Err(_) => {
+                panic!(
+                    "ping did not succeed within {CONNECTIVITY_TIMEOUT:?} \
+                     after {attempts} attempt(s)"
+                );
+            }
+        }
+    };
 
     eprintln!(
-        "  ping ok: latency={:?} connection={} peer_addr={:?}",
-        result.latency, result.connection, result.peer_addr
+        "  ping ok after {attempts} attempt(s): latency={:?} connection={} peer_addr={:?}",
+        result.latency, result.connection, result.peer_addr,
     );
     assert!(
         result.latency > Duration::ZERO,
