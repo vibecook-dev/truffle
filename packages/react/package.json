@@ -1,6 +1,6 @@
 {
   "name": "@vibecook/truffle-react",
-  "version": "0.7.6",
+  "version": "0.7.7",
   "description": "React hooks for Truffle mesh networking",
   "license": "MIT",
   "author": "James Yong",
