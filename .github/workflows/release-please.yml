@@ -321,3 +321,43 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --draft=false \
             --latest
+
+      # SwiftPM cannot parse `truffle-vX.Y.Z`, so the Swift package needs a
+      # plain SemVer tag to be resolvable by version range rather than by bare
+      # revision. It points at the same commit — one release, two tag names,
+      # consistent with every artifact sharing one version.
+      #
+      # Deliberately the last step: creating it earlier would leave a
+      # `vX.Y.Z` tag pointing at an unverified commit whenever a gate above
+      # fails, and SwiftPM would happily resolve it. The tag exists only once
+      # the release is fully verified and published.
+      - name: Tag the Swift package with SemVer
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          semver_tag="v${RELEASE_TAG#truffle-v}"
+          if [ "${semver_tag}" = "v${RELEASE_TAG}" ]; then
+            echo "::error::Could not derive a SemVer tag from ${RELEASE_TAG}."
+            exit 1
+          fi
+
+          existing=$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${semver_tag}" \
+            --jq '.object.sha' 2>/dev/null || true)
+          if [ -n "${existing}" ]; then
+            if [ "${existing}" = "${RELEASE_SHA}" ]; then
+              echo "${semver_tag} already points at ${RELEASE_SHA}."
+              exit 0
+            fi
+            # Never repoint an existing tag: SwiftPM consumers resolve it, and
+            # Package.resolved pins the revision it used to name.
+            echo "::error::${semver_tag} exists at ${existing}, expected ${RELEASE_SHA}."
+            exit 1
+          fi
+
+          gh api "/repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f "ref=refs/tags/${semver_tag}" \
+            -f "sha=${RELEASE_SHA}" >/dev/null
+          echo "Tagged ${semver_tag} at ${RELEASE_SHA} for SwiftPM."

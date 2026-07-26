@@ -29,6 +29,23 @@ Sidecar binaries are fail-closed:
 The source tag is immutable. Generated checksum maps are committed back to
 the default branch only after every sidecar asset exists and is hashed.
 
+### The Swift package
+
+SwiftPM cannot parse `truffle-vX.Y.Z`, so each release is tagged a second time
+as plain `vX.Y.Z` on the same commit. That tag is created as the **final** step
+of `release-please.yml`, after the release is verified and un-drafted — a
+release that fails any gate leaves no SemVer tag, so SwiftPM can never resolve
+an unverified commit. The step refuses to move an existing tag: consumers
+resolve it and record the revision in their `Package.resolved`.
+
+The TailscaleKit XCFramework is **not** part of the per-release artifact set.
+It is published once under a `tailscalekit-<short-rev>` tag keyed to the
+vendored libtailscale revision, because `.binaryTarget(url:checksum:)` requires
+its checksum to be committed at the tag SwiftPM resolves — and this pipeline
+builds release assets *after* the release commit, so a version-keyed artifact
+could never be hashable at its own tag. See `apple/Vendor/README.md` for the
+provenance record and the procedure for replacing it.
+
 ## Normal release
 
 1. Merge conventional commits to `main`.

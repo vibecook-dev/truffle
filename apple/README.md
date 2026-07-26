@@ -17,16 +17,56 @@ An iOS example lives in `Examples/MeshChatDemo/` — a SwiftUI chat app over an
 in-process demo mesh (your node + two bot peers on `LoopbackNetwork`); see
 its README.
 
-## Build & test
+## Adding it to your project
+
+The package is published from the **repository root** — SwiftPM resolves a URL
+dependency only against a root manifest, so point at the repository itself, not
+at this directory:
+
+```swift
+.package(url: "https://github.com/vibecook-dev/truffle.git", from: "0.7.7")
+```
+
+The package identity is `truffle`, so products are referenced as:
+
+```swift
+.product(name: "Truffle", package: "truffle")
+.product(name: "TruffleSwiftUI", package: "truffle")
+.product(name: "TruffleTailscale", package: "truffle")   // iOS only
+```
+
+Nothing else is required. TailscaleKit arrives as a checksum-verified binary
+target, so there is no Go toolchain, no source build, and no materialization
+step for consumers.
+
+Pin an exact commit instead when your release process demands it:
+
+```swift
+.package(url: "https://github.com/vibecook-dev/truffle.git", revision: "…")
+```
+
+> Versions below `0.7.7` have no SemVer tag — SwiftPM cannot parse the
+> `truffle-vX.Y.Z` scheme used before then, and the stray `v0.2.x` tags predate
+> this package entirely. Use `from: "0.7.7"` or newer, or pin a revision.
+
+## Build & test (working on Truffle itself)
+
+From the repository root, exactly as a consumer resolves it:
 
 ```bash
-cd apple
-# Package.swift always wires the production binary target, so materialize the
-# pinned XCFramework before SwiftPM resolves the package.
-./scripts/materialize-tailscalekit.sh
 swift build
 # Tests need swift-testing, which CommandLineTools does not bundle:
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+```
+
+`apple/Package.swift` is a compatibility shim for consumers still on a
+relative-path dependency. It builds TailscaleKit from source, so it needs the
+materializer and a Go toolchain:
+
+```bash
+cd apple
+./scripts/materialize-tailscalekit.sh
+swift build
 ```
 
 Stick to one toolchain per `.build` directory: CommandLineTools and Xcode may
