@@ -20,7 +20,7 @@ $ErrorActionPreference = "Stop"
 # Configuration
 # ═══════════════════════════════════════════════════════════════════════════
 
-$repo = "jamesyong-42/truffle"
+$repo = "vibecook-dev/truffle"
 
 # Resolve install directory
 if ($Dir) {

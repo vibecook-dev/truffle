@@ -781,7 +781,7 @@ Create a shell script for Unix (macOS/Linux):
 #!/bin/sh
 set -e
 
-REPO="jamesyong-42/truffle"
+REPO="vibecook-dev/truffle"
 INSTALL_DIR="${TRUFFLE_INSTALL_DIR:-$HOME/.config/truffle/bin}"
 
 # Detect platform
@@ -823,7 +823,7 @@ echo "Run 'truffle up' to start."
 ```powershell
 $ErrorActionPreference = "Stop"
 
-$repo = "jamesyong-42/truffle"
+$repo = "vibecook-dev/truffle"
 $installDir = if ($env:TRUFFLE_INSTALL_DIR) { $env:TRUFFLE_INSTALL_DIR }
               else { "$env:LOCALAPPDATA\truffle\bin" }
 
@@ -888,7 +888,7 @@ Alternatively, modify the `DaemonServer::start()` to catch the sidecar-not-found
 
 The strategy doc provides a complete formula. The formula downloads pre-built tarballs, so no compilation is needed.
 
-**Recommendation:** Create a `homebrew-truffle` repo at `github.com/jamesyong-42/homebrew-truffle` so users can `brew tap jamesyong-42/truffle && brew install truffle`.
+**Recommendation:** Create a `homebrew-truffle` repo at `github.com/vibecook-dev/homebrew-truffle` so users can `brew tap vibecook-dev/truffle && brew install truffle`.
 
 The formula should be auto-updated by CI on each release (use a GitHub Action to update the SHA256 and version in the formula).
 
@@ -910,7 +910,7 @@ The formula should be auto-updated by CI on each release (use a GitHub Action to
 2. Run `scripts/install.ps1` on Windows. Verify installation and PATH.
 3. `cargo install --path crates/truffle-cli && truffle install-sidecar` -- verify sidecar download.
 4. `truffle up` after `cargo install` (no pre-installed sidecar) -- verify auto-download prompt.
-5. `brew install jamesyong-42/truffle/truffle` -- verify Homebrew installation.
+5. `brew install vibecook-dev/truffle/truffle` -- verify Homebrew installation.
 
 ---
 

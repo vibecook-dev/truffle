@@ -84,7 +84,7 @@ fn main() {
     }
 
     let url = format!(
-        "https://github.com/jamesyong-42/truffle/releases/download/truffle-v{version}/{asset_name}"
+        "https://github.com/vibecook-dev/truffle/releases/download/truffle-v{version}/{asset_name}"
     );
 
     eprintln!("truffle-sidecar: downloading {url}");

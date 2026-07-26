@@ -1,6 +1,6 @@
 #!/bin/sh
 # Install truffle CLI + sidecar
-# Usage: curl -fsSL https://jamesyong-42.github.io/truffle/install.sh | sh
+# Usage: curl -fsSL https://vibecook-dev.github.io/truffle/install.sh | sh
 #
 # Options:
 #   --version <tag>    Install a specific version (e.g., v0.1.0)
@@ -17,7 +17,7 @@ set -e
 # Defaults
 # ═══════════════════════════════════════════════════════════════════════════
 
-REPO="jamesyong-42/truffle"
+REPO="vibecook-dev/truffle"
 VERSION="latest"
 INSTALL_DIR=""
 VERIFY=true

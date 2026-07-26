@@ -595,7 +595,7 @@ fn walk_up_for_workspace(start: &Path, bin_name: &str) -> Option<PathBuf> {
 For the `cargo install` channel, add a `truffle install-sidecar` command that:
 
 1. Determines the current platform/arch
-2. Downloads the matching binary from GitHub releases: `https://github.com/jamesyong-42/truffle/releases/latest/download/tsnet-sidecar-{os}-{arch}`
+2. Downloads the matching binary from GitHub releases: `https://github.com/vibecook-dev/truffle/releases/latest/download/tsnet-sidecar-{os}-{arch}`
 3. Installs it to `~/.config/truffle/bin/sidecar-slim`
 4. Sets executable permission on Unix
 
@@ -751,10 +751,10 @@ For every tagged release (e.g., `v0.2.0`):
 
 ```bash
 # macOS Apple Silicon
-curl -fsSL https://github.com/jamesyong-42/truffle/releases/latest/download/truffle-darwin-arm64.tar.gz | tar xz -C /usr/local/bin
+curl -fsSL https://github.com/vibecook-dev/truffle/releases/latest/download/truffle-darwin-arm64.tar.gz | tar xz -C /usr/local/bin
 
 # Linux
-curl -fsSL https://github.com/jamesyong-42/truffle/releases/latest/download/truffle-linux-x64.tar.gz | tar xz -C /usr/local/bin
+curl -fsSL https://github.com/vibecook-dev/truffle/releases/latest/download/truffle-linux-x64.tar.gz | tar xz -C /usr/local/bin
 ```
 
 **Sidecar inclusion:** Bundled in the tarball. `find_sidecar()` location #3 (adjacent to CLI) finds it immediately.
@@ -781,27 +781,27 @@ The script:
 ```ruby
 class Truffle < Formula
   desc "Mesh networking CLI built on Tailscale"
-  homepage "https://github.com/jamesyong-42/truffle"
+  homepage "https://github.com/vibecook-dev/truffle"
   version "0.2.0"
 
   on_macos do
     on_arm do
-      url "https://github.com/jamesyong-42/truffle/releases/download/v0.2.0/truffle-darwin-arm64.tar.gz"
+      url "https://github.com/vibecook-dev/truffle/releases/download/v0.2.0/truffle-darwin-arm64.tar.gz"
       sha256 "..."
     end
     on_intel do
-      url "https://github.com/jamesyong-42/truffle/releases/download/v0.2.0/truffle-darwin-x64.tar.gz"
+      url "https://github.com/vibecook-dev/truffle/releases/download/v0.2.0/truffle-darwin-x64.tar.gz"
       sha256 "..."
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/jamesyong-42/truffle/releases/download/v0.2.0/truffle-linux-arm64.tar.gz"
+      url "https://github.com/vibecook-dev/truffle/releases/download/v0.2.0/truffle-linux-arm64.tar.gz"
       sha256 "..."
     end
     on_intel do
-      url "https://github.com/jamesyong-42/truffle/releases/download/v0.2.0/truffle-linux-x64.tar.gz"
+      url "https://github.com/vibecook-dev/truffle/releases/download/v0.2.0/truffle-linux-x64.tar.gz"
       sha256 "..."
     end
   end

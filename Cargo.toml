@@ -14,7 +14,7 @@ members = [
 [workspace.package]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/jamesyong-42/truffle"
+repository = "https://github.com/vibecook-dev/truffle"
 rust-version = "1.88"
 
 # ── Shared lints ─────────────────────────────────────────────────────

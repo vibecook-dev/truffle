@@ -12,4 +12,4 @@ const { localData, allSlices, set } = useSyncedStore(node, 'app-state');
 ```
 
 The package requires React 18 or newer. API documentation, setup, and examples
-are in the [Truffle repository](https://github.com/jamesyong-42/truffle).
+are in the [Truffle repository](https://github.com/vibecook-dev/truffle).

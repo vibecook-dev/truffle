@@ -20,7 +20,7 @@ const assets = [
 test('fallback URL uses the truffle-v release tag scheme', () => {
   assert.equal(
     buildDownloadUrl('0.4.8', 'tsnet-sidecar-darwin-arm64'),
-    'https://github.com/jamesyong-42/truffle/releases/download/truffle-v0.4.8/tsnet-sidecar-darwin-arm64',
+    'https://github.com/vibecook-dev/truffle/releases/download/truffle-v0.4.8/tsnet-sidecar-darwin-arm64',
   );
 });
 

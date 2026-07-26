@@ -22,4 +22,4 @@ for (const peer of await mesh.getPeers()) {
 
 Requires Node.js 18 or newer and Tailscale authentication. Documentation,
 examples, platform support, and the security policy are in the
-[Truffle repository](https://github.com/jamesyong-42/truffle).
+[Truffle repository](https://github.com/vibecook-dev/truffle).

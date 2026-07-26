@@ -1,7 +1,7 @@
 # Truffle
 
-[![CI](https://github.com/jamesyong-42/truffle/actions/workflows/ci.yml/badge.svg)](https://github.com/jamesyong-42/truffle/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/jamesyong-42/truffle?label=latest)](https://github.com/jamesyong-42/truffle/releases/latest)
+[![CI](https://github.com/vibecook-dev/truffle/actions/workflows/ci.yml/badge.svg)](https://github.com/vibecook-dev/truffle/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/vibecook-dev/truffle?label=latest)](https://github.com/vibecook-dev/truffle/releases/latest)
 [![npm](https://img.shields.io/npm/v/@vibecook/truffle?label=%40vibecook%2Ftruffle)](https://www.npmjs.com/package/@vibecook/truffle)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -55,10 +55,10 @@ Node.js 18+. The package includes a prebuilt native addon and platform sidecar.
 
 ```bash
 # macOS / Linux
-curl -fsSL https://jamesyong-42.github.io/truffle/install.sh | sh
+curl -fsSL https://vibecook-dev.github.io/truffle/install.sh | sh
 
 # Windows (PowerShell)
-iwr -useb https://jamesyong-42.github.io/truffle/install.ps1 | iex
+iwr -useb https://vibecook-dev.github.io/truffle/install.ps1 | iex
 
 # Homebrew
 brew install jamesyong-42/tap/truffle
@@ -147,8 +147,8 @@ Swift: [`apple/Examples/MeshChatDemo`](apple/Examples/MeshChatDemo) — iOS Swif
 
 ## Docs
 
-- **Guide:** [jamesyong-42.github.io/truffle](https://jamesyong-42.github.io/truffle/)
-- **API reference:** [api.html](https://jamesyong-42.github.io/truffle/api.html)
+- **Guide:** [vibecook-dev.github.io/truffle](https://vibecook-dev.github.io/truffle/)
+- **API reference:** [api.html](https://vibecook-dev.github.io/truffle/api.html)
 - **HTTP serving guide:** [docs/guide/serving-http.md](docs/guide/serving-http.md)
 - **API stability:** [docs/API-STABILITY.md](docs/API-STABILITY.md)
 - **Testing:** [docs/TESTING.md](docs/TESTING.md)
