@@ -36,3 +36,42 @@ checksums:
 Build metadata may change the binary digest under a different toolchain. The
 source revision and clean-tree checks in the script are mandatory; update this
 record deliberately when the toolchain or pinned revision changes.
+
+## Published artifact (authoritative)
+
+The root `Package.swift` consumes this XCFramework as a
+`.binaryTarget(url:checksum:)` rather than building it locally, so the bytes
+below — not the research build recorded above — are what SwiftPM verifies and
+what downstream consumers pin. The two differ because they were produced under
+different toolchains, which is exactly the drift the warning above describes.
+
+| Field | Value |
+| --- | --- |
+| Release tag | `tailscalekit-5e89501d` |
+| Asset | `TailscaleKit.xcframework.zip` (24 MiB packed, 71 MiB expanded) |
+| SwiftPM checksum | `25c84847b70f673835e9c0fd75a697fbe76943a0b20314bf56d2f5569c68f494` |
+| device slice | `94796395b2f3aedc6a57fba22f63bbd9bd906d4badec96c6de44fc53929d449e` |
+| simulator slice | `d2bb76de7d7ed225c1e879f225a33d877eac8183b56b93256faff476dc35ac41` |
+
+The artifact is keyed to the **vendored dependency**, not to a Truffle release:
+its contents depend only on the libtailscale revision, the reviewed patch, and
+the build toolchain. Publishing it once under `tailscalekit-<short-rev>` keeps
+every Truffle tag carrying an already-valid checksum, which a per-release asset
+could not — this repository builds release assets *after* the release commit,
+so a version-keyed artifact would never be hashable at its own tag.
+
+### Replacing it
+
+Only when the pinned revision, the patch, or the recorded toolchain changes:
+
+```sh
+apple/scripts/materialize-tailscalekit.sh
+(cd apple/Vendor && zip -qry /tmp/TailscaleKit.xcframework.zip TailscaleKit.xcframework)
+swift package compute-checksum /tmp/TailscaleKit.xcframework.zip
+gh release create tailscalekit-<short-rev> /tmp/TailscaleKit.xcframework.zip \
+  --title "TailscaleKit <short-rev>" --notes "…provenance…"
+```
+
+Then update the URL **and** checksum in the root `Package.swift` together, and
+refresh the table above. Never overwrite an existing `tailscalekit-*` release
+asset: SwiftPM caches by checksum, and consumers pin these bytes.

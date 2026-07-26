@@ -14,6 +14,51 @@ on:
       - '.github/workflows/apple-tests.yml'
 
 jobs:
+  # Consumes the package exactly as a downstream project does: the root
+  # manifest, resolving TailscaleKit from its published URL. A fresh checkout
+  # has no apple/Vendor/TailscaleKit.xcframework (it is gitignored), so this
+  # job doubles as the clean-checkout test — if the binary target's URL or
+  # checksum is wrong, package resolution fails here rather than in someone
+  # else's build. Deliberately no Go toolchain and no materializer: needing
+  # either would mean the published package is not self-contained.
+  swift-published:
+    name: Swift package as published (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v5
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app || sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Confirm the vendored artifact is absent
+        run: |
+          if [ -d apple/Vendor/TailscaleKit.xcframework ]; then
+            echo "::error::apple/Vendor/TailscaleKit.xcframework is present in a fresh checkout — this job no longer proves the published package resolves on its own."
+            exit 1
+          fi
+
+      - name: Resolve from the published binary target
+        run: swift package resolve
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+      - name: Build production runtime (iOS device)
+        run: |
+          xcodebuild -scheme TruffleTailscale \
+            -destination 'generic/platform=iOS' build CODE_SIGNING_ALLOWED=NO
+
+      - name: Build production runtime (iOS Simulator)
+        run: |
+          xcodebuild -scheme TruffleTailscale \
+            -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO
+
+  # The apple/ manifest is a compatibility shim for consumers still on a
+  # relative-path dependency. It builds TailscaleKit from source, so it keeps
+  # the Go toolchain and the materializer. Delete this job with the shim.
   swift:
     name: Swift package (macOS)
     runs-on: macos-15
