@@ -6,12 +6,12 @@
   "author": "James Yong",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jamesyong-42/truffle.git",
+    "url": "https://github.com/vibecook-dev/truffle.git",
     "directory": "packages/core"
   },
-  "homepage": "https://github.com/jamesyong-42/truffle#readme",
+  "homepage": "https://github.com/vibecook-dev/truffle#readme",
   "bugs": {
-    "url": "https://github.com/jamesyong-42/truffle/issues"
+    "url": "https://github.com/vibecook-dev/truffle/issues"
   },
   "keywords": [
     "mesh",

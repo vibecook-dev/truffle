@@ -410,7 +410,7 @@ func TestModulePath(t *testing.T) {
 	if !ok {
 		t.Skip("no build info embedded in test binary")
 	}
-	const want = "github.com/jamesyong-42/truffle/packages/sidecar-slim"
+	const want = "github.com/vibecook-dev/truffle/packages/sidecar-slim"
 	if bi.Main.Path != want {
 		t.Errorf("module path = %q, want %q", bi.Main.Path, want)
 	}

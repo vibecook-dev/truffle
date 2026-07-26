@@ -29,7 +29,7 @@ const { join, dirname } = require('path');
 const https = require('https');
 const crypto = require('crypto');
 
-const GITHUB_REPO = 'jamesyong-42/truffle';
+const GITHUB_REPO = 'vibecook-dev/truffle';
 const DOWNLOAD_TIMEOUT_MS = 60_000;
 const MAX_ATTEMPTS = 3;
 const MAX_REDIRECTS = 5;

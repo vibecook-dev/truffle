@@ -33,7 +33,7 @@ pub struct GitHubAsset {
 // ==========================================================================
 
 pub const GITHUB_RELEASES_URL: &str =
-    "https://api.github.com/repos/jamesyong-42/truffle/releases/latest";
+    "https://api.github.com/repos/vibecook-dev/truffle/releases/latest";
 
 // ==========================================================================
 // Platform detection

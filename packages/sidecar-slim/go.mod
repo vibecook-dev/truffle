@@ -1,4 +1,4 @@
-module github.com/jamesyong-42/truffle/packages/sidecar-slim
+module github.com/vibecook-dev/truffle/packages/sidecar-slim
 
 go 1.26.4
 

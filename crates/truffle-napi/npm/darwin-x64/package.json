@@ -19,18 +19,18 @@
     "rust"
   ],
   "author": "James Yong",
-  "homepage": "https://github.com/jamesyong-42/truffle#readme",
+  "homepage": "https://github.com/vibecook-dev/truffle#readme",
   "license": "MIT",
   "engines": {
     "node": ">=18"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/jamesyong-42/truffle.git",
+    "url": "https://github.com/vibecook-dev/truffle.git",
     "directory": "crates/truffle-napi"
   },
   "bugs": {
-    "url": "https://github.com/jamesyong-42/truffle/issues"
+    "url": "https://github.com/vibecook-dev/truffle/issues"
   },
   "publishConfig": {
     "access": "public"

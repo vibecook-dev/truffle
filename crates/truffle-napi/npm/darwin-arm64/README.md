@@ -4,4 +4,4 @@ Prebuilt Truffle native addon for macOS on Apple Silicon. This implementation
 package is installed automatically by `@vibecook/truffle-native`; applications
 should not depend on it directly.
 
-See the [Truffle repository](https://github.com/jamesyong-42/truffle).
+See the [Truffle repository](https://github.com/vibecook-dev/truffle).
