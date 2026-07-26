@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.7](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.6...truffle-v0.7.7) (2026-07-26)
+
+
+### Features
+
+* **release:** tag each release with SemVer for SwiftPM ([#170](https://github.com/vibecook-dev/truffle/issues/170)) ([d17095e](https://github.com/vibecook-dev/truffle/commit/d17095eadf5d66d09c653b187a756bb3752af488))
+* **swift:** publish Truffle Swift as a consumable SPM package ([#169](https://github.com/vibecook-dev/truffle/issues/169)) ([284cea0](https://github.com/vibecook-dev/truffle/commit/284cea0e037d1b2bff6053dda411acd9d6219298))
+
 ## [0.7.6](https://github.com/jamesyong-42/truffle/compare/truffle-v0.7.5...truffle-v0.7.6) (2026-07-24)
 
 
