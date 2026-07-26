@@ -44,6 +44,25 @@ jobs:
         working-directory: apple
         run: swift test
 
+      # `swift build`/`swift test` above run for the macOS host, where
+      # TailscaleKitBackend.swift is `#if os(iOS) && canImport(TailscaleKit)`
+      # and compiles to nothing — and the example app links only
+      # TruffleSwiftUI. Without these two steps the entire production runtime
+      # (MeshNode.startTailscale and the TailscaleKit glue) is never compiled
+      # by CI. Build both slices the XCFramework ships so device-only and
+      # simulator-only breakage are each caught.
+      - name: Build production runtime (iOS device)
+        working-directory: apple
+        run: |
+          xcodebuild -scheme TruffleTailscale \
+            -destination 'generic/platform=iOS' build CODE_SIGNING_ALLOWED=NO
+
+      - name: Build production runtime (iOS Simulator)
+        working-directory: apple
+        run: |
+          xcodebuild -scheme TruffleTailscale \
+            -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO
+
       - name: Build example app (iOS Simulator)
         working-directory: apple/Examples/MeshChatDemo
         run: |
