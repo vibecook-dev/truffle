@@ -1,6 +1,6 @@
 # RFC 024: Truffle Swift — Apple-native mesh runtime
 
-**Status:** Draft  
+**Status:** Phases 0, 1, 1b and 2 implemented and published; Phase 3 not started; Phase 4 partial. Five device gates remain — see the end of §12.  
 **Author:** James Yong + Grok  
 **Date:** 2026-07-16 (revised same day: wire contract aligned with shipped `truffle-core`; post-review transport, identity, payload, and security requirements incorporated)  
 **Depends on:** RFC 008 (vision), RFC 012 (layered architecture), RFC 017 (identity & namespacing), RFC 021 (raw transport JS API — *API shape*), RFC 022 (peer handle API), RFC 023 (HTTP serving — *later phases*)  
@@ -762,21 +762,39 @@ Transient health (bus restart) → `MeshEvent.health`, not throw from `peers()`.
 
 ## 12. Implementation plan
 
+> **Progress note (2026-07-27).** Checkboxes below are ticked only where the
+> claim is backed by something checkable — a shipped symbol, a passing test, a
+> CI job, or a recorded physical-device observation. Two evidence sources are
+> cited by shorthand:
+>
+> - **[pkg]** — this repository: `apple/Sources`, the 68-test `TruffleTests`
+>   suite, `crates/truffle-core/tests/interop_fixtures.rs`, and the
+>   `apple-tests.yml` jobs (`Swift package as published` builds the package the
+>   way a consumer does and compiles `TailscaleKitBackend` for both iOS slices).
+> - **[dev]** — physical-device evidence recorded **outside this repository**,
+>   in Ghosttea's `apple/GhostteaKit/Compatibility/ios-device-evidence.md`
+>   (iPhone 14 Pro, iOS 26.5, signed build, live tailnet). That record is the
+>   qualification evidence for the device gates; it was taken at Truffle
+>   revision `071264b0`, which predates the 0.7.7/0.7.8 packaging releases but
+>   contains identical Swift sources.
+>
+> Unticked items are genuinely open, not merely unrecorded.
+
 ### Phase 0 — Foundation (extract prototype)
 
 **Deliverable:** SPM package `TruffleTailscale` + example app.
 
-- [ ] Pin libtailscale; reproducibly build and checksum TailscaleKit.xcframework; record licenses, toolchain, provenance, and patch set  
-- [ ] `TailscaleRuntime`: start/stop, state dir, auth modes  
-- [ ] IPN bus + auto-restart + `backendStatus` polling  
-- [ ] Full-duplex dialed + accepted stream adapter (§5.5), with blocking C operations off the cooperative executor  
-- [ ] Cancellable listener supervisor: idle timeout recreation, backoff, foreground/background restart  
-- [ ] LocalAPI WhoIs for accepted remote endpoints; production path fails closed when stable node ID is unavailable  
-- [ ] RFC 6455 client/server adoption spike over libtailscale streams (`/ws`, bidirectional hello + data)  
-- [ ] Auth URL presentation helper (Safari representable)  
-- [ ] Phase stream / observable status  
-- [ ] Unit tests for state machine (mock LocalAPI where possible)  
-- [ ] Migrate `project100/research/tailscale/ios-prototype` to consume the package  
+- [x] Pin libtailscale; reproducibly build and checksum TailscaleKit.xcframework; record licenses, toolchain, provenance, and patch set — `apple/Vendor/README.md`; artifact now also published and checksum-pinned at `tailscalekit-5e89501d` **[pkg]**
+- [x] `TailscaleRuntime`: start/stop, state dir, auth modes — `TailscaleKitBackend` **[pkg]**
+- [x] IPN bus + auto-restart + `backendStatus` polling — `busConsumer` / `busRestartTask` / `pollTask` **[pkg]**
+- [x] Full-duplex dialed + accepted stream adapter (§5.5), with blocking C operations off the cooperative executor — dedicated dispatch queue per blocking call **[pkg]**
+- [x] Cancellable listener supervisor: backoff and recreation — bounded exponential backoff, `MeshNode.swift` §6.2 step 8 **[pkg]**; *idle-timeout recreation and foreground/background restart are covered by the separate device gate below*
+- [x] LocalAPI WhoIs for accepted remote endpoints; production path fails closed when stable node ID is unavailable — `failClosedIdentityRejectsWhenWhoIsUnavailable`, `allowUnverifiedIsExplicitOptIn` **[pkg]**
+- [x] RFC 6455 client/server adoption spike over libtailscale streams (`/ws`, bidirectional hello + data) — `RFC6455FrameTransport`, `upgradesOnWSAndExchangesAllFrameKinds` **[pkg]**
+- [x] Auth URL presentation helper (Safari representable) — `AuthSafariView` **[pkg]**
+- [x] Phase stream / observable status — `MeshModel` (@Observable), `eventsStreamEmitsPhaseImmediately` **[pkg]**
+- [x] Unit tests for state machine (mock LocalAPI where possible) — 68 tests over `LoopbackBackend` **[pkg]**
+- [ ] Migrate `project100/research/tailscale/ios-prototype` to consume the package — prototype lives outside this repository (§15); superseded in practice by Ghosttea consuming the published package
 
 **Exit:** Demo app uses package only; Connect → login → Running → peer list →
 HTTP get. A transport harness dials and accepts the same TCP connection, reads
@@ -785,18 +803,18 @@ tasks, and still accepts a connection after more than 60 seconds idle.
 
 ### Phase 1 — Mesh product MVP (`Truffle`)
 
-- [ ] `MeshConfiguration` / `MeshNode.start`  
-- [ ] Device ULID persistence  
-- [ ] `truffle-{appId}-{slug}` hostname advertisement (§7.2)  
-- [ ] Peer registry from Tailscale status (honest fields)  
-- [ ] Hello v2 + `appId` filter — shipped schema, close codes 4001–4003 (§8.1–8.2)  
-- [ ] `/ws` role-specific WebSocket handshake, bounds, heartbeat, and listener supervision (§8.1)  
-- [ ] `send` / `sendBytes` / `sendJSON` / `onMessage` over session port 9417, shipped envelope and base64-byte schemas (§6.4, §8.3)  
-- [ ] Semantic fixture + WebSocket transcript tests vs `truffle-core` (§8.4)  
-- [ ] `urlSession()` / `httpGet`  
-- [ ] `waitUntilRunning`  
-- [ ] Example: chat between two simulators/devices  
-- [ ] Doc: parity table TS → Swift  
+- [x] `MeshConfiguration` / `MeshNode.start` — plus `MeshNode.startTailscale` for the production backend **[pkg]**
+- [x] Device ULID persistence — `device-id.txt`, desktop-compatible **[pkg]**
+- [x] `truffle-{appId}-{slug}` hostname advertisement (§7.2) — 10-step slug **[pkg]**
+- [x] Peer registry from Tailscale status (honest fields) — provisional entries preserved across snapshots until netmap merge **[pkg]**
+- [x] Hello v2 + `appId` filter — shipped schema, close codes 4001–4003 (§8.1–8.2) — `appMismatchCloses4001AndNeverSendsServerHello`, `malformedHelloCloses4002`, `identityContradictionCloses4003` **[pkg]**
+- [x] `/ws` role-specific WebSocket handshake, bounds, heartbeat, and listener supervision (§8.1) — `rejectsMoreThan16ControlFramesBeforeHello`, `heartbeatTimeoutClosesDeadSession`, `helloReadTimesOut` **[pkg]**
+- [x] `send` / `sendBytes` / `sendJSON` / `onMessage` over session port 9417, shipped envelope and base64-byte schemas (§6.4, §8.3) — `exchangesJSONBothDirectionsWithAttribution`, `exchangesOpaqueBytes` **[pkg]**
+- [x] Semantic fixture + WebSocket transcript tests vs `truffle-core` (§8.4) — fixtures cross-decoded by both suites; `Interop fixtures (Rust side)` runs in CI **[pkg]**
+- [x] `urlSession()` / `httpGet` — `MeshNode.swift:512,519` **[pkg]**
+- [x] `waitUntilRunning` — `MeshNode.swift:254` **[pkg]**
+- [ ] Example: chat between two simulators/devices — `Examples/MeshChatDemo` still runs on `LoopbackNetwork`; the real two-party exercise happens in Ghosttea, not in this repository's example
+- [x] Doc: parity table TS → Swift — `apple/README.md` "Status vs RFC 024 phases" **[pkg]**
 
 **Exit:** Two real iOS nodes with the same `appId` exchange JSON and byte
 messages in both dial directions and preserve authenticated attribution. A node
@@ -805,16 +823,23 @@ confirms or delivers application traffic.
 
 ### Phase 1b — Raw transport
 
-- [ ] `dial` / `listen`  
-- [ ] Integration example (netcat-style)  
+- [x] `dial` / `listen` — `TailscaleKitBackend.swift:125,139`; `MeshNode.listen` refuses reserved port 9417, matching desktop **[pkg]**
+- [ ] Integration example (netcat-style) — no such example ships in this repository
 
 ### Phase 2 — Interop verification with Rust/TS
 
 (Wire contracts already implemented in Phase 1 — see §8.5.)
 
-- [ ] Validate fail-closed Swift WhoIs on real devices; audit desktop's missing-WhoIs fail-open compatibility case  
-- [ ] Manual or CI interop matrix: Node-client → iOS-server and iOS-client → Node-server; JSON + bytes; attribution; app mismatch; stale peer ref  
-- [ ] Fix gaps in peer query parity  
+- [x] Validate fail-closed Swift WhoIs on real devices — exercised by the signed-device interop run; `confirmIdentity(of:)` provides an authenticated, generation-checked handshake without application traffic, added because lazy sessions mean peer listing alone may not expose a durable device ID **[dev]**. *The audit of desktop's missing-WhoIs fail-open compatibility case remains open.*
+- [x] Manual or CI interop matrix: Node-client → iOS-server and iOS-client → Node-server; JSON + bytes; attribution; stale peer ref — signed iPhone joined the same `ghosttea-terminal` mesh as the desktop, completed the handshake, attached read-write, and exchanged traffic observed at both ends. An automated probe recorded `GHOSTTEA_SHARED_INTEROP_PASS handoff=a,b,a resize=… snapshot=1 selectionBytes=6 reconnect=1` and `GHOSTTEA_SHARED_RESTART_PASS peerGeneration=stable-1 hostInstance=changed stalePeer=not-stale staleSession=rejected` **[dev]**. *App-mismatch rejection is covered by unit tests but not yet by a device run.*
+- [x] Fix gaps in peer query parity — desktop-parity peer query resolution **[pkg]**
+
+The device runs above also found two defects that only physical hardware
+surfaced, which is the argument for keeping this gate: a cross-runtime codec
+mismatch (Swift emitted `requestID`/`sessionID`/`viewID`; Rust serde requires
+`requestId`/`sessionId`/`viewId`), and the pinned libtailscale `EBADF` listener
+defect that `apple/patches/libtailscale-remote-address-fd.patch` now corrects.
+Neither was reachable from loopback tests.
 
 ### Phase 3 — Expand surface (separate RFCs may split these)
 
@@ -826,10 +851,33 @@ confirms or delivers application traffic.
 ### Phase 4 — Hardening
 
 - [ ] Binary size budget, dead-code stripping, dSYM/symbol policy  
-- [ ] Privacy nutrition labels guidance  
-- [ ] Background execution, reconnection, and battery-budget hardening  
+- [ ] Privacy nutrition labels guidance — the reviewed `TailscaleKit-PrivacyInfo.xcprivacy` ships stamped into both framework slices, but no guidance document exists  
+- [ ] Background execution, reconnection, and battery-budget hardening — background/foreground reconnect is observed **[dev]**, but no battery budget is defined, and note the hard constraint that a background `URLSession` cannot use embedded Tailscale (`TailscaleKitBackend.swift:202`)  
 - [ ] Fuzz envelope decoder  
-- [ ] Public changelog + versioning aligned with truffle releases  
+- [x] Public changelog + versioning aligned with truffle releases — the Swift package publishes from the repository root as identity `truffle`, sharing one version with every other artifact; each release is tagged `vX.Y.Z` alongside `truffle-vX.Y.Z` so SwiftPM can resolve it. Verified from 0.7.8: `.package(url:, from: "0.7.7")` resolves and builds **[pkg]**
+
+---
+
+### Remaining device gates
+
+Everything below needs physical hardware and is not satisfied by any recorded
+run. This is the honest residue of §12:
+
+- **Long-idle accept.** Phase 0's exit requires accepting a connection after
+  **more than 60 seconds idle**. No recorded run covers it, and it is the single
+  most likely place for a latent listener or NAT-timeout defect to hide.
+- **Cancellation probes.** Dial/accept cancellation without leaked tasks, on
+  device rather than over loopback.
+- **App-mismatch on device.** Unit-tested (`appIdMismatchNeverConfirms`,
+  `appMismatchCloses4001AndNeverSendsServerHello`) but never exercised against a
+  real tailnet.
+- **Desktop missing-WhoIs fail-open audit.** Swift fails closed; desktop ships
+  a fail-open compatibility case. The interaction has not been audited.
+- **Re-validation at the current revision.** The **[dev]** evidence was recorded
+  at `071264b0`. The Swift sources are unchanged since — 0.7.7 and 0.7.8 altered
+  packaging and release automation only — but no run has been recorded against
+  the currently published package, and a qualification claim pinned to a
+  superseded revision is weak evidence even when it is true.
 
 ---
 
