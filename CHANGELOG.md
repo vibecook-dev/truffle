@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.8](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.7...truffle-v0.7.8) (2026-07-26)
+
+
+### Bug Fixes
+
+* **release:** branch on exit status when checking for the SemVer tag ([#172](https://github.com/vibecook-dev/truffle/issues/172)) ([8b20c42](https://github.com/vibecook-dev/truffle/commit/8b20c42c8ea322402718aff540032b21a61dbfd4))
+
 ## [0.7.7](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.6...truffle-v0.7.7) (2026-07-26)
 
 
