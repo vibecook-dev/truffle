@@ -59,9 +59,6 @@ curl -fsSL https://vibecook-dev.github.io/truffle/install.sh | sh
 
 # Windows (PowerShell)
 iwr -useb https://vibecook-dev.github.io/truffle/install.ps1 | iex
-
-# Homebrew
-brew install jamesyong-42/tap/truffle
 ```
 
 Supports macOS (arm64/x64), Linux (x64/arm64), and Windows (x64).
