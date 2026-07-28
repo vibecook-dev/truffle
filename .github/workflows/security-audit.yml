@@ -19,7 +19,7 @@ permissions:
 jobs:
   cargo-deny:
     name: cargo-deny (licenses, advisories, bans, sources)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v5
 
@@ -27,7 +27,7 @@ jobs:
 
   cargo-audit:
     name: cargo-audit (vulnerability DB)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v5
 

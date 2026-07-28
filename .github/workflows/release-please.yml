@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   release-please:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 120
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}

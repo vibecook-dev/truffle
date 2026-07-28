@@ -38,7 +38,7 @@ concurrency:
 jobs:
   macro:
     name: Macro benchmark suite
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     env:
       TRUFFLE_TEST_AUTHKEY: ${{ secrets.TRUFFLE_TEST_AUTHKEY }}
