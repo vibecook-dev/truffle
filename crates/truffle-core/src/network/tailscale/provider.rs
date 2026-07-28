@@ -12,11 +12,12 @@ use std::time::Duration;
 
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
-use tokio::task::JoinHandle;
 
 use super::bridge::{Bridge, DIAL_TIMEOUT};
-use super::protocol::ProxyAddCommandData;
-use super::sidecar::{GoSidecar, SidecarConfig, SidecarInternalEvent};
+use super::protocol::{
+    PingResultEventData, ProxyAddCommandData, ProxyInfoEventData, WhoisResultEventData,
+};
+use super::sidecar::{GoSidecar, ReplyGuard, SidecarConfig, SidecarInternalEvent};
 use crate::network::{
     DialOpts, HealthInfo, IncomingConnection, ListenOpts, NetworkError, NetworkPeer,
     NetworkPeerEvent, NetworkTcpListener, NodeIdentity, PeerAddr, PingResult, ProxyAddParams,
@@ -668,25 +669,25 @@ impl super::super::NetworkProvider for TailscaleProvider {
         // Register the pending dial before sending the command
         let dial_rx = bridge.register_dial(request_id.clone()).await;
 
-        // Scope the sidecar lock: subscribe + send, then release
-        let event_rx = {
+        // Scope the sidecar lock: register the reply slot + send, then release
+        let reply = {
             let sidecar_guard = self.sidecar.lock().await;
             let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
 
-            let event_rx = sidecar.subscribe();
+            let reply = sidecar.register_reply(&request_id);
 
             sidecar
                 .send_dial(request_id.clone(), addr.to_string(), port, opts.tls)
                 .await?;
 
-            event_rx
+            reply
         };
 
         // Wait for either:
         // 1. Bridge delivers the TcpStream (success path)
-        // 2. Sidecar reports dial failure via event (error path)
+        // 2. Sidecar reports the dial result via the broker (error path)
         // 3. Timeout
-        Self::await_dial_result(&bridge, &request_id, dial_rx, event_rx, DIAL_TIMEOUT).await
+        Self::await_dial_result(&bridge, &request_id, dial_rx, reply, DIAL_TIMEOUT).await
     }
 
     async fn listen_tcp(&self, port: u16) -> Result<NetworkTcpListener, NetworkError> {
@@ -712,42 +713,78 @@ impl super::super::NetworkProvider for TailscaleProvider {
         // Create channel for incoming connections
         let (tx, rx) = mpsc::channel::<IncomingConnection>(64);
 
-        // Scope the sidecar lock: subscribe + send listen, then release
-        let mut event_rx = {
-            let sidecar_guard = self.sidecar.lock().await;
-            let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
+        // `Some(true)` → tsnet ListenTLS with MagicDNS certs (RFC 023
+        // §7.1). Plain listeners send None so the field is omitted on
+        // the wire — sidecars predating the flag parse the command
+        // unchanged.
+        let tls = if opts.tls { Some(true) } else { None };
 
-            let event_rx = sidecar.subscribe();
-            // `Some(true)` → tsnet ListenTLS with MagicDNS certs (RFC 023
-            // §7.1). Plain listeners send None so the field is omitted on
-            // the wire — sidecars predating the flag parse the command
-            // unchanged.
-            let tls = if opts.tls { Some(true) } else { None };
-            sidecar.send_listen(port, tls).await?;
-            event_rx
-        };
-
-        // Wait for confirmation or error.
-        // When port is 0, the sidecar assigns an ephemeral port and reports
-        // the actual port in the Listening event.
-        let actual_port = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                match event_rx.recv().await {
-                    Ok(SidecarInternalEvent::Listening { port: p }) if port == 0 || p == port => {
-                        return Ok(p);
-                    }
-                    Ok(SidecarInternalEvent::Error { code, message }) => {
-                        return Err(NetworkError::ListenFailed(format!("[{code}] {message}")));
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        return Err(NetworkError::SidecarError("event channel closed".into()));
-                    }
-                    _ => continue,
+        // v4 sidecars echo a correlation id on the Listening event, so the
+        // reply routes through the broker: immune to broadcast lag, and to
+        // the port-0 ambiguity where two concurrent ephemeral listens could
+        // steal each other's confirmations. Older sidecars fall back to
+        // port-matched value correlation.
+        let actual_port = if self.sidecar_version() >= Self::SIDECAR_V4_REPLY_ROUTING {
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let mut reply = {
+                let sidecar_guard = self.sidecar.lock().await;
+                let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
+                let reply = sidecar.register_reply(&request_id);
+                sidecar
+                    .send_listen(port, tls, Some(request_id.clone()))
+                    .await?;
+                reply
+            };
+            match tokio::time::timeout(Duration::from_secs(10), reply.recv())
+                .await
+                .map_err(|_| NetworkError::ListenFailed("listen confirmation timed out".into()))??
+            {
+                // When port is 0, the sidecar assigns an ephemeral port and
+                // reports the actual port here.
+                SidecarInternalEvent::Listening { port: p } => p,
+                SidecarInternalEvent::Error { code, message } => {
+                    return Err(NetworkError::ListenFailed(format!("[{code}] {message}")));
                 }
+                other => return Err(Self::unexpected_reply("listen", other)),
             }
-        })
-        .await
-        .map_err(|_| NetworkError::ListenFailed("listen confirmation timed out".into()))??;
+        } else {
+            // Legacy pre-v4 path: value correlation over broadcast.
+            let mut event_rx = {
+                let sidecar_guard = self.sidecar.lock().await;
+                let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
+
+                let event_rx = sidecar.subscribe();
+                sidecar.send_listen(port, tls, None).await?;
+                event_rx
+            };
+
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    match event_rx.recv().await {
+                        Ok(SidecarInternalEvent::Listening { port: p })
+                            if port == 0 || p == port =>
+                        {
+                            return Ok(p);
+                        }
+                        Ok(SidecarInternalEvent::Error { code, message }) => {
+                            return Err(NetworkError::ListenFailed(format!("[{code}] {message}")));
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            return Err(NetworkError::SidecarError("event channel closed".into()));
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            return Err(NetworkError::SidecarError(
+                                "event channel lagged: listen confirmation may have been lost"
+                                    .into(),
+                            ));
+                        }
+                        _ => continue,
+                    }
+                }
+            })
+            .await
+            .map_err(|_| NetworkError::ListenFailed("listen confirmation timed out".into()))??
+        };
 
         // Register the channel with the bridge using the actual port
         bridge.register_listener(actual_port, tx).await;
@@ -790,52 +827,62 @@ impl super::super::NetworkProvider for TailscaleProvider {
 
         let target = addr.to_string();
 
-        // Scope the sidecar lock: subscribe + send ping, then release
+        // v2+ sidecars echo a correlation id on the ping result (P12), so
+        // the reply routes through the broker — immune to broadcast lag.
+        // Older sidecars fall back to target-matched value correlation.
+        if self.sidecar_version() >= Self::SIDECAR_V2_PING_ECHO {
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let mut reply = {
+                let sidecar_guard = self.sidecar.lock().await;
+                let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
+                let reply = sidecar.register_reply(&request_id);
+                sidecar
+                    .send_ping(target, None, Some(request_id.clone()))
+                    .await?;
+                reply
+            };
+            return match tokio::time::timeout(Duration::from_secs(15), reply.recv())
+                .await
+                .map_err(|_| NetworkError::PingFailed("ping timed out".into()))??
+            {
+                SidecarInternalEvent::PingResult(data) => Self::map_ping_result(data),
+                SidecarInternalEvent::Error { code, message } => {
+                    Err(NetworkError::PingFailed(format!("[{code}] {message}")))
+                }
+                other => Err(Self::unexpected_reply("ping", other)),
+            };
+        }
+
+        // Legacy pre-v2 path: value correlation over broadcast.
         let mut event_rx = {
             let sidecar_guard = self.sidecar.lock().await;
             let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
 
             let event_rx = sidecar.subscribe();
-            sidecar.send_ping(target.clone(), None).await?;
+            sidecar.send_ping(target.clone(), None, None).await?;
             event_rx
         };
 
-        // Wait for result
-        let result = tokio::time::timeout(Duration::from_secs(15), async {
+        tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 match event_rx.recv().await {
                     Ok(SidecarInternalEvent::PingResult(data)) if data.target == target => {
-                        if !data.error.is_empty() {
-                            return Err(NetworkError::PingFailed(data.error));
-                        }
-                        let connection = if data.direct {
-                            "direct".to_string()
-                        } else if !data.relay.is_empty() {
-                            format!("relay:{}", data.relay)
-                        } else {
-                            "unknown".to_string()
-                        };
-                        return Ok(PingResult {
-                            latency: Duration::from_secs_f64(data.latency_ms / 1000.0),
-                            connection,
-                            peer_addr: if data.peer_addr.is_empty() {
-                                None
-                            } else {
-                                Some(data.peer_addr)
-                            },
-                        });
+                        return Self::map_ping_result(data);
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         return Err(NetworkError::SidecarError("event channel closed".into()));
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        return Err(NetworkError::SidecarError(
+                            "event channel lagged: ping result may have been lost".into(),
+                        ));
                     }
                     _ => continue,
                 }
             }
         })
         .await
-        .map_err(|_| NetworkError::PingFailed("ping timed out".into()))?;
-
-        result
+        .map_err(|_| NetworkError::PingFailed("ping timed out".into()))?
     }
 
     async fn whois(
@@ -860,46 +907,30 @@ impl super::super::NetworkProvider for TailscaleProvider {
         }
 
         let target = addr.to_string();
+        let request_id = uuid::Uuid::new_v4().to_string();
 
-        // Scope the sidecar lock: subscribe + send whois, then release
-        let mut event_rx = {
+        // Broker-routed reply: every whois-capable sidecar echoes the id,
+        // so this path needs no gate beyond the v3 check above. Register
+        // BEFORE sending, under the same lock scope, so the answer can
+        // never race the registration.
+        let mut reply = {
             let sidecar_guard = self.sidecar.lock().await;
             let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
-
-            let event_rx = sidecar.subscribe();
-            sidecar.send_whois(target.clone()).await?;
-            event_rx
+            let reply = sidecar.register_reply(&request_id);
+            sidecar.send_whois(target, Some(request_id.clone())).await?;
+            reply
         };
 
-        // Wait for the result, correlated by address (as ping does by
-        // target). Safe as string equality: the sidecar echoes the sent
-        // addr verbatim, never a re-canonicalized form.
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                match event_rx.recv().await {
-                    Ok(SidecarInternalEvent::WhoisResult(data)) if data.addr == target => {
-                        if !data.error.is_empty() {
-                            return Err(NetworkError::SidecarError(data.error));
-                        }
-                        // Belt-and-braces for the "absent, not fabricated"
-                        // contract: the wire omits empty fields, but don't
-                        // let that depend on the serializer — drop
-                        // present-but-empty fields, and fold an identity
-                        // with no information at all into None.
-                        return Ok(data
-                            .identity
-                            .map(super::super::TailscalePeerIdentity::normalized)
-                            .filter(|identity| !identity.is_empty()));
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        return Err(NetworkError::SidecarError("event channel closed".into()));
-                    }
-                    _ => continue,
-                }
+        match tokio::time::timeout(Duration::from_secs(10), reply.recv())
+            .await
+            .map_err(|_| NetworkError::SidecarError("whois timed out".into()))??
+        {
+            SidecarInternalEvent::WhoisResult(data) => Self::map_whois_result(data),
+            SidecarInternalEvent::Error { code, message } => {
+                Err(NetworkError::SidecarError(format!("[{code}] {message}")))
             }
-        })
-        .await
-        .map_err(|_| NetworkError::SidecarError("whois timed out".into()))?
+            other => Err(Self::unexpected_reply("whois", other)),
+        }
     }
 
     async fn bind_udp(&self, port: u16) -> Result<super::super::NetworkUdpSocket, NetworkError> {
@@ -907,42 +938,76 @@ impl super::super::NetworkProvider for TailscaleProvider {
             return Err(NetworkError::NotRunning);
         }
 
-        // Scope the sidecar lock: subscribe + send listenPacket, then release
-        let mut event_rx = {
-            let sidecar_guard = self.sidecar.lock().await;
-            let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
-
-            let event_rx = sidecar.subscribe();
-            sidecar.send_listen_packet(port).await?;
-            event_rx
-        };
-
-        // Wait for the sidecar to report the local relay port
-        let local_port = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                match event_rx.recv().await {
-                    Ok(SidecarInternalEvent::ListeningPacket {
-                        port: p,
-                        local_port,
-                    }) if p == port => {
-                        return Ok(local_port);
-                    }
-                    Ok(SidecarInternalEvent::Error { code, message }) => {
-                        return Err(NetworkError::ListenFailed(format!(
-                            "UDP bind failed [{code}] {message}"
-                        )));
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        return Err(NetworkError::SidecarError("event channel closed".into()));
-                    }
-                    _ => continue,
+        // Wait for the sidecar to report the local relay port. v4 sidecars
+        // echo a correlation id, routing the reply through the broker;
+        // older ones fall back to port-matched value correlation.
+        let local_port = if self.sidecar_version() >= Self::SIDECAR_V4_REPLY_ROUTING {
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let mut reply = {
+                let sidecar_guard = self.sidecar.lock().await;
+                let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
+                let reply = sidecar.register_reply(&request_id);
+                sidecar
+                    .send_listen_packet(port, Some(request_id.clone()))
+                    .await?;
+                reply
+            };
+            match tokio::time::timeout(Duration::from_secs(10), reply.recv())
+                .await
+                .map_err(|_| {
+                    NetworkError::ListenFailed("UDP listenPacket confirmation timed out".into())
+                })?? {
+                SidecarInternalEvent::ListeningPacket { local_port, .. } => local_port,
+                SidecarInternalEvent::Error { code, message } => {
+                    return Err(NetworkError::ListenFailed(format!(
+                        "UDP bind failed [{code}] {message}"
+                    )));
                 }
+                other => return Err(Self::unexpected_reply("listenPacket", other)),
             }
-        })
-        .await
-        .map_err(|_| {
-            NetworkError::ListenFailed("UDP listenPacket confirmation timed out".into())
-        })??;
+        } else {
+            // Legacy pre-v4 path: value correlation over broadcast.
+            let mut event_rx = {
+                let sidecar_guard = self.sidecar.lock().await;
+                let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
+
+                let event_rx = sidecar.subscribe();
+                sidecar.send_listen_packet(port, None).await?;
+                event_rx
+            };
+
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    match event_rx.recv().await {
+                        Ok(SidecarInternalEvent::ListeningPacket {
+                            port: p,
+                            local_port,
+                        }) if p == port => {
+                            return Ok(local_port);
+                        }
+                        Ok(SidecarInternalEvent::Error { code, message }) => {
+                            return Err(NetworkError::ListenFailed(format!(
+                                "UDP bind failed [{code}] {message}"
+                            )));
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            return Err(NetworkError::SidecarError("event channel closed".into()));
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            return Err(NetworkError::SidecarError(
+                                "event channel lagged: UDP bind confirmation may have been lost"
+                                    .into(),
+                            ));
+                        }
+                        _ => continue,
+                    }
+                }
+            })
+            .await
+            .map_err(|_| {
+                NetworkError::ListenFailed("UDP listenPacket confirmation timed out".into())
+            })??
+        };
 
         // Bind a local UDP socket and connect it to the relay
         let local_socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
@@ -1012,25 +1077,64 @@ impl super::super::NetworkProvider for TailscaleProvider {
             )));
         }
 
-        // Scope the sidecar lock: subscribe + send command, then release
+        let command = ProxyAddCommandData {
+            id: config.id.clone(),
+            name: config.name.clone(),
+            listen_port: config.listen_port,
+            target_host: config.target_host.clone(),
+            target_port: config.target_port,
+            target_scheme: config.target_scheme.clone(),
+            tls: config.tls,
+            allow_non_loopback: config.allow_non_loopback,
+            allow: config.allow.clone(),
+            routes: config.routes.clone(),
+            request_id: None,
+        };
+
+        // v4 sidecars echo a correlation id on proxy:added / proxy:error,
+        // routing the reply through the broker; older ones fall back to
+        // id-matched value correlation.
+        if self.sidecar_version() >= Self::SIDECAR_V4_REPLY_ROUTING {
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let mut reply = {
+                let sidecar_guard = self.sidecar.lock().await;
+                let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
+                let reply = sidecar.register_reply(&request_id);
+                sidecar
+                    .send_proxy_add(ProxyAddCommandData {
+                        request_id: Some(request_id.clone()),
+                        ..command
+                    })
+                    .await?;
+                reply
+            };
+            return match tokio::time::timeout(Duration::from_secs(10), reply.recv())
+                .await
+                .map_err(|_| NetworkError::ProxyError("proxy add timed out".into()))??
+            {
+                SidecarInternalEvent::ProxyAdded {
+                    id,
+                    listen_port,
+                    url,
+                } => Ok(ProxyAddResult {
+                    id,
+                    listen_port,
+                    url,
+                }),
+                SidecarInternalEvent::ProxyError { code, message, .. }
+                | SidecarInternalEvent::Error { code, message } => {
+                    Err(NetworkError::ProxyError(format!("[{code}] {message}")))
+                }
+                other => Err(Self::unexpected_reply("proxy add", other)),
+            };
+        }
+
+        // Legacy pre-v4 path: value correlation over broadcast.
         let mut event_rx = {
             let sidecar_guard = self.sidecar.lock().await;
             let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
             let event_rx = sidecar.subscribe();
-            sidecar
-                .send_proxy_add(ProxyAddCommandData {
-                    id: config.id.clone(),
-                    name: config.name.clone(),
-                    listen_port: config.listen_port,
-                    target_host: config.target_host.clone(),
-                    target_port: config.target_port,
-                    target_scheme: config.target_scheme.clone(),
-                    tls: config.tls,
-                    allow_non_loopback: config.allow_non_loopback,
-                    allow: config.allow.clone(),
-                    routes: config.routes.clone(),
-                })
-                .await?;
+            sidecar.send_proxy_add(command).await?;
             event_rx
         };
 
@@ -1080,12 +1184,38 @@ impl super::super::NetworkProvider for TailscaleProvider {
 
         let target_id = id.to_string();
 
-        // Scope the sidecar lock: subscribe + send command, then release
+        // v4 sidecars echo a correlation id, routing the reply through the
+        // broker; older ones fall back to id-matched value correlation.
+        if self.sidecar_version() >= Self::SIDECAR_V4_REPLY_ROUTING {
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let mut reply = {
+                let sidecar_guard = self.sidecar.lock().await;
+                let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
+                let reply = sidecar.register_reply(&request_id);
+                sidecar
+                    .send_proxy_remove(id, Some(request_id.clone()))
+                    .await?;
+                reply
+            };
+            return match tokio::time::timeout(Duration::from_secs(10), reply.recv())
+                .await
+                .map_err(|_| NetworkError::ProxyError("proxy remove timed out".into()))??
+            {
+                SidecarInternalEvent::ProxyRemoved { .. } => Ok(()),
+                SidecarInternalEvent::ProxyError { code, message, .. }
+                | SidecarInternalEvent::Error { code, message } => {
+                    Err(NetworkError::ProxyError(format!("[{code}] {message}")))
+                }
+                other => Err(Self::unexpected_reply("proxy remove", other)),
+            };
+        }
+
+        // Legacy pre-v4 path: value correlation over broadcast.
         let mut event_rx = {
             let sidecar_guard = self.sidecar.lock().await;
             let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
             let event_rx = sidecar.subscribe();
-            sidecar.send_proxy_remove(id).await?;
+            sidecar.send_proxy_remove(id, None).await?;
             event_rx
         };
 
@@ -1125,12 +1255,37 @@ impl super::super::NetworkProvider for TailscaleProvider {
             return Err(NetworkError::NotRunning);
         }
 
-        // Scope the sidecar lock: subscribe + send command, then release
+        // v4 sidecars echo a correlation id on the list result, routing the
+        // reply through the broker; older ones fall back to the historical
+        // assumption that one list call is in flight at a time.
+        if self.sidecar_version() >= Self::SIDECAR_V4_REPLY_ROUTING {
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let mut reply = {
+                let sidecar_guard = self.sidecar.lock().await;
+                let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
+                let reply = sidecar.register_reply(&request_id);
+                sidecar.send_proxy_list(Some(request_id.clone())).await?;
+                reply
+            };
+            return match tokio::time::timeout(Duration::from_secs(10), reply.recv())
+                .await
+                .map_err(|_| NetworkError::ProxyError("proxy list timed out".into()))??
+            {
+                SidecarInternalEvent::ProxyList { proxies } => Ok(Self::proxy_entries(proxies)),
+                SidecarInternalEvent::ProxyError { code, message, .. }
+                | SidecarInternalEvent::Error { code, message } => {
+                    Err(NetworkError::ProxyError(format!("[{code}] {message}")))
+                }
+                other => Err(Self::unexpected_reply("proxy list", other)),
+            };
+        }
+
+        // Legacy pre-v4 path: value correlation over broadcast.
         let mut event_rx = {
             let sidecar_guard = self.sidecar.lock().await;
             let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
             let event_rx = sidecar.subscribe();
-            sidecar.send_proxy_list().await?;
+            sidecar.send_proxy_list(None).await?;
             event_rx
         };
 
@@ -1139,18 +1294,7 @@ impl super::super::NetworkProvider for TailscaleProvider {
             loop {
                 match event_rx.recv().await {
                     Ok(SidecarInternalEvent::ProxyList { proxies }) => {
-                        return Ok(proxies
-                            .into_iter()
-                            .map(|p| ProxyListEntry {
-                                id: p.id,
-                                name: p.name,
-                                listen_port: p.listen_port,
-                                target_host: p.target_host,
-                                target_port: p.target_port,
-                                target_scheme: p.target_scheme,
-                                url: p.url,
-                            })
-                            .collect());
+                        return Ok(Self::proxy_entries(proxies));
                     }
                     Ok(SidecarInternalEvent::Error { code, message }) => {
                         return Err(NetworkError::ProxyError(format!("[{code}] {message}")));
@@ -1198,57 +1342,127 @@ impl TailscaleProvider {
     /// task (which would otherwise hold a broadcast receiver forever).
     ///
     /// `pub(super)` so the module tests can exercise the timeout path.
+    /// Earliest sidecar protocol that echoes `requestId` on
+    /// `tsnet:pingResult` (P12, shipped before v2 was minted — v2 is the
+    /// earliest version we can address).
+    const SIDECAR_V2_PING_ECHO: u32 = 2;
+
+    /// Earliest sidecar protocol that echoes `requestId` on every RPC
+    /// event: listening, listeningPacket, proxy:added/removed/list,
+    /// proxy:error, and correlated tsnet:error.
+    const SIDECAR_V4_REPLY_ROUTING: u32 = 4;
+
+    fn sidecar_version(&self) -> u32 {
+        self.sidecar_protocol_version
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Broker replies are typed by the sidecar, not by us — a reply of an
+    /// unexpected variant is a protocol bug worth naming, not a hang.
+    fn unexpected_reply(what: &str, event: SidecarInternalEvent) -> NetworkError {
+        NetworkError::SidecarError(format!("unexpected {what} reply: {event:?}"))
+    }
+
+    /// Map a `tsnet:pingResult` payload to the public result. Shared by the
+    /// broker path and the pre-v2 legacy wait loop.
+    fn map_ping_result(data: PingResultEventData) -> Result<PingResult, NetworkError> {
+        if !data.error.is_empty() {
+            return Err(NetworkError::PingFailed(data.error));
+        }
+        let connection = if data.direct {
+            "direct".to_string()
+        } else if !data.relay.is_empty() {
+            format!("relay:{}", data.relay)
+        } else {
+            "unknown".to_string()
+        };
+        Ok(PingResult {
+            latency: Duration::from_secs_f64(data.latency_ms / 1000.0),
+            connection,
+            peer_addr: if data.peer_addr.is_empty() {
+                None
+            } else {
+                Some(data.peer_addr)
+            },
+        })
+    }
+
+    /// Map a `tsnet:whoisResult` payload to the public identity.
+    ///
+    /// Belt-and-braces for the "absent, not fabricated" contract: the wire
+    /// omits empty fields, but don't let that depend on the serializer —
+    /// drop present-but-empty fields, and fold an identity with no
+    /// information at all into `None`.
+    fn map_whois_result(
+        data: WhoisResultEventData,
+    ) -> Result<Option<super::super::TailscalePeerIdentity>, NetworkError> {
+        if !data.error.is_empty() {
+            return Err(NetworkError::SidecarError(data.error));
+        }
+        Ok(data
+            .identity
+            .map(super::super::TailscalePeerIdentity::normalized)
+            .filter(|identity| !identity.is_empty()))
+    }
+
+    /// Map `proxy:list` payload entries to the public list entries.
+    fn proxy_entries(proxies: Vec<ProxyInfoEventData>) -> Vec<ProxyListEntry> {
+        proxies
+            .into_iter()
+            .map(|p| ProxyListEntry {
+                id: p.id,
+                name: p.name,
+                listen_port: p.listen_port,
+                target_host: p.target_host,
+                target_port: p.target_port,
+                target_scheme: p.target_scheme,
+                url: p.url,
+            })
+            .collect()
+    }
+
+    /// Wait for a dial to complete: the bridge delivers the `TcpStream` on
+    /// success, while the broker-routed `bridge:dialResult` reply reports
+    /// failures (`dialResult` has carried the request id since the bridge
+    /// protocol's first version, so this path needs no version gate). A
+    /// success reply only confirms the socket is coming — keep waiting for
+    /// the bridge to deliver it.
     pub(super) async fn await_dial_result(
         bridge: &Bridge,
         request_id: &str,
-        dial_rx: oneshot::Receiver<TcpStream>,
-        mut event_rx: broadcast::Receiver<SidecarInternalEvent>,
+        mut dial_rx: oneshot::Receiver<TcpStream>,
+        mut reply: ReplyGuard,
         timeout: Duration,
     ) -> Result<TcpStream, NetworkError> {
-        // Spawn a task to watch for dial failure events. It lives OUTSIDE
-        // the timeout future so its JoinHandle survives a timeout and we can
-        // always abort it — a dropped handle would detach the task, leaking
-        // a broadcast receiver that loops forever.
-        let fail_request_id = request_id.to_string();
-        let (fail_tx, fail_rx) = oneshot::channel::<String>();
-        let fail_watcher: JoinHandle<()> = tokio::spawn(async move {
+        let result = tokio::time::timeout(timeout, async {
+            let mut reply_pending = true;
             loop {
-                match event_rx.recv().await {
-                    Ok(SidecarInternalEvent::DialFailed {
-                        request_id: rid,
-                        error,
-                    }) if rid == fail_request_id => {
-                        let _ = fail_tx.send(error);
-                        return;
+                tokio::select! {
+                    stream_result = &mut dial_rx => {
+                        return stream_result
+                            .map_err(|_| NetworkError::DialFailed("dial cancelled".into()));
                     }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        let _ = fail_tx.send("event channel closed".to_string());
-                        return;
+                    reply_result = reply.recv(), if reply_pending => {
+                        match reply_result {
+                            Ok(SidecarInternalEvent::DialFailed { error, .. }) => {
+                                return Err(NetworkError::DialFailed(error));
+                            }
+                            Ok(SidecarInternalEvent::Error { code, message }) => {
+                                return Err(NetworkError::DialFailed(format!(
+                                    "[{code}] {message}"
+                                )));
+                            }
+                            // DialSucceeded — or a dropped slot during
+                            // shutdown: no failure to report; the socket,
+                            // or the timeout, decides from here.
+                            _ => reply_pending = false,
+                        }
                     }
-                    _ => continue,
-                }
-            }
-        });
-
-        let result = match tokio::time::timeout(timeout, async {
-            tokio::select! {
-                stream_result = dial_rx => {
-                    stream_result.map_err(|_| NetworkError::DialFailed("dial cancelled".into()))
-                }
-                fail_result = fail_rx => {
-                    let error = fail_result.unwrap_or_else(|_| "dial watcher dropped".to_string());
-                    Err(NetworkError::DialFailed(error))
                 }
             }
         })
         .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(NetworkError::DialTimeout(timeout)),
-        };
-
-        // Cancel the fail-watcher task so it doesn't leak — including on timeout.
-        fail_watcher.abort();
+        .unwrap_or(Err(NetworkError::DialTimeout(timeout)));
 
         // Clean up the pending dial on any error — including timeout.
         if result.is_err() {

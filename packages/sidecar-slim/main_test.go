@@ -356,11 +356,12 @@ func TestShouldWrapTLS(t *testing.T) {
 // protocolVersion so the core gates capabilities by sidecar version instead of
 // treating this sidecar as v1. The core reads it off the "running" status/started
 // event (protocol.rs StatusEventData.protocol_version, camelCase, integer).
-// The pin is deliberate: v3 = tsnet:whois + node identity headers; bumping the
-// constant means updating this test AND the version gates in provider.rs.
+// The pin is deliberate: v4 = requestId echoed on every RPC-style terminal
+// event; bumping the constant means updating this test AND the version gates
+// in provider.rs.
 func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
-	if sidecarProtocolVersion != 3 {
-		t.Fatalf("sidecarProtocolVersion = %d, want 3 (tsnet:whois + node identity headers)", sidecarProtocolVersion)
+	if sidecarProtocolVersion != 4 {
+		t.Fatalf("sidecarProtocolVersion = %d, want 4 (requestId echo on RPC events)", sidecarProtocolVersion)
 	}
 
 	var buf bytes.Buffer
@@ -368,7 +369,7 @@ func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
 	s.sendStatus("running", "host", "host.tail.ts.net", "100.64.0.1", "")
 
 	// The core matches the camelCase key exactly, as a JSON integer.
-	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":3`)) {
+	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":4`)) {
 		t.Errorf("status payload missing protocolVersion on the wire: %s", strings.TrimSpace(buf.String()))
 	}
 
@@ -420,6 +421,112 @@ func TestWhoisResultWireShape(t *testing.T) {
 	}
 	if bytes.Contains(anon, []byte(`"error"`)) {
 		t.Errorf("anonymous whoisResult must omit error: %s", anon)
+	}
+}
+
+// TestRPCEventsEchoRequestID pins the v4 correlation contract on every RPC-style
+// terminal event: a set id marshals as the camelCase "requestId" key the core's
+// reply broker routes on, and an unset one drops the key entirely so a pre-v4
+// core sees the exact bytes it saw before.
+func TestRPCEventsEchoRequestID(t *testing.T) {
+	cases := []struct {
+		name   string
+		withID any
+		noID   any
+	}{
+		{"listening", listeningData{Port: 8080, RequestID: "r1"}, listeningData{Port: 8080}},
+		{"unlistened", unlistenedData{Port: 8080, RequestID: "r1"}, unlistenedData{Port: 8080}},
+		{"listeningPacket", listeningPacketData{Port: 9, LocalPort: 41234, RequestID: "r1"}, listeningPacketData{Port: 9, LocalPort: 41234}},
+		// listenPacketData doubles as the unlistenedPacket event payload.
+		{"unlistenedPacket", listenPacketData{Port: 9, RequestID: "r1"}, listenPacketData{Port: 9}},
+		{"proxyAdded", proxyAddedEventData{ID: "p1", ListenPort: 443, URL: "https://h/", RequestID: "r1"}, proxyAddedEventData{ID: "p1", ListenPort: 443, URL: "https://h/"}},
+		{"proxyRemoved", proxyRemovedEventData{ID: "p1", RequestID: "r1"}, proxyRemovedEventData{ID: "p1"}},
+		{"proxyError", proxyErrorEventData{ID: "p1", Code: "NOT_FOUND", Message: "nope", RequestID: "r1"}, proxyErrorEventData{ID: "p1", Code: "NOT_FOUND", Message: "nope"}},
+		{"proxyList", proxyListEventData{RequestID: "r1"}, proxyListEventData{}},
+		{"error", errorData{Code: "NOT_RUNNING", Message: "node not running", RequestID: "r1"}, errorData{Code: "NOT_RUNNING", Message: "node not running"}},
+	}
+	for _, tc := range cases {
+		b, err := json.Marshal(tc.withID)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", tc.name, err)
+		}
+		if !bytes.Contains(b, []byte(`"requestId":"r1"`)) {
+			t.Errorf("%s: payload missing requestId echo: %s", tc.name, b)
+		}
+
+		bare, err := json.Marshal(tc.noID)
+		if err != nil {
+			t.Fatalf("%s: marshal without id: %v", tc.name, err)
+		}
+		if bytes.Contains(bare, []byte(`"requestId"`)) {
+			t.Errorf("%s: unset requestId must not appear on the wire: %s", tc.name, bare)
+		}
+	}
+}
+
+// TestSendErrorForRoutesTheFailure covers the error path the broker depends on:
+// a failure that knows its command's id rides tsnet:error tagged with it, while
+// sendError (parse failures, unknown commands) stays untagged.
+func TestSendErrorForRoutesTheFailure(t *testing.T) {
+	var buf bytes.Buffer
+	s := &shim{writer: json.NewEncoder(&buf)}
+
+	s.sendErrorFor("NOT_RUNNING", "node not running", "r1")
+	if !bytes.Contains(buf.Bytes(), []byte(`"event":"tsnet:error"`)) {
+		t.Errorf("sendErrorFor must emit tsnet:error: %s", strings.TrimSpace(buf.String()))
+	}
+	if !bytes.Contains(buf.Bytes(), []byte(`"requestId":"r1"`)) {
+		t.Errorf("sendErrorFor must tag the failure with its requestId: %s", strings.TrimSpace(buf.String()))
+	}
+
+	buf.Reset()
+	s.sendError("PARSE_ERROR", "failed to parse command")
+	if bytes.Contains(buf.Bytes(), []byte(`"requestId"`)) {
+		t.Errorf("sendError must stay untagged: %s", strings.TrimSpace(buf.String()))
+	}
+}
+
+// TestRequestIDOfTolerantParse covers the id extraction handleProxyAdd uses
+// before unmarshalling its payload: a malformed or absent payload must yield ""
+// rather than pre-empting the handler's own parse-failure report.
+func TestRequestIDOfTolerantParse(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"id present", `{"id":"p1","requestId":"r1"}`, "r1"},
+		{"id absent", `{"id":"p1"}`, ""},
+		{"empty payload", ``, ""},
+		{"malformed payload", `{"id":`, ""},
+		{"wrong type", `{"requestId":42}`, ""},
+	}
+	for _, tc := range cases {
+		if got := requestIDOf(json.RawMessage(tc.raw)); got != tc.want {
+			t.Errorf("%s: requestIDOf(%q) = %q, want %q", tc.name, tc.raw, got, tc.want)
+		}
+	}
+}
+
+// TestProxyListEchoesOptionalRequestID exercises the one command whose payload
+// is optional: pre-v4 cores send proxy:list with no data at all, and that must
+// still answer with an untagged proxy:list event.
+func TestProxyListEchoesOptionalRequestID(t *testing.T) {
+	var buf bytes.Buffer
+	s := &shim{writer: json.NewEncoder(&buf)}
+
+	s.handleProxyList(nil)
+	if !bytes.Contains(buf.Bytes(), []byte(`"event":"proxy:list"`)) {
+		t.Fatalf("proxy:list without payload must still answer: %s", strings.TrimSpace(buf.String()))
+	}
+	if bytes.Contains(buf.Bytes(), []byte(`"requestId"`)) {
+		t.Errorf("proxy:list without payload must not invent a requestId: %s", strings.TrimSpace(buf.String()))
+	}
+
+	buf.Reset()
+	s.handleProxyList(json.RawMessage(`{"requestId":"r1"}`))
+	if !bytes.Contains(buf.Bytes(), []byte(`"requestId":"r1"`)) {
+		t.Errorf("proxy:list must echo the requestId it was given: %s", strings.TrimSpace(buf.String()))
 	}
 }
 

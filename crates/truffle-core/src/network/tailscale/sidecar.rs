@@ -5,12 +5,13 @@
 //!
 //! All types and functions in this module are private to the `tailscale` module.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{broadcast, mpsc, Mutex, Notify};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex, Notify};
 
 use super::protocol::*;
 use crate::network::NetworkError;
@@ -86,10 +87,12 @@ pub(crate) enum SidecarInternalEvent {
     /// A single peer changed (from WatchIPNBus).
     PeerChanged(PeerChangedEventData),
     /// Dial result (success — the bridge connection will arrive separately).
-    #[allow(dead_code)]
-    DialSucceeded { request_id: String },
+    ///
+    /// No `request_id` field: correlation happens at the JSON level in
+    /// [`GoSidecar::dispatch_event`], before typed parsing.
+    DialSucceeded,
     /// Dial result (failure — no bridge connection coming).
-    DialFailed { request_id: String, error: String },
+    DialFailed { error: String },
     /// Listening on a port succeeded.
     Listening { port: u16 },
     /// Unlistened from a port.
@@ -123,6 +126,70 @@ pub(crate) enum SidecarInternalEvent {
     ProcessExited { exit_code: Option<i32> },
 }
 
+/// Pending request/reply slots, keyed by the wire-level `requestId`.
+///
+/// The stdout reader TEES a matching event into the slot's oneshot and still
+/// broadcasts it unchanged: RPC waiters get lag-proof delivery (a oneshot
+/// cannot be overwritten by an event burst, unlike a slot in the 256-entry
+/// broadcast ring), while broadcast consumers — the provider's event
+/// processor, the proxy runtime-error stream — observe exactly the stream
+/// they always did.
+///
+/// A `std` mutex, deliberately: every critical section is a map op with no
+/// await, and `ReplyGuard::drop` must be able to lock without an executor.
+pub(crate) type PendingReplies =
+    Arc<StdMutex<HashMap<String, oneshot::Sender<SidecarInternalEvent>>>>;
+
+/// Test-only: a registered reply slot backed by its own pending map, so
+/// broker semantics (routing, RAII unregistration) are testable without a
+/// spawned sidecar process.
+#[cfg(test)]
+pub(crate) fn test_reply_slot(request_id: &str) -> (PendingReplies, ReplyGuard) {
+    let pending: PendingReplies = Arc::new(StdMutex::new(HashMap::new()));
+    let (tx, rx) = oneshot::channel();
+    pending
+        .lock()
+        .expect("pending replies lock")
+        .insert(request_id.to_string(), tx);
+    let guard = ReplyGuard {
+        request_id: request_id.to_string(),
+        pending: pending.clone(),
+        rx,
+    };
+    (pending, guard)
+}
+
+/// A registered reply slot for one in-flight command.
+///
+/// Obtain it via [`GoSidecar::register_reply`] BEFORE sending the correlated
+/// command, so the answer can never race the registration. Dropping the
+/// guard (timeout, cancellation) unregisters the slot, so the pending map
+/// cannot accumulate entries for callers that gave up.
+pub(crate) struct ReplyGuard {
+    request_id: String,
+    pending: PendingReplies,
+    rx: oneshot::Receiver<SidecarInternalEvent>,
+}
+
+impl ReplyGuard {
+    /// Await the routed reply. Errors when the slot's sender disappeared
+    /// without a reply — the routed event failed typed parsing, or the
+    /// sidecar is shutting down.
+    pub async fn recv(&mut self) -> Result<SidecarInternalEvent, NetworkError> {
+        (&mut self.rx).await.map_err(|_| {
+            NetworkError::SidecarError("reply channel closed before a result arrived".into())
+        })
+    }
+}
+
+impl Drop for ReplyGuard {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.remove(&self.request_id);
+        }
+    }
+}
+
 /// Manages the Go sidecar child process.
 ///
 /// Handles spawning, command sending via stdin, event reading from stdout,
@@ -132,6 +199,8 @@ pub(crate) struct GoSidecar {
     stdin_tx: mpsc::Sender<String>,
     /// Internal events broadcast from the stdout reader task.
     event_tx: broadcast::Sender<SidecarInternalEvent>,
+    /// Reply slots for in-flight request/response commands.
+    pending_replies: PendingReplies,
     /// Signal to shut down the sidecar.
     shutdown: Arc<Notify>,
     /// Handle to the child process (for kill on drop).
@@ -148,6 +217,7 @@ impl GoSidecar {
         let (event_tx, event_rx) = broadcast::channel(256);
         let (stdin_tx, stdin_rx) = mpsc::channel::<String>(64);
         let shutdown = Arc::new(Notify::new());
+        let pending_replies: PendingReplies = Arc::new(StdMutex::new(HashMap::new()));
 
         // Spawn the child process
         let child = Self::spawn_child(&config)?;
@@ -156,6 +226,7 @@ impl GoSidecar {
         let sidecar = GoSidecar {
             stdin_tx,
             event_tx: event_tx.clone(),
+            pending_replies: pending_replies.clone(),
             shutdown: shutdown.clone(),
             child: child.clone(),
         };
@@ -205,7 +276,7 @@ impl GoSidecar {
             Self::spawn_stdin_writer(stdin, stdin_rx, shutdown.clone());
 
             // Spawn stdout reader task
-            Self::spawn_stdout_reader(stdout, event_tx.clone(), shutdown.clone());
+            Self::spawn_stdout_reader(stdout, event_tx.clone(), pending_replies, shutdown.clone());
         }
 
         // Spawn process watcher task
@@ -266,6 +337,7 @@ impl GoSidecar {
     fn spawn_stdout_reader(
         stdout: tokio::process::ChildStdout,
         event_tx: broadcast::Sender<SidecarInternalEvent>,
+        pending_replies: PendingReplies,
         shutdown: Arc<Notify>,
     ) {
         tokio::spawn(async move {
@@ -286,9 +358,7 @@ impl GoSidecar {
                                 }
                                 match serde_json::from_str::<SidecarEvent>(&line) {
                                     Ok(event) => {
-                                        if let Some(internal) = Self::map_event(event) {
-                                            let _ = event_tx.send(internal);
-                                        }
+                                        Self::dispatch_event(event, &pending_replies, &event_tx);
                                     }
                                     Err(e) => {
                                         tracing::warn!("failed to parse sidecar event: {e}, line: {line}");
@@ -308,6 +378,50 @@ impl GoSidecar {
                 }
             }
         });
+    }
+
+    /// Route one parsed event: TEE it into a registered reply slot when its
+    /// data carries a matching `requestId`, then broadcast it unchanged
+    /// either way. The peek happens at the JSON level so the broker never
+    /// needs per-variant plumbing — any event type the sidecar learns to
+    /// echo an id on is routable for free.
+    pub(crate) fn dispatch_event(
+        event: SidecarEvent,
+        pending_replies: &PendingReplies,
+        event_tx: &broadcast::Sender<SidecarInternalEvent>,
+    ) {
+        let reply_tx = event
+            .data
+            .get("requestId")
+            .and_then(|v| v.as_str())
+            .filter(|id| !id.is_empty())
+            .and_then(|id| match pending_replies.lock() {
+                Ok(mut pending) => pending.remove(id),
+                Err(_) => None,
+            });
+        if let Some(internal) = Self::map_event(event) {
+            if let Some(tx) = reply_tx {
+                let _ = tx.send(internal.clone());
+            }
+            let _ = event_tx.send(internal);
+        }
+        // A routed event that fails typed parsing drops its slot's sender,
+        // so the waiter fails fast on a closed channel instead of timing
+        // out — honest for what is necessarily a codec bug.
+    }
+
+    /// Register a reply slot for `request_id`. Call BEFORE sending the
+    /// correlated command; hold the guard for the wait's whole lifetime.
+    pub(crate) fn register_reply(&self, request_id: &str) -> ReplyGuard {
+        let (tx, rx) = oneshot::channel();
+        if let Ok(mut pending) = self.pending_replies.lock() {
+            pending.insert(request_id.to_string(), tx);
+        }
+        ReplyGuard {
+            request_id: request_id.to_string(),
+            pending: self.pending_replies.clone(),
+            rx,
+        }
     }
 
     fn spawn_process_watcher(
@@ -409,14 +523,9 @@ impl GoSidecar {
                 .ok()
                 .map(|d| {
                     if d.success {
-                        SidecarInternalEvent::DialSucceeded {
-                            request_id: d.request_id,
-                        }
+                        SidecarInternalEvent::DialSucceeded
                     } else {
-                        SidecarInternalEvent::DialFailed {
-                            request_id: d.request_id,
-                            error: d.error,
-                        }
+                        SidecarInternalEvent::DialFailed { error: d.error }
                     }
                 }),
             event_type::LISTENING => serde_json::from_value::<ListeningEventData>(event.data)
@@ -547,8 +656,17 @@ impl GoSidecar {
     }
 
     /// Send the tsnet:listen command.
-    pub async fn send_listen(&self, port: u16, tls: Option<bool>) -> Result<(), NetworkError> {
-        let data = ListenCommandData { port, tls };
+    pub async fn send_listen(
+        &self,
+        port: u16,
+        tls: Option<bool>,
+        request_id: Option<String>,
+    ) -> Result<(), NetworkError> {
+        let data = ListenCommandData {
+            port,
+            tls,
+            request_id,
+        };
         self.send_command(SidecarCommand {
             command: command_type::LISTEN,
             data: Some(serde_json::to_value(&data)?),
@@ -571,8 +689,13 @@ impl GoSidecar {
         &self,
         target: String,
         ping_type: Option<String>,
+        request_id: Option<String>,
     ) -> Result<(), NetworkError> {
-        let data = PingCommandData { target, ping_type };
+        let data = PingCommandData {
+            target,
+            ping_type,
+            request_id,
+        };
         self.send_command(SidecarCommand {
             command: command_type::PING,
             data: Some(serde_json::to_value(&data)?),
@@ -581,8 +704,12 @@ impl GoSidecar {
     }
 
     /// Send the tsnet:whois command.
-    pub async fn send_whois(&self, addr: String) -> Result<(), NetworkError> {
-        let data = WhoisCommandData { addr };
+    pub async fn send_whois(
+        &self,
+        addr: String,
+        request_id: Option<String>,
+    ) -> Result<(), NetworkError> {
+        let data = WhoisCommandData { addr, request_id };
         self.send_command(SidecarCommand {
             command: command_type::WHOIS,
             data: Some(serde_json::to_value(&data)?),
@@ -591,8 +718,12 @@ impl GoSidecar {
     }
 
     /// Send the tsnet:listenPacket command to bind a UDP socket via tsnet.
-    pub async fn send_listen_packet(&self, port: u16) -> Result<(), NetworkError> {
-        let data = ListenPacketCommandData { port };
+    pub async fn send_listen_packet(
+        &self,
+        port: u16,
+        request_id: Option<String>,
+    ) -> Result<(), NetworkError> {
+        let data = ListenPacketCommandData { port, request_id };
         self.send_command(SidecarCommand {
             command: command_type::LISTEN_PACKET,
             data: Some(serde_json::to_value(&data)?),
@@ -620,8 +751,15 @@ impl GoSidecar {
     }
 
     /// Send the proxy:remove command.
-    pub async fn send_proxy_remove(&self, id: &str) -> Result<(), NetworkError> {
-        let data = ProxyRemoveCommandData { id: id.to_string() };
+    pub async fn send_proxy_remove(
+        &self,
+        id: &str,
+        request_id: Option<String>,
+    ) -> Result<(), NetworkError> {
+        let data = ProxyRemoveCommandData {
+            id: id.to_string(),
+            request_id,
+        };
         self.send_command(SidecarCommand {
             command: command_type::PROXY_REMOVE,
             data: Some(serde_json::to_value(&data)?),
@@ -630,10 +768,19 @@ impl GoSidecar {
     }
 
     /// Send the proxy:list command.
-    pub async fn send_proxy_list(&self) -> Result<(), NetworkError> {
+    pub async fn send_proxy_list(&self, request_id: Option<String>) -> Result<(), NetworkError> {
+        // Pre-v4 wire shape was no payload at all — keep that exact shape
+        // when no correlation is requested.
+        let data = match request_id {
+            Some(_) => {
+                let payload = ProxyListCommandData { request_id };
+                Some(serde_json::to_value(&payload)?)
+            }
+            None => None,
+        };
         self.send_command(SidecarCommand {
             command: command_type::PROXY_LIST,
-            data: None,
+            data,
         })
         .await
     }

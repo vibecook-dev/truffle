@@ -91,6 +91,10 @@ pub(crate) struct ListenCommandData {
     pub port: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls: Option<bool>,
+    /// Correlation id echoed on the terminal event (v4 sidecars; older ones
+    /// ignore the field, which is why broker use is version-gated).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 /// Data payload for `tsnet:unlisten`.
@@ -107,6 +111,9 @@ pub(crate) struct PingCommandData {
     pub target: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ping_type: Option<String>,
+    /// Correlation id echoed on `tsnet:pingResult` (P12; sidecars ≥ v2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 /// Data payload for `tsnet:whois`.
@@ -115,6 +122,10 @@ pub(crate) struct PingCommandData {
 pub(crate) struct WhoisCommandData {
     /// Tailnet IP or ip:port to look up.
     pub addr: String,
+    /// Correlation id echoed on `tsnet:whoisResult` (all whois-capable
+    /// sidecars echo it, so the broker path needs no extra gate).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 /// Data payload for `tsnet:watchPeers`.
@@ -131,6 +142,9 @@ pub(crate) struct WatchPeersCommandData {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListenPacketCommandData {
     pub port: u16,
+    /// Correlation id echoed on the terminal event (v4 sidecars).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 /// Data payload for `proxy:add`.
@@ -156,6 +170,9 @@ pub(crate) struct ProxyAddCommandData {
     pub allow: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<crate::network::ProxyRoute>,
+    /// Correlation id echoed on `proxy:added` / `proxy:error` (v4 sidecars).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 /// Data payload for `proxy:remove`.
@@ -163,6 +180,18 @@ pub(crate) struct ProxyAddCommandData {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProxyRemoveCommandData {
     pub id: String,
+    /// Correlation id echoed on `proxy:removed` / `proxy:error` (v4 sidecars).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+}
+
+/// Data payload for `proxy:list` (optional — pre-v4 callers send no data).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProxyListCommandData {
+    /// Correlation id echoed on the `proxy:list` result event (v4 sidecars).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +344,11 @@ pub(crate) struct PeersEventData {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DialResultEventData {
+    /// The dial's correlation id, echoed back. Correlation now happens at
+    /// the JSON level in the reply broker, so nothing reads this field —
+    /// it stays declared because it IS the wire contract (and the codec
+    /// tests pin it).
+    #[allow(dead_code)]
     pub request_id: String,
     pub success: bool,
     #[serde(default)]
@@ -375,6 +409,11 @@ pub(crate) struct PingResultEventData {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WhoisResultEventData {
+    /// The queried address, echoed back. Correlation now happens at the
+    /// JSON level in the reply broker, so nothing reads this field — it
+    /// stays declared because it IS the wire contract (and the codec tests
+    /// pin it).
+    #[allow(dead_code)]
     #[serde(default)]
     pub addr: String,
     /// `None` with an empty `error` = the lookup found nothing: the address
@@ -572,6 +611,7 @@ mod tests {
         let data = ListenCommandData {
             port: 8080,
             tls: None,
+            request_id: None,
         };
         let cmd = SidecarCommand {
             command: command_type::LISTEN,
@@ -588,6 +628,7 @@ mod tests {
         let data = PingCommandData {
             target: "100.64.0.2".to_string(),
             ping_type: Some("TSMP".to_string()),
+            request_id: None,
         };
         let cmd = SidecarCommand {
             command: command_type::PING,
@@ -720,7 +761,10 @@ mod tests {
 
     #[test]
     fn serialize_listen_packet_command() {
-        let data = ListenPacketCommandData { port: 19420 };
+        let data = ListenPacketCommandData {
+            port: 19420,
+            request_id: None,
+        };
         let cmd = SidecarCommand {
             command: command_type::LISTEN_PACKET,
             data: Some(serde_json::to_value(&data).unwrap()),
@@ -753,6 +797,7 @@ mod tests {
             allow_non_loopback: false,
             allow: vec![],
             routes: vec![],
+            request_id: None,
         };
         let cmd = SidecarCommand {
             command: command_type::PROXY_ADD,
@@ -801,6 +846,7 @@ mod tests {
                     allow: vec![],
                 },
             ],
+            request_id: None,
         };
         let json = serde_json::to_string(&data).unwrap();
         assert!(json.contains("\"allow\":[\"*@corp.com\"]"));
@@ -831,6 +877,7 @@ mod tests {
     fn serialize_proxy_remove_command() {
         let data = ProxyRemoveCommandData {
             id: "dev-server".to_string(),
+            request_id: None,
         };
         let cmd = SidecarCommand {
             command: command_type::PROXY_REMOVE,

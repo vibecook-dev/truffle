@@ -679,18 +679,17 @@ async fn test_bridge_local_port_returns_result() {
 /// Regression test: a timed-out dial must clean up after itself.
 ///
 /// Before the fix, the timeout `?` in `dial_tcp` early-returned before the
-/// error cleanup ran, leaking the `pending_dials` entry; and dropping the
-/// inner future detached the fail-watcher task, which held a broadcast
-/// receiver forever. A timed-out dial must leave the bridge's
-/// `pending_dials` map empty and release the watcher's event receiver.
+/// error cleanup ran, leaking the `pending_dials` entry. A timed-out dial
+/// must leave the bridge's `pending_dials` map empty AND unregister its
+/// broker reply slot (`ReplyGuard` drop), so neither map accumulates
+/// entries for dials that gave up.
 #[tokio::test(start_paused = true)]
-async fn test_dial_timeout_cleans_up_pending_dial_and_watcher() {
+async fn test_dial_timeout_cleans_up_pending_dial_and_reply_slot() {
     use super::bridge::Bridge;
     use super::provider::TailscaleProvider;
-    use super::sidecar::SidecarInternalEvent;
+    use super::sidecar::test_reply_slot;
     use crate::network::NetworkError;
     use std::time::Duration;
-    use tokio::sync::broadcast;
 
     let bridge = Bridge::bind(test_token())
         .await
@@ -700,15 +699,15 @@ async fn test_dial_timeout_cleans_up_pending_dial_and_watcher() {
     let dial_rx = bridge.register_dial(request_id.clone()).await;
     assert_eq!(bridge.pending_dial_count().await, 1);
 
-    // Sidecar event channel: keep the sender alive (and silent) so the
-    // fail-watcher has nothing to report and the dial can only time out.
-    let (event_tx, event_rx) = broadcast::channel::<SidecarInternalEvent>(8);
+    // A registered-but-never-answered reply slot: the dial can only time out.
+    let (pending, reply) = test_reply_slot(&request_id);
+    assert_eq!(pending.lock().unwrap().len(), 1);
 
     let result = TailscaleProvider::await_dial_result(
         &bridge,
         &request_id,
         dial_rx,
-        event_rx,
+        reply,
         Duration::from_millis(50),
     )
     .await;
@@ -722,20 +721,113 @@ async fn test_dial_timeout_cleans_up_pending_dial_and_watcher() {
         0,
         "timed-out dial must remove its pending_dials entry"
     );
-
-    // The fail-watcher must be aborted; once torn down it drops its
-    // broadcast receiver. Yield so the aborted task is reaped.
-    for _ in 0..50 {
-        if event_tx.receiver_count() == 0 {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
     assert_eq!(
-        event_tx.receiver_count(),
+        pending.lock().unwrap().len(),
         0,
-        "timed-out dial must abort the fail-watcher task"
+        "timed-out dial must unregister its reply slot"
     );
+}
+
+/// A `bridge:dialResult` failure routed through the production dispatcher
+/// (`GoSidecar::dispatch_event`) reaches the dial waiter via its reply slot
+/// — no broadcast subscription involved — and cleans up both maps.
+#[tokio::test]
+async fn test_dial_failure_routed_via_reply_slot() {
+    use super::bridge::Bridge;
+    use super::provider::TailscaleProvider;
+    use super::sidecar::{test_reply_slot, GoSidecar, SidecarInternalEvent};
+    use crate::network::NetworkError;
+    use std::time::Duration;
+    use tokio::sync::broadcast;
+
+    let bridge = Bridge::bind(test_token())
+        .await
+        .expect("bridge should bind");
+
+    let request_id = "req-fail-test".to_string();
+    let dial_rx = bridge.register_dial(request_id.clone()).await;
+    let (pending, reply) = test_reply_slot(&request_id);
+
+    // Play the stdout reader: dispatch the failure event exactly as the
+    // wire would deliver it. The tee must consume the slot AND broadcast.
+    let (event_tx, mut event_rx) = broadcast::channel::<SidecarInternalEvent>(8);
+    let event: SidecarEvent = serde_json::from_str(
+        r#"{"event":"bridge:dialResult","data":{"requestId":"req-fail-test","success":false,"error":"connection refused"}}"#,
+    )
+    .unwrap();
+    GoSidecar::dispatch_event(event, &pending, &event_tx);
+    assert_eq!(
+        pending.lock().unwrap().len(),
+        0,
+        "dispatch must consume the reply slot"
+    );
+    assert!(
+        matches!(
+            event_rx.try_recv(),
+            Ok(SidecarInternalEvent::DialFailed { .. })
+        ),
+        "dispatch must still broadcast the event (tee)"
+    );
+
+    let result = TailscaleProvider::await_dial_result(
+        &bridge,
+        &request_id,
+        dial_rx,
+        reply,
+        Duration::from_secs(5),
+    )
+    .await;
+
+    match result {
+        Err(NetworkError::DialFailed(message)) => {
+            assert_eq!(message, "connection refused");
+        }
+        other => panic!("expected DialFailed, got {other:?}"),
+    }
+    assert_eq!(bridge.pending_dial_count().await, 0);
+}
+
+/// Broker dispatch semantics: an event with an unknown (or absent)
+/// `requestId` is broadcast only, and a slot registered then dropped is
+/// unregistered — a late reply for it falls through to broadcast.
+#[tokio::test]
+async fn test_dispatch_event_tee_and_guard_unregistration() {
+    use super::sidecar::{test_reply_slot, GoSidecar, SidecarInternalEvent};
+    use tokio::sync::broadcast;
+
+    let (event_tx, mut event_rx) = broadcast::channel::<SidecarInternalEvent>(8);
+
+    // Unknown requestId: broadcast only, slot for a DIFFERENT id untouched.
+    let (pending, _guard) = test_reply_slot("req-other");
+    let event: SidecarEvent = serde_json::from_str(
+        r#"{"event":"tsnet:whoisResult","data":{"addr":"100.64.0.9","requestId":"req-unknown"}}"#,
+    )
+    .unwrap();
+    GoSidecar::dispatch_event(event, &pending, &event_tx);
+    assert_eq!(pending.lock().unwrap().len(), 1, "other slot must survive");
+    assert!(matches!(
+        event_rx.try_recv(),
+        Ok(SidecarInternalEvent::WhoisResult(_))
+    ));
+
+    // Dropped guard: the slot unregisters, and its reply falls through to
+    // broadcast instead of a dead oneshot.
+    let (pending, guard) = test_reply_slot("req-dropped");
+    drop(guard);
+    assert_eq!(
+        pending.lock().unwrap().len(),
+        0,
+        "dropping the guard must unregister the slot"
+    );
+    let event: SidecarEvent = serde_json::from_str(
+        r#"{"event":"tsnet:whoisResult","data":{"addr":"100.64.0.9","requestId":"req-dropped"}}"#,
+    )
+    .unwrap();
+    GoSidecar::dispatch_event(event, &pending, &event_tx);
+    assert!(matches!(
+        event_rx.try_recv(),
+        Ok(SidecarInternalEvent::WhoisResult(_))
+    ));
 }
 
 /// Verify that BridgeHeader roundtrips correctly when request_id, remote_addr, and
@@ -948,7 +1040,10 @@ fn test_sidecar_listening_packet_event_deserialization() {
 fn test_sidecar_listen_packet_command_serialization() {
     use super::protocol::{command_type, ListenPacketCommandData, SidecarCommand};
 
-    let data = ListenPacketCommandData { port: 19420 };
+    let data = ListenPacketCommandData {
+        port: 19420,
+        request_id: None,
+    };
     let cmd = SidecarCommand {
         command: command_type::LISTEN_PACKET,
         data: Some(serde_json::to_value(&data).unwrap()),
