@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.9](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.8...truffle-v0.7.9) (2026-07-28)
+
+
+### Features
+
+* transport-derived caller identity — whois(addr), node serve headers, QUIC accept identity ([#176](https://github.com/vibecook-dev/truffle/issues/176)) ([ed3d62b](https://github.com/vibecook-dev/truffle/commit/ed3d62bd1c82d1b9e894be00556cf8730bf358da))
+
 ## [0.7.8](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.7...truffle-v0.7.8) (2026-07-26)
 
 
