@@ -113,9 +113,12 @@ type dialResultData struct {
 // It is advertised in every status/started event so the core can gate features
 // on sidecar capability: v2 = RFC 023 serve engine (path routes, allow-lists,
 // tls:false); v3 = tsnet:whois query + node identity headers on proxied
-// requests. An older or absent value makes the core treat the sidecar as v1.
+// requests; v4 = requestId echoed on every RPC-style terminal event (listen,
+// unlisten, listenPacket, unlistenPacket, proxy add/remove/list) and on the
+// errors that terminate them. An older or absent value makes the core treat
+// the sidecar as v1.
 // Bump on any addition to the command surface the core must not send blind.
-const sidecarProtocolVersion = 3
+const sidecarProtocolVersion = 4
 
 type statusData struct {
 	State       string `json:"state"`
@@ -155,6 +158,10 @@ type peersData struct {
 type errorData struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// RequestID is set only when the failing command carried one and had been
+	// parsed far enough to read it, so the core can fail that waiter instead of
+	// letting it time out. Parse failures have no id and stay unrouted.
+	RequestID string `json:"requestId,omitempty"`
 }
 
 // peerIdentityData is the JSON structure encoded into the bridge header's
@@ -170,23 +177,27 @@ type peerIdentityData struct {
 
 // listenData is the payload for tsnet:listen commands.
 type listenData struct {
-	Port uint16 `json:"port"`
-	TLS  bool   `json:"tls,omitempty"`
+	Port      uint16 `json:"port"`
+	TLS       bool   `json:"tls,omitempty"`
+	RequestID string `json:"requestId,omitempty"` // optional correlation id echoed back
 }
 
 // listeningData is the payload for tsnet:listening events.
 type listeningData struct {
-	Port uint16 `json:"port"`
+	Port      uint16 `json:"port"`
+	RequestID string `json:"requestId,omitempty"` // echoes listenData.RequestID
 }
 
 // unlistenData is the payload for tsnet:unlisten commands.
 type unlistenData struct {
-	Port uint16 `json:"port"`
+	Port      uint16 `json:"port"`
+	RequestID string `json:"requestId,omitempty"` // optional correlation id echoed back
 }
 
 // unlistenedData is the payload for tsnet:unlistened events.
 type unlistenedData struct {
-	Port uint16 `json:"port"`
+	Port      uint16 `json:"port"`
+	RequestID string `json:"requestId,omitempty"` // echoes unlistenData.RequestID
 }
 
 // pingData is the payload for tsnet:ping commands.
@@ -323,6 +334,9 @@ type proxyAddData struct {
 	Allow []string `json:"allow,omitempty"`
 	// Routes replaces the single target with path-prefix mounts (§7).
 	Routes []proxyRouteData `json:"routes,omitempty"`
+
+	// RequestID is an optional correlation id echoed on proxy:added/proxy:error.
+	RequestID string `json:"requestId,omitempty"`
 }
 
 // proxyRouteData is one path-prefix route of a v2 proxy (RFC 023 §7).
@@ -339,7 +353,15 @@ type proxyRouteData struct {
 
 // proxyRemoveData is the payload for proxy:remove commands.
 type proxyRemoveData struct {
-	ID string `json:"id"`
+	ID        string `json:"id"`
+	RequestID string `json:"requestId,omitempty"` // optional correlation id echoed back
+}
+
+// proxyListData is the optional payload for proxy:list commands. The command
+// carried no payload before v4, so an absent or unreadable one is not an error
+// — it just means there is no correlation id to echo.
+type proxyListData struct {
+	RequestID string `json:"requestId,omitempty"`
 }
 
 // proxyAddedEventData is the payload for proxy:added events.
@@ -347,11 +369,13 @@ type proxyAddedEventData struct {
 	ID         string `json:"id"`
 	ListenPort uint16 `json:"listenPort"`
 	URL        string `json:"url"`
+	RequestID  string `json:"requestId,omitempty"` // echoes proxyAddData.RequestID
 }
 
 // proxyRemovedEventData is the payload for proxy:removed events.
 type proxyRemovedEventData struct {
-	ID string `json:"id"`
+	ID        string `json:"id"`
+	RequestID string `json:"requestId,omitempty"` // echoes proxyRemoveData.RequestID
 }
 
 // proxyErrorEventData is the payload for proxy:error events.
@@ -359,6 +383,9 @@ type proxyErrorEventData struct {
 	ID      string `json:"id"`
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// RequestID echoes proxyAddData/proxyRemoveData.RequestID: proxy:error is
+	// the failure terminal for both, so it must be routable the same way.
+	RequestID string `json:"requestId,omitempty"`
 }
 
 // proxyInfoData is the payload for each proxy in proxy:list events.
@@ -374,7 +401,8 @@ type proxyInfoData struct {
 
 // proxyListEventData is the payload for proxy:list events.
 type proxyListEventData struct {
-	Proxies []proxyInfoData `json:"proxies"`
+	Proxies   []proxyInfoData `json:"proxies"`
+	RequestID string          `json:"requestId,omitempty"` // echoes proxyListData.RequestID
 }
 
 // halfCloser is implemented by connections that support half-close (CloseWrite).
@@ -439,15 +467,19 @@ func (e *proxyEntry) shutdown(timeout time.Duration) {
 	e.wsMu.Unlock()
 }
 
-// listenPacketData is the payload for tsnet:listenPacket commands.
+// listenPacketData is the payload for tsnet:listenPacket and
+// tsnet:unlistenPacket commands, and doubles as the tsnet:unlistenedPacket
+// event payload.
 type listenPacketData struct {
-	Port uint16 `json:"port"`
+	Port      uint16 `json:"port"`
+	RequestID string `json:"requestId,omitempty"` // optional correlation id echoed back
 }
 
 // listeningPacketData is the payload for tsnet:listeningPacket events.
 type listeningPacketData struct {
 	Port      uint16 `json:"port"`
 	LocalPort uint16 `json:"localPort"`
+	RequestID string `json:"requestId,omitempty"` // echoes listenPacketData.RequestID
 }
 
 // udpRelay manages a tsnet PacketConn <-> local UDP socket relay.
@@ -692,7 +724,7 @@ func main() {
 		case "proxy:remove":
 			s.handleProxyRemove(cmd.Data)
 		case "proxy:list":
-			s.handleProxyList()
+			s.handleProxyList(cmd.Data)
 		default:
 			s.sendError("UNKNOWN_CMD", fmt.Sprintf("unknown command: %s", cmd.Command))
 		}
@@ -1089,7 +1121,7 @@ func (s *shim) handleListen(data json.RawMessage) {
 
 	srv := s.getServer()
 	if srv == nil {
-		s.sendError("NOT_RUNNING", "node not running")
+		s.sendErrorFor("NOT_RUNNING", "node not running", d.RequestID)
 		return
 	}
 
@@ -1097,7 +1129,7 @@ func (s *shim) handleListen(data json.RawMessage) {
 	s.dynamicListenerMu.Lock()
 	if _, exists := s.dynamicListeners[d.Port]; exists {
 		s.dynamicListenerMu.Unlock()
-		s.sendError("LISTEN_ERROR", fmt.Sprintf("already listening on port %d", d.Port))
+		s.sendErrorFor("LISTEN_ERROR", fmt.Sprintf("already listening on port %d", d.Port), d.RequestID)
 		return
 	}
 	s.dynamicListenerMu.Unlock()
@@ -1109,7 +1141,7 @@ func (s *shim) handleListen(data json.RawMessage) {
 
 		lc, err := srv.LocalClient()
 		if err != nil {
-			s.sendError("LISTEN_ERROR", fmt.Sprintf("failed to get local client: %v", err))
+			s.sendErrorFor("LISTEN_ERROR", fmt.Sprintf("failed to get local client: %v", err), d.RequestID)
 			return
 		}
 
@@ -1122,7 +1154,7 @@ func (s *shim) handleListen(data json.RawMessage) {
 			ln, err = srv.Listen("tcp", addr)
 		}
 		if err != nil {
-			s.sendError("LISTEN_ERROR", fmt.Sprintf("Listen :%d: %v", d.Port, err))
+			s.sendErrorFor("LISTEN_ERROR", fmt.Sprintf("Listen :%d: %v", d.Port, err), d.RequestID)
 			return
 		}
 
@@ -1158,7 +1190,7 @@ func (s *shim) handleListen(data json.RawMessage) {
 		if _, exists := s.dynamicListeners[actualPort]; exists {
 			s.dynamicListenerMu.Unlock()
 			ln.Close()
-			s.sendError("LISTEN_ERROR", fmt.Sprintf("already listening on port %d", actualPort))
+			s.sendErrorFor("LISTEN_ERROR", fmt.Sprintf("already listening on port %d", actualPort), d.RequestID)
 			return
 		}
 		s.dynamicListeners[actualPort] = ln
@@ -1167,7 +1199,9 @@ func (s *shim) handleListen(data json.RawMessage) {
 		// Also track in the main listener list for cleanup on stop
 		s.trackListener(ln)
 
-		s.sendEvent("tsnet:listening", listeningData{Port: actualPort})
+		// The echo rides the same emission that reports the resolved port, so a
+		// port-0 request and its confirmation stay one event.
+		s.sendEvent("tsnet:listening", listeningData{Port: actualPort, RequestID: d.RequestID})
 
 		proto := "TCP"
 		if d.TLS {
@@ -1215,7 +1249,7 @@ func (s *shim) handleUnlisten(data json.RawMessage) {
 	ln, exists := s.dynamicListeners[d.Port]
 	if !exists {
 		s.dynamicListenerMu.Unlock()
-		s.sendError("UNLISTEN_ERROR", fmt.Sprintf("no listener on port %d", d.Port))
+		s.sendErrorFor("UNLISTEN_ERROR", fmt.Sprintf("no listener on port %d", d.Port), d.RequestID)
 		return
 	}
 	delete(s.dynamicListeners, d.Port)
@@ -1226,7 +1260,7 @@ func (s *shim) handleUnlisten(data json.RawMessage) {
 	}
 
 	debugf("stopped listening on :%d (dynamic)", d.Port)
-	s.sendEvent("tsnet:unlistened", unlistenedData{Port: d.Port})
+	s.sendEvent("tsnet:unlistened", unlistenedData{Port: d.Port, RequestID: d.RequestID})
 }
 
 func (s *shim) handleListenPacket(data json.RawMessage) {
@@ -1238,7 +1272,7 @@ func (s *shim) handleListenPacket(data json.RawMessage) {
 
 	srv := s.getServer()
 	if srv == nil {
-		s.sendError("NOT_RUNNING", "node not running")
+		s.sendErrorFor("NOT_RUNNING", "node not running", d.RequestID)
 		return
 	}
 
@@ -1246,7 +1280,7 @@ func (s *shim) handleListenPacket(data json.RawMessage) {
 	s.udpRelayMu.Lock()
 	if _, exists := s.udpRelays[d.Port]; exists {
 		s.udpRelayMu.Unlock()
-		s.sendError("LISTEN_PACKET_ERROR", fmt.Sprintf("already listening UDP on port %d", d.Port))
+		s.sendErrorFor("LISTEN_PACKET_ERROR", fmt.Sprintf("already listening UDP on port %d", d.Port), d.RequestID)
 		return
 	}
 	s.udpRelayMu.Unlock()
@@ -1259,18 +1293,18 @@ func (s *shim) handleListenPacket(data json.RawMessage) {
 		// Get the tailscale IP for binding
 		status, err := srv.LocalClient()
 		if err != nil {
-			s.sendError("LISTEN_PACKET_ERROR", fmt.Sprintf("failed to get local client: %v", err))
+			s.sendErrorFor("LISTEN_PACKET_ERROR", fmt.Sprintf("failed to get local client: %v", err), d.RequestID)
 			return
 		}
 
 		st, err := status.StatusWithoutPeers(ctx)
 		if err != nil {
-			s.sendError("LISTEN_PACKET_ERROR", fmt.Sprintf("failed to get status: %v", err))
+			s.sendErrorFor("LISTEN_PACKET_ERROR", fmt.Sprintf("failed to get status: %v", err), d.RequestID)
 			return
 		}
 
 		if len(st.TailscaleIPs) == 0 {
-			s.sendError("LISTEN_PACKET_ERROR", "no Tailscale IPs available")
+			s.sendErrorFor("LISTEN_PACKET_ERROR", "no Tailscale IPs available", d.RequestID)
 			return
 		}
 
@@ -1281,7 +1315,7 @@ func (s *shim) handleListenPacket(data json.RawMessage) {
 		debugf("UDP relay: calling ListenPacket(%q, %q)", "udp", listenAddr)
 		tsnetPC, err := srv.ListenPacket("udp", listenAddr)
 		if err != nil {
-			s.sendError("LISTEN_PACKET_ERROR", fmt.Sprintf("ListenPacket %s: %v", listenAddr, err))
+			s.sendErrorFor("LISTEN_PACKET_ERROR", fmt.Sprintf("ListenPacket %s: %v", listenAddr, err), d.RequestID)
 			return
 		}
 		debugf("UDP relay: ListenPacket succeeded, local addr = %v", tsnetPC.LocalAddr())
@@ -1290,7 +1324,7 @@ func (s *shim) handleListenPacket(data json.RawMessage) {
 		localPC, err := net.ListenPacket("udp", "127.0.0.1:0")
 		if err != nil {
 			tsnetPC.Close()
-			s.sendError("LISTEN_PACKET_ERROR", fmt.Sprintf("local UDP bind: %v", err))
+			s.sendErrorFor("LISTEN_PACKET_ERROR", fmt.Sprintf("local UDP bind: %v", err), d.RequestID)
 			return
 		}
 
@@ -1315,7 +1349,7 @@ func (s *shim) handleListenPacket(data json.RawMessage) {
 			relayCancel()
 			tsnetPC.Close()
 			localPC.Close()
-			s.sendError("LISTEN_PACKET_ERROR", fmt.Sprintf("already listening UDP on port %d", d.Port))
+			s.sendErrorFor("LISTEN_PACKET_ERROR", fmt.Sprintf("already listening UDP on port %d", d.Port), d.RequestID)
 			return
 		}
 		s.udpRelays[d.Port] = relay
@@ -1324,6 +1358,7 @@ func (s *shim) handleListenPacket(data json.RawMessage) {
 		s.sendEvent("tsnet:listeningPacket", listeningPacketData{
 			Port:      d.Port,
 			LocalPort: localPort,
+			RequestID: d.RequestID,
 		})
 
 		debugf("UDP relay started: tsnet %s <-> 127.0.0.1:%d", listenAddr, localPort)
@@ -1494,7 +1529,7 @@ func (s *shim) handleUnlistenPacket(data json.RawMessage) {
 	relay, exists := s.udpRelays[d.Port]
 	if !exists {
 		s.udpRelayMu.Unlock()
-		s.sendError("UNLISTEN_PACKET_ERROR", fmt.Sprintf("no UDP relay on port %d", d.Port))
+		s.sendErrorFor("UNLISTEN_PACKET_ERROR", fmt.Sprintf("no UDP relay on port %d", d.Port), d.RequestID)
 		return
 	}
 	delete(s.udpRelays, d.Port)
@@ -1507,7 +1542,7 @@ func (s *shim) handleUnlistenPacket(data json.RawMessage) {
 	relay.localConn.Close()
 
 	debugf("stopped UDP relay on :%d", d.Port)
-	s.sendEvent("tsnet:unlistenedPacket", listenPacketData{Port: d.Port})
+	s.sendEvent("tsnet:unlistenedPacket", listenPacketData{Port: d.Port, RequestID: d.RequestID})
 }
 
 func (s *shim) handlePing(data json.RawMessage) {
@@ -1519,7 +1554,7 @@ func (s *shim) handlePing(data json.RawMessage) {
 
 	srv := s.getServer()
 	if srv == nil {
-		s.sendError("NOT_RUNNING", "node not running")
+		s.sendErrorFor("NOT_RUNNING", "node not running", d.RequestID)
 		return
 	}
 
@@ -1602,7 +1637,7 @@ func (s *shim) handleWhois(data json.RawMessage) {
 
 	srv := s.getServer()
 	if srv == nil {
-		s.sendError("NOT_RUNNING", "node not running")
+		s.sendErrorFor("NOT_RUNNING", "node not running", d.RequestID)
 		return
 	}
 
@@ -2060,10 +2095,27 @@ func (s *shim) handleDeleteWaitingFile(data json.RawMessage) {
 	}()
 }
 
+// requestIDOf best-effort-reads the correlation id out of a raw command payload.
+// It exists for handlers that check a precondition before unmarshalling the full
+// payload: the id is needed to route the resulting error, but the payload's own
+// parse failure must still be reported by the handler, not swallowed here. An
+// absent or malformed payload yields "".
+func requestIDOf(raw json.RawMessage) string {
+	var d struct {
+		RequestID string `json:"requestId"`
+	}
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return ""
+	}
+	return d.RequestID
+}
+
 func (s *shim) handleProxyAdd(raw json.RawMessage) {
 	srv := s.getServer()
 	if srv == nil {
-		s.sendError("NOT_RUNNING", "node not running")
+		// The precondition is checked before the payload is unmarshalled, so
+		// read the id on its own to keep this failure routable.
+		s.sendErrorFor("NOT_RUNNING", "node not running", requestIDOf(raw))
 		return
 	}
 
@@ -2094,7 +2146,7 @@ func (s *shim) handleProxyAdd(raw json.RawMessage) {
 	}
 
 	fail := func(code, msg string) {
-		s.sendEvent("proxy:error", proxyErrorEventData{ID: data.ID, Code: code, Message: msg})
+		s.sendEvent("proxy:error", proxyErrorEventData{ID: data.ID, Code: code, Message: msg, RequestID: data.RequestID})
 	}
 
 	lc, err := srv.LocalClient()
@@ -2172,13 +2224,13 @@ func (s *shim) handleProxyAdd(raw json.RawMessage) {
 	s.proxyMu.Lock()
 	if _, exists := s.proxies[data.ID]; exists {
 		s.proxyMu.Unlock()
-		s.sendEvent("proxy:error", proxyErrorEventData{ID: data.ID, Code: "PROXY_EXISTS", Message: "proxy with this ID already exists"})
+		fail("PROXY_EXISTS", "proxy with this ID already exists")
 		return
 	}
 	for _, entry := range s.proxies {
 		if entry != nil && entry.listenPort == data.ListenPort {
 			s.proxyMu.Unlock()
-			s.sendEvent("proxy:error", proxyErrorEventData{ID: data.ID, Code: "PORT_IN_USE", Message: fmt.Sprintf("port %d already used by proxy %s", data.ListenPort, entry.id)})
+			fail("PORT_IN_USE", fmt.Sprintf("port %d already used by proxy %s", data.ListenPort, entry.id))
 			return
 		}
 	}
@@ -2195,7 +2247,7 @@ func (s *shim) handleProxyAdd(raw json.RawMessage) {
 		s.proxyMu.Lock()
 		delete(s.proxies, data.ID)
 		s.proxyMu.Unlock()
-		s.sendEvent("proxy:error", proxyErrorEventData{ID: data.ID, Code: "PORT_IN_USE", Message: fmt.Sprintf("port %d already used by a dynamic listener", data.ListenPort)})
+		fail("PORT_IN_USE", fmt.Sprintf("port %d already used by a dynamic listener", data.ListenPort))
 		return
 	}
 	s.dynamicListenerMu.Unlock()
@@ -2283,7 +2335,7 @@ func (s *shim) handleProxyAdd(raw json.RawMessage) {
 			s.proxyMu.Lock()
 			delete(s.proxies, data.ID)
 			s.proxyMu.Unlock()
-			s.sendEvent("proxy:error", proxyErrorEventData{ID: data.ID, Code: "LISTEN_ERROR", Message: err.Error()})
+			fail("LISTEN_ERROR", err.Error())
 			return
 		}
 
@@ -2293,7 +2345,7 @@ func (s *shim) handleProxyAdd(raw json.RawMessage) {
 			s.proxyMu.Lock()
 			delete(s.proxies, data.ID)
 			s.proxyMu.Unlock()
-			s.sendEvent("proxy:error", proxyErrorEventData{ID: data.ID, Code: "NOT_READY", Message: "node not fully started, DNS name not available"})
+			fail("NOT_READY", "node not fully started, DNS name not available")
 			return
 		}
 
@@ -2327,8 +2379,10 @@ func (s *shim) handleProxyAdd(raw json.RawMessage) {
 		s.proxyMu.Unlock()
 
 		proxyURL := publicURL(tlsOn, s.getDNSName(), data.ListenPort)
-		s.sendEvent("proxy:added", proxyAddedEventData{ID: data.ID, ListenPort: data.ListenPort, URL: proxyURL})
+		s.sendEvent("proxy:added", proxyAddedEventData{ID: data.ID, ListenPort: data.ListenPort, URL: proxyURL, RequestID: data.RequestID})
 
+		// No requestId echo below: proxy:added already terminated the request,
+		// and a serve failure is an asynchronous lifecycle event after it.
 		if err := httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			s.sendEvent("proxy:error", proxyErrorEventData{ID: data.ID, Code: "SERVE_ERROR", Message: err.Error()})
 		}
@@ -2432,7 +2486,7 @@ func (s *shim) handleProxyRemove(raw json.RawMessage) {
 	entry, exists := s.proxies[data.ID]
 	if !exists || entry == nil {
 		s.proxyMu.Unlock()
-		s.sendEvent("proxy:error", proxyErrorEventData{ID: data.ID, Code: "NOT_FOUND", Message: "proxy not found"})
+		s.sendEvent("proxy:error", proxyErrorEventData{ID: data.ID, Code: "NOT_FOUND", Message: "proxy not found", RequestID: data.RequestID})
 		return
 	}
 	delete(s.proxies, data.ID)
@@ -2443,11 +2497,18 @@ func (s *shim) handleProxyRemove(raw json.RawMessage) {
 	go func() {
 		defer s.recoverPanic("handleProxyRemove")
 		entry.shutdown(5 * time.Second)
-		s.sendEvent("proxy:removed", proxyRemovedEventData{ID: data.ID})
+		s.sendEvent("proxy:removed", proxyRemovedEventData{ID: data.ID, RequestID: data.RequestID})
 	}()
 }
 
-func (s *shim) handleProxyList() {
+func (s *shim) handleProxyList(raw json.RawMessage) {
+	// The payload is optional (pre-v4 cores send none at all), so a missing or
+	// unreadable one simply leaves the echo empty.
+	var data proxyListData
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &data)
+	}
+
 	s.proxyMu.Lock()
 	proxies := make([]proxyInfoData, 0, len(s.proxies))
 	for _, entry := range s.proxies {
@@ -2464,7 +2525,7 @@ func (s *shim) handleProxyList() {
 	}
 	s.proxyMu.Unlock()
 
-	s.sendEvent("proxy:list", proxyListEventData{Proxies: proxies})
+	s.sendEvent("proxy:list", proxyListEventData{Proxies: proxies, RequestID: data.RequestID})
 }
 
 // bridgeToRust connects to Rust's local bridge port, sends the binary header,
@@ -3134,7 +3195,15 @@ func (s *shim) sendStatus(state, hostname, dnsName, tailscaleIP, errMsg string) 
 	})
 }
 
-// sendError sends a tsnet:error event.
+// sendError sends a tsnet:error event with no correlation id — for failures
+// that precede reading one (parse errors, unknown commands).
 func (s *shim) sendError(code, message string) {
 	s.sendEvent("tsnet:error", errorData{Code: code, Message: message})
+}
+
+// sendErrorFor sends a tsnet:error event tagged with the failing command's
+// correlation id, so the core can fail that waiter now rather than on timeout.
+// An empty requestID marshals away, leaving the v3 wire shape.
+func (s *shim) sendErrorFor(code, message, requestID string) {
+	s.sendEvent("tsnet:error", errorData{Code: code, Message: message, RequestID: requestID})
 }

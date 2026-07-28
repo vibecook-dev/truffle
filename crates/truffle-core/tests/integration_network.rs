@@ -342,6 +342,41 @@ async fn test_whois() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 5c: Concurrent ephemeral listens — exact reply correlation
+// ---------------------------------------------------------------------------
+
+/// Two concurrent port-0 listens must each get their own confirmation.
+/// Value-correlated waiters matched ANY `Listening` event when asked for
+/// port 0, so concurrent ephemeral listens could steal each other's
+/// confirmations; the v4 broker routes each one by request id.
+#[tokio::test]
+async fn test_concurrent_ephemeral_listens() {
+    let Some(authkey) = common::require_authkey("test_concurrent_ephemeral_listens") else {
+        return;
+    };
+    common::init_test_tracing();
+
+    let pair = common::make_pair_of_nodes(&authkey).await;
+
+    let (first, second) = tokio::join!(pair.alpha.listen_tcp(0), pair.alpha.listen_tcp(0));
+    let first = first.expect("first ephemeral listen");
+    let second = second.expect("second ephemeral listen");
+
+    eprintln!(
+        "  ephemeral listens resolved: {} and {}",
+        first.port, second.port
+    );
+    assert_ne!(first.port, 0, "ephemeral listen must resolve a real port");
+    assert_ne!(second.port, 0, "ephemeral listen must resolve a real port");
+    assert_ne!(
+        first.port, second.port,
+        "each listen must get its own confirmation (no cross-match)"
+    );
+
+    pair.stop().await;
+}
+
+// ---------------------------------------------------------------------------
 // Test 6: Health — alpha reports running, then stopped after stop()
 // ---------------------------------------------------------------------------
 
