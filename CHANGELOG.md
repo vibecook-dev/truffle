@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.11](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.10...truffle-v0.7.11) (2026-07-28)
+
+
+### Bug Fixes
+
+* **ci:** keep the release train on GitHub-hosted runners ([#181](https://github.com/vibecook-dev/truffle/issues/181)) ([bf476cf](https://github.com/vibecook-dev/truffle/commit/bf476cfeb979bae0141ad6d090d12a807316e924))
+
 ## [0.7.10](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.9...truffle-v0.7.10) (2026-07-28)
 
 
