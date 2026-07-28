@@ -1,6 +1,6 @@
 {
   "name": "@vibecook/truffle-native",
-  "version": "0.7.9",
+  "version": "0.7.10",
   "description": "Mesh networking for local-first apps, built on Tailscale (native addon)",
   "main": "index.js",
   "types": "index.d.ts",

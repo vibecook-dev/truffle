@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.10](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.9...truffle-v0.7.10) (2026-07-28)
+
+
+### Bug Fixes
+
+* route sidecar RPC replies by request id (protocol v4) ([#179](https://github.com/vibecook-dev/truffle/issues/179)) ([e917bd8](https://github.com/vibecook-dev/truffle/commit/e917bd83835267b53643e2044aec434216db5720))
+
 ## [0.7.9](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.8...truffle-v0.7.9) (2026-07-28)
 
 
