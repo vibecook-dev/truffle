@@ -281,6 +281,67 @@ async fn test_ping() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 5b: WhoIs — alpha asks the tailnet who owns beta's address
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_whois() {
+    let Some(authkey) = common::require_authkey("test_whois") else {
+        return;
+    };
+    common::init_test_tracing();
+
+    let pair = common::make_pair_of_nodes(&authkey).await;
+
+    let beta_ip = pair.beta_ip().await.to_string();
+    eprintln!("  whois beta at {beta_ip}");
+    let deadline = tokio::time::Instant::now() + CONNECTIVITY_TIMEOUT;
+    let mut attempts = 0_u32;
+    // WhoIs answers from the netmap, which may lag node startup — retry until
+    // the identity appears, like ping retries route convergence.
+    let identity = loop {
+        attempts += 1;
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match timeout(remaining, pair.alpha.whois(&beta_ip)).await {
+            Ok(Ok(Some(identity))) => break identity,
+            // A pre-v3 sidecar can never succeed — fail fast instead of
+            // burning the whole convergence budget on a permanent error.
+            Ok(Err(truffle_core::network::NetworkError::Unsupported(message))) => {
+                panic!("whois unsupported by this sidecar build: {message}");
+            }
+            Ok(result) if tokio::time::Instant::now() < deadline => {
+                eprintln!("  whois attempt {attempts} not ready yet: {result:?}");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Ok(result) => {
+                panic!(
+                    "whois did not return an identity within {CONNECTIVITY_TIMEOUT:?} \
+                     after {attempts} attempt(s): {result:?}"
+                );
+            }
+            Err(_) => {
+                panic!(
+                    "whois did not return an identity within {CONNECTIVITY_TIMEOUT:?} \
+                     after {attempts} attempt(s)"
+                );
+            }
+        }
+    };
+
+    eprintln!("  whois ok after {attempts} attempt(s): {identity:?}");
+    assert!(
+        identity.node_id.as_deref().is_some_and(|id| !id.is_empty()),
+        "whois should report beta's stable node id, got {identity:?}"
+    );
+    assert!(
+        identity.dns_name.as_deref().is_some_and(|d| !d.is_empty()),
+        "whois should report beta's MagicDNS name, got {identity:?}"
+    );
+
+    pair.stop().await;
+}
+
+// ---------------------------------------------------------------------------
 // Test 6: Health — alpha reports running, then stopped after stop()
 // ---------------------------------------------------------------------------
 

@@ -19,7 +19,7 @@ use crate::subscription::NapiSubscription;
 use crate::synced_store::NapiSyncedStore;
 use crate::types::{
     NapiHealthInfo, NapiNamespacedMessage, NapiNodeConfig, NapiNodeIdentity, NapiPeer,
-    NapiPeerEvent, NapiPingResult,
+    NapiPeerEvent, NapiPeerIdentity, NapiPingResult,
 };
 use crate::udp_socket::NapiUdpSocket;
 
@@ -253,6 +253,27 @@ impl NapiNode {
         })
     }
 
+    /// Tailnet identity (WhoIs) of the node that owns an address.
+    ///
+    /// `addr` accepts a raw tailnet IP or `ip:port` (e.g. a QUIC
+    /// connection's `remoteAddress()` verbatim — the port is ignored), or
+    /// any `resolvePeerId` identifier form for mesh peers. Unlike `peers()`,
+    /// a raw address reaches ANY tailnet device — other apps' truffle nodes,
+    /// plain machines, tagged nodes — and the answer carries user identity
+    /// (login, display name, profile pic) that peer entries deliberately do
+    /// not.
+    ///
+    /// Resolves `null` when the tailnet has no identity for the address:
+    /// absent, not fabricated. Requires a v3 sidecar (rejects on older ones).
+    #[napi]
+    pub async fn whois(&self, addr: String) -> Result<Option<NapiPeerIdentity>> {
+        let node = self.require_node()?;
+        node.whois(&addr)
+            .await
+            .map(|identity| identity.map(NapiPeerIdentity::from))
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
     /// Get health information from the network layer.
     #[napi]
     pub async fn health(&self) -> Result<NapiHealthInfo> {
@@ -375,6 +396,7 @@ impl NapiNode {
             format!("{host}:{port}"),
             peer_id,
             None,
+            None,
         ))
     }
 
@@ -430,7 +452,7 @@ impl NapiNode {
             .connect_quic(&host, port)
             .await
             .map_err(|e| Error::from_reason(e.to_string()))?;
-        Ok(NapiQuicConnection::new(conn, peer_id))
+        Ok(NapiQuicConnection::new(conn, peer_id, node))
     }
 
     /// Listen for raw QUIC connections on a port (RFC 021).

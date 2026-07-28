@@ -146,6 +146,21 @@ export declare class NapiNode {
    * `peer_id` may be a ULID, name, Tailscale id, or IP (query string).
    */
   ping(peerId: string): Promise<NapiPingResult>
+  /**
+   * Tailnet identity (WhoIs) of the node that owns an address.
+   *
+   * `addr` accepts a raw tailnet IP or `ip:port` (e.g. a QUIC
+   * connection's `remoteAddress()` verbatim — the port is ignored), or
+   * any `resolvePeerId` identifier form for mesh peers. Unlike `peers()`,
+   * a raw address reaches ANY tailnet device — other apps' truffle nodes,
+   * plain machines, tagged nodes — and the answer carries user identity
+   * (login, display name, profile pic) that peer entries deliberately do
+   * not.
+   *
+   * Resolves `null` when the tailnet has no identity for the address:
+   * absent, not fabricated. Requires a v3 sidecar (rejects on older ones).
+   */
+  whois(addr: string): Promise<NapiPeerIdentity | null>
   /** Get health information from the network layer. */
   health(): Promise<NapiHealthInfo>
   /**
@@ -318,6 +333,19 @@ export declare class NapiQuicConnection {
    * tailnet-authenticated".
    */
   remotePeerId(): string | null
+  /**
+   * The peer's full WhoIs identity — the tailnet's answer about the
+   * connection's WireGuard-authenticated remote address, never anything
+   * the stream claims about itself. Reaches ANY tailnet caller, not just
+   * mesh peers, and works on outbound connections too.
+   *
+   * Resolved lazily on first call — `accept()` never blocks on identity —
+   * and cached for the connection's lifetime. `null` for anonymous
+   * callers, on pre-v3 sidecars, and when the lookup fails; failures are
+   * not cached, so calling again retries (use `node.whois()` to
+   * distinguish "anonymous" from "lookup failed").
+   */
+  remoteIdentity(): Promise<NapiPeerIdentity | null>
   /** Close the connection and all its streams. Idempotent. */
   close(): void
 }
@@ -480,8 +508,19 @@ export declare class NapiTcpSocket {
    * means "anonymous but tailnet-authenticated" (never gate on it).
    */
   remotePeerId(): string | null
-  /** Human-readable peer name from the WhoIs identity (inbound only). */
+  /**
+   * Human-readable peer name from the WhoIs identity (inbound only).
+   *
+   * Provenance is indeterminate — it may be a display name, a login, or a
+   * DNS name. Prefer `remoteIdentity()` when the distinction matters.
+   */
   remotePeerName(): string | null
+  /**
+   * The peer's full WhoIs identity (inbound only): DNS name, login,
+   * display name, profile pic, node id — each individually optional.
+   * `null` for outbound sockets and anonymous callers.
+   */
+  remoteIdentity(): NapiPeerIdentity | null
 }
 
 /**
@@ -809,6 +848,27 @@ export interface NapiPeerEvent {
   peer?: NapiPeer
   /** Auth URL (present only for auth_required events). */
   authUrl?: string
+}
+
+/**
+ * A tailnet WhoIs identity: the control plane's answer about who owns an
+ * address. This is transport-derived — never a peer's claim about itself.
+ *
+ * Every field is optional: tagged nodes carry node identity but no user
+ * profile, and legacy sidecars may omit fields. A fully anonymous caller has
+ * no identity at all (`whois` resolves `null` instead).
+ */
+export interface NapiPeerIdentity {
+  /** MagicDNS name (e.g. "kitchen.tail1234.ts.net"), trailing dot stripped. */
+  dnsName?: string
+  /** Tailscale login (owner) name, e.g. "alice@example.com". */
+  loginName?: string
+  /** Human-readable display name from the identity provider. */
+  displayName?: string
+  /** URL of the owner's profile picture. */
+  profilePicUrl?: string
+  /** Stable Tailscale node id (WhoIs `Node.StableID`). */
+  nodeId?: string
 }
 
 /** Result of a network-level ping. */

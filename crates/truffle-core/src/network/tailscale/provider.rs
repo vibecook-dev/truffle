@@ -838,6 +838,70 @@ impl super::super::NetworkProvider for TailscaleProvider {
         result
     }
 
+    async fn whois(
+        &self,
+        addr: &str,
+    ) -> Result<Option<super::super::TailscalePeerIdentity>, NetworkError> {
+        if *self.state.read().await != ProviderState::Running {
+            return Err(NetworkError::NotRunning);
+        }
+
+        // tsnet:whois shipped with protocol v3 — an older sidecar would
+        // silently swallow the command and this call would only time out, so
+        // fail fast with an actionable error instead.
+        let version = self
+            .sidecar_protocol_version
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if version < 3 {
+            return Err(NetworkError::Unsupported(format!(
+                "sidecar protocol v{version} predates tsnet:whois; upgrade the \
+                 sidecar binary (needs v3)"
+            )));
+        }
+
+        let target = addr.to_string();
+
+        // Scope the sidecar lock: subscribe + send whois, then release
+        let mut event_rx = {
+            let sidecar_guard = self.sidecar.lock().await;
+            let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
+
+            let event_rx = sidecar.subscribe();
+            sidecar.send_whois(target.clone()).await?;
+            event_rx
+        };
+
+        // Wait for the result, correlated by address (as ping does by
+        // target). Safe as string equality: the sidecar echoes the sent
+        // addr verbatim, never a re-canonicalized form.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match event_rx.recv().await {
+                    Ok(SidecarInternalEvent::WhoisResult(data)) if data.addr == target => {
+                        if !data.error.is_empty() {
+                            return Err(NetworkError::SidecarError(data.error));
+                        }
+                        // Belt-and-braces for the "absent, not fabricated"
+                        // contract: the wire omits empty fields, but don't
+                        // let that depend on the serializer — drop
+                        // present-but-empty fields, and fold an identity
+                        // with no information at all into None.
+                        return Ok(data
+                            .identity
+                            .map(super::super::TailscalePeerIdentity::normalized)
+                            .filter(|identity| !identity.is_empty()));
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Err(NetworkError::SidecarError("event channel closed".into()));
+                    }
+                    _ => continue,
+                }
+            }
+        })
+        .await
+        .map_err(|_| NetworkError::SidecarError("whois timed out".into()))?
+    }
+
     async fn bind_udp(&self, port: u16) -> Result<super::super::NetworkUdpSocket, NetworkError> {
         if *self.state.read().await != ProviderState::Running {
             return Err(NetworkError::NotRunning);

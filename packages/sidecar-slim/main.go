@@ -109,12 +109,13 @@ type dialResultData struct {
 	Error     string `json:"error,omitempty"`
 }
 
-// sidecarProtocolVersion is the serve/proxy protocol version this sidecar
-// speaks. It is advertised in every status/started event so an RFC 023-aware
-// core enables v2 serve features (path routes, allow-lists, tls:false); an older
-// or absent value makes the core treat the sidecar as v1. Bump on wire-breaking
-// changes to the proxy/serve command surface.
-const sidecarProtocolVersion = 2
+// sidecarProtocolVersion is the control-protocol version this sidecar speaks.
+// It is advertised in every status/started event so the core can gate features
+// on sidecar capability: v2 = RFC 023 serve engine (path routes, allow-lists,
+// tls:false); v3 = tsnet:whois query + node identity headers on proxied
+// requests. An older or absent value makes the core treat the sidecar as v1.
+// Bump on any addition to the command surface the core must not send blind.
+const sidecarProtocolVersion = 3
 
 type statusData struct {
 	State       string `json:"state"`
@@ -204,6 +205,22 @@ type pingResultData struct {
 	PeerAddr  string  `json:"peerAddr,omitempty"`
 	Error     string  `json:"error,omitempty"`
 	RequestID string  `json:"requestId,omitempty"` // echoes pingData.RequestID (P12)
+}
+
+// whoisData is the payload for tsnet:whois commands.
+type whoisData struct {
+	Addr      string `json:"addr"`                // tailnet IP or ip:port to look up
+	RequestID string `json:"requestId,omitempty"` // optional correlation id echoed back
+}
+
+// whoisResultData is the payload for tsnet:whoisResult events. A nil Identity
+// with an empty Error means the lookup found nothing — the caller is anonymous
+// (same "zero identity" semantics as the serve proxy path).
+type whoisResultData struct {
+	Addr      string            `json:"addr"`
+	Identity  *peerIdentityData `json:"identity,omitempty"`
+	Error     string            `json:"error,omitempty"`
+	RequestID string            `json:"requestId,omitempty"` // echoes whoisData.RequestID
 }
 
 // pushFileData is the payload for tsnet:pushFile commands.
@@ -654,6 +671,8 @@ func main() {
 			s.handleUnlisten(cmd.Data)
 		case "tsnet:ping":
 			s.handlePing(cmd.Data)
+		case "tsnet:whois":
+			s.handleWhois(cmd.Data)
 		case "tsnet:watchPeers":
 			s.handleWatchPeers(cmd.Data)
 		case "tsnet:listenPacket":
@@ -1565,6 +1584,53 @@ func (s *shim) handlePing(data json.RawMessage) {
 			Relay:     result.DERPRegionCode,
 			PeerAddr:  result.Endpoint,
 		})
+	}()
+}
+
+// handleWhois answers a tsnet:whois query: the tailnet identity of the node
+// that owns an address. Reaches ANY tailnet device — not just mesh peers —
+// which is what makes it a query API rather than a peers() lookup. Results
+// ride the same TTL cache as the proxy path; unlike that path, a failed
+// lookup is surfaced on the wire (Error), never folded into "anonymous" —
+// callers must be able to tell "no owner" from "the lookup broke".
+func (s *shim) handleWhois(data json.RawMessage) {
+	var d whoisData
+	if err := json.Unmarshal(data, &d); err != nil {
+		s.sendError("WHOIS_ERROR", fmt.Sprintf("invalid whois data: %v", err))
+		return
+	}
+
+	srv := s.getServer()
+	if srv == nil {
+		s.sendError("NOT_RUNNING", "node not running")
+		return
+	}
+
+	go func() {
+		defer s.recoverPanic("handleWhois")
+
+		emit := func(r whoisResultData) {
+			r.Addr = d.Addr
+			r.RequestID = d.RequestID
+			s.sendEvent("tsnet:whoisResult", r)
+		}
+
+		lc, err := srv.LocalClient()
+		if err != nil {
+			emit(whoisResultData{Error: fmt.Sprintf("failed to get local client: %v", err)})
+			return
+		}
+
+		identity, err := s.cachedWhoisErr(lc, d.Addr)
+		if err != nil {
+			emit(whoisResultData{Error: fmt.Sprintf("whois lookup failed: %v", err)})
+			return
+		}
+		if identity == (peerIdentityData{}) {
+			emit(whoisResultData{}) // anonymous: absent, not fabricated
+			return
+		}
+		emit(whoisResultData{Identity: &identity})
 	}()
 }
 
@@ -2610,16 +2676,15 @@ func isLoopbackHost(host string) bool {
 	return false
 }
 
-// whoisIdentity maps a remote address to the peer's identity via WhoIs.
-// A zero identity means the lookup failed or found nothing (e.g. a future
-// Funnel caller) — callers treat that as "anonymous".
-func (s *shim) whoisIdentity(lc *tailscale.LocalClient, remoteAddr string) peerIdentityData {
+// whoisIdentityErr maps a remote address to the peer's identity via WhoIs,
+// surfacing the lookup error so callers can distinguish "the tailnet has no
+// identity for this address" from "the lookup itself failed".
+func (s *shim) whoisIdentityErr(lc *tailscale.LocalClient, remoteAddr string) (peerIdentityData, error) {
 	ctx, cancel := context.WithTimeout(s.lifecycleCtx(), whoisTimeout)
 	defer cancel()
 	whois, err := lc.WhoIs(ctx, remoteAddr)
 	if err != nil {
-		log.Printf("whoisIdentity: WhoIs(%s) failed: %v", remoteAddr, err)
-		return peerIdentityData{}
+		return peerIdentityData{}, err
 	}
 
 	identity := peerIdentityData{}
@@ -2631,6 +2696,19 @@ func (s *shim) whoisIdentity(lc *tailscale.LocalClient, remoteAddr string) peerI
 		identity.LoginName = whois.UserProfile.LoginName
 		identity.DisplayName = whois.UserProfile.DisplayName
 		identity.ProfilePicURL = whois.UserProfile.ProfilePicURL
+	}
+	return identity, nil
+}
+
+// whoisIdentity folds lookup failures into the anonymous case (zero
+// identity). That is the right shape for the serve and TCP-accept paths,
+// where anonymous fails closed at the gates; the tsnet:whois command uses
+// whoisIdentityErr so failures reach the caller instead.
+func (s *shim) whoisIdentity(lc *tailscale.LocalClient, remoteAddr string) peerIdentityData {
+	identity, err := s.whoisIdentityErr(lc, remoteAddr)
+	if err != nil {
+		log.Printf("whoisIdentity: WhoIs(%s) failed: %v", remoteAddr, err)
+		return peerIdentityData{}
 	}
 	return identity
 }
@@ -2646,20 +2724,18 @@ func (s *shim) resolvePeerIdentity(lc *tailscale.LocalClient, remoteAddr string)
 	return marshalPeerIdentity(identity)
 }
 
-// proxyWhois is whoisIdentity behind a short TTL cache, for the proxy request
-// path: keep-alive connections re-present the same RemoteAddr per request,
-// and a WhoIs RPC per request would serialize handlers on a 3s budget.
-func (s *shim) proxyWhois(lc *tailscale.LocalClient, remoteAddr string) peerIdentityData {
-	now := time.Now()
+// lookupCachedIdentity returns a fresh entry from the shared TTL cache.
+func (s *shim) lookupCachedIdentity(addr string, now time.Time) (peerIdentityData, bool) {
 	s.identityCacheMu.Lock()
-	if c, ok := s.identityCache[remoteAddr]; ok && now.Before(c.expires) {
-		s.identityCacheMu.Unlock()
-		return c.identity
+	defer s.identityCacheMu.Unlock()
+	if c, ok := s.identityCache[addr]; ok && now.Before(c.expires) {
+		return c.identity, true
 	}
-	s.identityCacheMu.Unlock()
+	return peerIdentityData{}, false
+}
 
-	identity := s.whoisIdentity(lc, remoteAddr)
-
+// storeCachedIdentity records a lookup result in the shared TTL cache.
+func (s *shim) storeCachedIdentity(addr string, identity peerIdentityData, now time.Time) {
 	s.identityCacheMu.Lock()
 	if s.identityCache == nil {
 		s.identityCache = make(map[string]cachedIdentity)
@@ -2669,9 +2745,41 @@ func (s *shim) proxyWhois(lc *tailscale.LocalClient, remoteAddr string) peerIden
 	if len(s.identityCache) > 1024 {
 		s.identityCache = make(map[string]cachedIdentity)
 	}
-	s.identityCache[remoteAddr] = cachedIdentity{identity: identity, expires: now.Add(identityCacheTTL)}
+	s.identityCache[addr] = cachedIdentity{identity: identity, expires: now.Add(identityCacheTTL)}
 	s.identityCacheMu.Unlock()
+}
+
+// proxyWhois is whoisIdentity behind the TTL cache, for the proxy request
+// path: keep-alive connections re-present the same RemoteAddr per request,
+// and a WhoIs RPC per request would serialize handlers on a 3s budget.
+// Failures cache as anonymous for the TTL — deliberate: a flapping WhoIs
+// must not become a per-request RPC storm, and anonymous fails closed at
+// the allow gate.
+func (s *shim) proxyWhois(lc *tailscale.LocalClient, remoteAddr string) peerIdentityData {
+	now := time.Now()
+	if identity, ok := s.lookupCachedIdentity(remoteAddr, now); ok {
+		return identity
+	}
+	identity := s.whoisIdentity(lc, remoteAddr)
+	s.storeCachedIdentity(remoteAddr, identity, now)
 	return identity
+}
+
+// cachedWhoisErr is whoisIdentityErr behind the same cache, for the
+// tsnet:whois command path: successes (including a genuine anonymous
+// answer) cache; failures return to the caller uncached so a retry can
+// succeed as soon as the control plane recovers.
+func (s *shim) cachedWhoisErr(lc *tailscale.LocalClient, addr string) (peerIdentityData, error) {
+	now := time.Now()
+	if identity, ok := s.lookupCachedIdentity(addr, now); ok {
+		return identity, nil
+	}
+	identity, err := s.whoisIdentityErr(lc, addr)
+	if err != nil {
+		return peerIdentityData{}, err
+	}
+	s.storeCachedIdentity(addr, identity, now)
+	return identity, nil
 }
 
 // ── RFC 023 engine v2: identity headers, allow-lists, routes, static ──────
@@ -2682,11 +2790,14 @@ func (s *shim) proxyWhois(lc *tailscale.LocalClient, remoteAddr string) peerIden
 const tailscaleHeaderPrefix = "Tailscale-"
 
 // Identity headers injected for backends, matching Tailscale's own serve /
-// nginx-auth convention.
+// nginx-auth convention. The node pair identifies callers that have no user
+// profile at all (tagged nodes, future Funnel), which the login gate cannot.
 const (
 	hdrUserLogin  = "Tailscale-User-Login"
 	hdrUserName   = "Tailscale-User-Name"
 	hdrProfilePic = "Tailscale-User-Profile-Pic"
+	hdrNodeID     = "Tailscale-Node-Id"
+	hdrNodeName   = "Tailscale-Node-Name"
 )
 
 // identityCacheTTL bounds identity staleness on the proxy request path.
@@ -2709,6 +2820,12 @@ func injectIdentityHeaders(h http.Header, id peerIdentityData) {
 	}
 	if id.ProfilePicURL != "" {
 		h.Set(hdrProfilePic, id.ProfilePicURL)
+	}
+	if id.NodeID != "" {
+		h.Set(hdrNodeID, id.NodeID)
+	}
+	if id.DNSName != "" {
+		h.Set(hdrNodeName, id.DNSName)
 	}
 }
 

@@ -19,6 +19,7 @@ export type {
   NapiNodeConfig,
   NapiNodeIdentity,
   NapiPeer,
+  NapiPeerIdentity,
   NapiPingResult,
   NapiHealthInfo,
   NapiPeerEvent,

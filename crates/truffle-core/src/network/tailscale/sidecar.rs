@@ -99,6 +99,8 @@ pub(crate) enum SidecarInternalEvent {
     ListeningPacket { port: u16, local_port: u16 },
     /// Ping result.
     PingResult(PingResultEventData),
+    /// WhoIs query result.
+    WhoisResult(WhoisResultEventData),
     /// Error from sidecar.
     Error { code: String, message: String },
     /// A reverse proxy was successfully started.
@@ -434,6 +436,9 @@ impl GoSidecar {
             event_type::PING_RESULT => serde_json::from_value::<PingResultEventData>(event.data)
                 .ok()
                 .map(SidecarInternalEvent::PingResult),
+            event_type::WHOIS_RESULT => serde_json::from_value::<WhoisResultEventData>(event.data)
+                .ok()
+                .map(SidecarInternalEvent::WhoisResult),
             event_type::ERROR => serde_json::from_value::<ErrorEventData>(event.data)
                 .ok()
                 .map(|d| SidecarInternalEvent::Error {
@@ -570,6 +575,16 @@ impl GoSidecar {
         let data = PingCommandData { target, ping_type };
         self.send_command(SidecarCommand {
             command: command_type::PING,
+            data: Some(serde_json::to_value(&data)?),
+        })
+        .await
+    }
+
+    /// Send the tsnet:whois command.
+    pub async fn send_whois(&self, addr: String) -> Result<(), NetworkError> {
+        let data = WhoisCommandData { addr };
+        self.send_command(SidecarCommand {
+            command: command_type::WHOIS,
             data: Some(serde_json::to_value(&data)?),
         })
         .await

@@ -5,6 +5,7 @@ import {
   type NapiNamespacedMessage,
   type NapiPeerEvent,
   type NapiFileTransfer,
+  type NapiPeerIdentity,
   type NapiPingResult,
   type NapiQuicConnection,
   type NapiTcpSocket,
@@ -33,6 +34,7 @@ export type MeshNode = Omit<
   | 'peer'
   | 'send'
   | 'ping'
+  | 'whois'
   | 'onPeerChange'
   | 'onMessage'
   | 'openTcp'
@@ -97,6 +99,16 @@ export type MeshNode = Omit<
 
   /** Handle-first ping. */
   ping(to: PeerLike): Promise<NapiPingResult>;
+
+  /**
+   * Tailnet identity (WhoIs) of the node that owns an address — the control
+   * plane's answer, never a peer's claim about itself. Accepts a `Peer`
+   * handle, any peer query, or a raw tailnet IP / `ip:port` (e.g. a QUIC
+   * connection's `remoteAddress()` verbatim — which may belong to a tailnet
+   * device that is NOT a mesh peer). Resolves `null` when the tailnet has
+   * no identity for the address. Requires a v3 sidecar.
+   */
+  whois(to: PeerLike): Promise<NapiPeerIdentity | null>;
 
   /** Handle-first raw TCP dial (RFC 021, PeerLike per RFC 022 §6.3). */
   openTcp(to: PeerLike, port: number): Promise<NapiTcpSocket>;
@@ -334,6 +346,9 @@ export async function createMeshNode(options: CreateMeshNodeOptions): Promise<Me
 
   const nativePing = node.ping.bind(node);
   mesh.ping = async (to: PeerLike) => nativePing(peerLikeToQuery(to));
+
+  const nativeWhois = node.whois.bind(node);
+  mesh.whois = async (to: PeerLike) => nativeWhois(peerLikeToQuery(to));
 
   const nativeOpenTcp = node.openTcp.bind(node);
   mesh.openTcp = (to: PeerLike, port: number) => nativeOpenTcp(peerLikeToQuery(to), port);

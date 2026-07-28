@@ -142,6 +142,43 @@ pub struct NapiPingResult {
 }
 
 // ---------------------------------------------------------------------------
+// WhoIs identity
+// ---------------------------------------------------------------------------
+
+/// A tailnet WhoIs identity: the control plane's answer about who owns an
+/// address. This is transport-derived — never a peer's claim about itself.
+///
+/// Every field is optional: tagged nodes carry node identity but no user
+/// profile, and legacy sidecars may omit fields. A fully anonymous caller has
+/// no identity at all (`whois` resolves `null` instead).
+#[napi(object)]
+#[derive(Clone)]
+pub struct NapiPeerIdentity {
+    /// MagicDNS name (e.g. "kitchen.tail1234.ts.net"), trailing dot stripped.
+    pub dns_name: Option<String>,
+    /// Tailscale login (owner) name, e.g. "alice@example.com".
+    pub login_name: Option<String>,
+    /// Human-readable display name from the identity provider.
+    pub display_name: Option<String>,
+    /// URL of the owner's profile picture.
+    pub profile_pic_url: Option<String>,
+    /// Stable Tailscale node id (WhoIs `Node.StableID`).
+    pub node_id: Option<String>,
+}
+
+impl From<truffle_core::network::TailscalePeerIdentity> for NapiPeerIdentity {
+    fn from(identity: truffle_core::network::TailscalePeerIdentity) -> Self {
+        Self {
+            dns_name: identity.dns_name,
+            login_name: identity.login_name,
+            display_name: identity.display_name,
+            profile_pic_url: identity.profile_pic_url,
+            node_id: identity.node_id,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Health info
 // ---------------------------------------------------------------------------
 

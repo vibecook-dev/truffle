@@ -161,6 +161,25 @@ pub trait NetworkProvider: Send + Sync {
     /// Node health info (key expiry, connection quality, warnings).
     fn health(&self) -> impl std::future::Future<Output = HealthInfo> + Send;
 
+    /// Tailnet identity of the node that owns `addr` (Tailscale WhoIs).
+    ///
+    /// Unlike [`peers`](Self::peers), this reaches ANY tailnet device — other
+    /// apps' nodes, plain machines, tagged nodes — not just app-filtered mesh
+    /// peers. `Ok(None)` means the lookup succeeded but the tailnet has no
+    /// identity for the address (anonymous — absent, not fabricated).
+    ///
+    /// The default implementation reports the capability as unsupported, so
+    /// providers without WhoIs (e.g. mocks) keep compiling unchanged.
+    fn whois(
+        &self,
+        _addr: &str,
+    ) -> impl std::future::Future<Output = Result<Option<TailscalePeerIdentity>, NetworkError>> + Send
+    {
+        std::future::ready(Err(NetworkError::Unsupported(
+            "whois not supported by this provider".into(),
+        )))
+    }
+
     // ── Reverse proxy (optional, requires sidecar) ──
 
     /// Start a reverse proxy. Only supported by providers with sidecar integration.
@@ -375,6 +394,34 @@ pub struct TailscalePeerIdentity {
     pub profile_pic_url: Option<String>,
     /// Stable Tailscale node ID (WhoIs `Node.StableID`).
     pub node_id: Option<String>,
+}
+
+impl TailscalePeerIdentity {
+    /// Map present-but-empty fields to `None`. The wire contract says empty
+    /// fields are omitted, but the "absent, not fabricated" guarantee must
+    /// not depend on the peer's serializer honoring that.
+    pub(crate) fn normalized(mut self) -> Self {
+        fn drop_empty(field: &mut Option<String>) {
+            if field.as_deref().is_some_and(str::is_empty) {
+                *field = None;
+            }
+        }
+        drop_empty(&mut self.dns_name);
+        drop_empty(&mut self.login_name);
+        drop_empty(&mut self.display_name);
+        drop_empty(&mut self.profile_pic_url);
+        drop_empty(&mut self.node_id);
+        self
+    }
+
+    /// True when no field carries any information.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.dns_name.is_none()
+            && self.login_name.is_none()
+            && self.display_name.is_none()
+            && self.profile_pic_url.is_none()
+            && self.node_id.is_none()
+    }
 }
 
 // ---------------------------------------------------------------------------

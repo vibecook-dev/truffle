@@ -9,7 +9,12 @@
  * the **same** object so `Map<Peer, T>` and `===` work.
  */
 
-import type { NapiNode, NapiPeer, NapiPingResult } from '@vibecook/truffle-native';
+import type {
+  NapiNode,
+  NapiPeer,
+  NapiPeerIdentity,
+  NapiPingResult,
+} from '@vibecook/truffle-native';
 
 /** Opaque process-local peer token (`{tailscaleId}:{generation}`). */
 export type PeerRef = string & { readonly __trufflePeerRef: unique symbol };
@@ -157,6 +162,15 @@ export class Peer {
 
   ping(): Promise<NapiPingResult> {
     return this.#node.ping(this.#routeId);
+  }
+
+  /**
+   * The peer's tailnet WhoIs identity (login, display name, MagicDNS name,
+   * node id) — transport-derived from the control plane, never the peer's
+   * claim about itself. `null` when the tailnet has no identity for it.
+   */
+  whois(): Promise<NapiPeerIdentity | null> {
+    return this.#node.whois(this.#routeId);
   }
 }
 
