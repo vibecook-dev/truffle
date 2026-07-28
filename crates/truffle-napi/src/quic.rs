@@ -11,11 +11,13 @@ use std::sync::Arc;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, OnceCell};
 
 use truffle_core::network::tailscale::TailscaleProvider;
 use truffle_core::transport::quic::{QuicConnection, QuicListener};
 use truffle_core::Node;
+
+use crate::types::NapiPeerIdentity;
 
 /// Default read size when the caller does not specify one (64 KiB).
 const DEFAULT_READ_BYTES: u32 = 64 * 1024;
@@ -40,14 +42,25 @@ async fn peer_id_for_ip(node: &Arc<Node<TailscaleProvider>>, ip: &str) -> Option
 #[napi]
 pub struct NapiQuicConnection {
     conn: Arc<QuicConnection>,
+    node: Arc<Node<TailscaleProvider>>,
     remote_peer_id: Option<String>,
+    /// Lazily-resolved WhoIs identity: successful answers (including a
+    /// genuine anonymous `None`) cache for the connection's lifetime;
+    /// lookup errors are NOT cached, so the next call retries.
+    remote_identity: OnceCell<Option<NapiPeerIdentity>>,
 }
 
 impl NapiQuicConnection {
-    pub(crate) fn new(conn: QuicConnection, remote_peer_id: Option<String>) -> Self {
+    pub(crate) fn new(
+        conn: QuicConnection,
+        remote_peer_id: Option<String>,
+        node: Arc<Node<TailscaleProvider>>,
+    ) -> Self {
         Self {
             conn: Arc::new(conn),
+            node,
             remote_peer_id,
+            remote_identity: OnceCell::new(),
         }
     }
 }
@@ -92,6 +105,32 @@ impl NapiQuicConnection {
     #[napi]
     pub fn remote_peer_id(&self) -> Option<String> {
         self.remote_peer_id.clone()
+    }
+
+    /// The peer's full WhoIs identity — the tailnet's answer about the
+    /// connection's WireGuard-authenticated remote address, never anything
+    /// the stream claims about itself. Reaches ANY tailnet caller, not just
+    /// mesh peers, and works on outbound connections too.
+    ///
+    /// Resolved lazily on first call — `accept()` never blocks on identity —
+    /// and cached for the connection's lifetime. `null` for anonymous
+    /// callers, on pre-v3 sidecars, and when the lookup fails; failures are
+    /// not cached, so calling again retries (use `node.whois()` to
+    /// distinguish "anonymous" from "lookup failed").
+    #[napi]
+    pub async fn remote_identity(&self) -> Option<NapiPeerIdentity> {
+        let ip = self.conn.remote_address().ip().to_string();
+        self.remote_identity
+            .get_or_try_init(|| async {
+                self.node
+                    .whois(&ip)
+                    .await
+                    .map(|identity| identity.map(NapiPeerIdentity::from))
+            })
+            .await
+            .ok()
+            .cloned()
+            .flatten()
     }
 
     /// Close the connection and all its streams. Idempotent.
@@ -246,7 +285,14 @@ impl NapiQuicListener {
             Some(conn) => {
                 let remote_ip = conn.remote_address().ip().to_string();
                 let peer_id = peer_id_for_ip(&self.node, &remote_ip).await;
-                Ok(Some(NapiQuicConnection::new(conn, peer_id)))
+                // No WhoIs here: identity resolves lazily on the first
+                // remoteIdentity() call, so a slow sidecar answer can never
+                // stall the accept loop for connections queued behind it.
+                Ok(Some(NapiQuicConnection::new(
+                    conn,
+                    peer_id,
+                    self.node.clone(),
+                )))
             }
             None => Ok(None),
         }

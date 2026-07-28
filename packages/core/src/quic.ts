@@ -9,6 +9,7 @@
 import { Duplex } from 'node:stream';
 import type {
   NapiNode,
+  NapiPeerIdentity,
   NapiQuicConnection,
   NapiQuicListener,
   NapiQuicStream,
@@ -85,6 +86,18 @@ export class TruffleQuicConnection implements AsyncIterable<TruffleQuicStream> {
     this.#native = native;
     this.remoteAddress = native.remoteAddress();
     this.remotePeerId = native.remotePeerId() ?? undefined;
+  }
+
+  /**
+   * The peer's full WhoIs identity — the tailnet's answer about the
+   * connection's WireGuard-authenticated remote address, never anything the
+   * stream claims about itself. Resolved lazily on first call and cached
+   * for the connection's lifetime; works on outbound connections too.
+   * `null` for anonymous callers, on pre-v3 sidecars, and when the lookup
+   * fails (failures are retried on the next call).
+   */
+  remoteIdentity(): Promise<NapiPeerIdentity | null> {
+    return this.#native.remoteIdentity();
   }
 
   /** Open a new bidirectional byte stream on this connection. */

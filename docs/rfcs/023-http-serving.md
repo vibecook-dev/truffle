@@ -275,11 +275,14 @@ exactly, so old cores work against new sidecars):
 ```
 
 - **Identity headers (G3 fix)**: on every proxied request, first **strip** all
-  inbound `Tailscale-User-*` headers, then set `Tailscale-User-Login`,
+  inbound `Tailscale-*` headers, then set `Tailscale-User-Login`,
   `Tailscale-User-Name`, `Tailscale-User-Profile-Pic` from the connection's WhoIs
   (Tailscale's own header convention). Applies to route targets and the v1
   single-target path; static routes need none. `X-Forwarded-For`/`-Proto` set
-  explicitly.
+  explicitly. *Amended (sidecar v3):* `Tailscale-Node-Id` (WhoIs `Node.StableID`)
+  and `Tailscale-Node-Name` (MagicDNS FQDN, trailing dot stripped) are injected
+  alongside the user trio — node identity is present even for callers with no
+  user profile (tagged nodes), which the login gate structurally cannot see.
 - **Target validation (G2 fix)**: reject non-loopback `targetUrl`/`targetHost`
   unless `allowNonLoopback` — at *add* time, with a distinct error code
   (`TARGET_NOT_LOOPBACK`).
@@ -455,8 +458,10 @@ Deviations and refinements from the spec above, all deliberate:
 - **D5 — TLS defaults differ by path, deliberately**: `serve` defaults `tls: true`
   (browser audience; preserves shipped behavior); `createServer` defaults
   `tls: false` (app↔app default; WireGuard already encrypts). Both explicit in docs.
-- **D6 — identity**: engine injects `Tailscale-User-*` after stripping inbound
-  copies; JS path exposes `socket.remotePeer` and injects nothing.
+- **D6 — identity**: engine injects `Tailscale-User-*` (and, since sidecar v3,
+  `Tailscale-Node-Id`/`Tailscale-Node-Name`) after stripping the whole inbound
+  `Tailscale-*` namespace; JS path exposes `socket.remotePeer` and injects
+  nothing.
 - **D7 — loopback-only targets** by default; `allowNonLoopback` opt-out at add time.
 - **D8 — hostname override** ships with TLS (Phase 2), single-label validation,
   tradeoff documented (§6.4).

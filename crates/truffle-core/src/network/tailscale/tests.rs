@@ -342,6 +342,67 @@ fn event_ping_result_relayed_deserialization() {
 }
 
 #[test]
+fn event_whois_result_deserialization() {
+    // Mirrors the Go side's TestWhoisResultWireShape payload exactly.
+    let json = r#"{"event":"tsnet:whoisResult","data":{"addr":"100.64.0.7","identity":{"dnsName":"kitchen.tail1234.ts.net","loginName":"alice@corp.com","nodeId":"nQRJl4CNTRL"},"requestId":"r1"}}"#;
+    let event: SidecarEvent = serde_json::from_str(json).unwrap();
+    let data: WhoisResultEventData = serde_json::from_value(event.data).unwrap();
+    assert_eq!(data.addr, "100.64.0.7");
+    assert!(data.error.is_empty());
+    let identity = data.identity.expect("identity present");
+    assert_eq!(
+        identity.dns_name.as_deref(),
+        Some("kitchen.tail1234.ts.net")
+    );
+    assert_eq!(identity.login_name.as_deref(), Some("alice@corp.com"));
+    assert_eq!(identity.node_id.as_deref(), Some("nQRJl4CNTRL"));
+    assert_eq!(identity.display_name, None);
+}
+
+#[test]
+fn whois_identity_normalization_drops_empty_fields() {
+    // "Absent, not fabricated" must survive a serializer that emits empty
+    // strings instead of omitting fields (e.g. a zero-value UserProfile).
+    let identity = crate::network::TailscalePeerIdentity {
+        dns_name: Some(String::new()),
+        login_name: Some("alice@corp.com".into()),
+        display_name: Some(String::new()),
+        profile_pic_url: None,
+        node_id: Some("nQRJl4CNTRL".into()),
+    }
+    .normalized();
+    assert_eq!(identity.dns_name, None);
+    assert_eq!(identity.display_name, None);
+    assert_eq!(identity.login_name.as_deref(), Some("alice@corp.com"));
+    assert_eq!(identity.node_id.as_deref(), Some("nQRJl4CNTRL"));
+    assert!(!identity.is_empty());
+
+    let hollow = crate::network::TailscalePeerIdentity {
+        dns_name: Some(String::new()),
+        login_name: Some(String::new()),
+        display_name: None,
+        profile_pic_url: None,
+        node_id: Some(String::new()),
+    }
+    .normalized();
+    assert!(
+        hollow.is_empty(),
+        "all-empty identity must normalize to empty"
+    );
+}
+
+#[test]
+fn event_whois_result_anonymous_deserialization() {
+    // Anonymous caller: identity key omitted entirely, no error.
+    let json = r#"{"event":"tsnet:whoisResult","data":{"addr":"100.64.0.8"}}"#;
+    let event: SidecarEvent = serde_json::from_str(json).unwrap();
+    let data: WhoisResultEventData = serde_json::from_value(event.data).unwrap();
+    assert_eq!(data.addr, "100.64.0.8");
+    assert_eq!(data.identity, None);
+    assert!(data.error.is_empty());
+}
+
+#[test]
 fn event_peer_changed_join_deserialization() {
     let json = r#"{"event":"tsnet:peerChanged","data":{"changeType":"joined","peerId":"nodeNew","peer":{"id":"nodeNew","hostname":"truffle-cli-new","dnsName":"truffle-cli-new.tailnet.ts.net","tailscaleIPs":["100.64.0.10"],"online":true}}}"#;
     let event: SidecarEvent = serde_json::from_str(json).unwrap();

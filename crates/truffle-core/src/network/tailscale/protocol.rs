@@ -109,6 +109,14 @@ pub(crate) struct PingCommandData {
     pub ping_type: Option<String>,
 }
 
+/// Data payload for `tsnet:whois`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WhoisCommandData {
+    /// Tailnet IP or ip:port to look up.
+    pub addr: String,
+}
+
 /// Data payload for `tsnet:watchPeers`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -169,6 +177,7 @@ pub(crate) mod command_type {
     pub const LISTEN: &str = "tsnet:listen";
     pub const UNLISTEN: &str = "tsnet:unlisten";
     pub const PING: &str = "tsnet:ping";
+    pub const WHOIS: &str = "tsnet:whois";
     pub const WATCH_PEERS: &str = "tsnet:watchPeers";
     pub const LISTEN_PACKET: &str = "tsnet:listenPacket";
     pub const PROXY_ADD: &str = "proxy:add";
@@ -207,6 +216,7 @@ pub(crate) mod event_type {
     pub const LISTENING: &str = "tsnet:listening";
     pub const UNLISTENED: &str = "tsnet:unlistened";
     pub const PING_RESULT: &str = "tsnet:pingResult";
+    pub const WHOIS_RESULT: &str = "tsnet:whoisResult";
     pub const PEER_CHANGED: &str = "tsnet:peerChanged";
     pub const LISTENING_PACKET: &str = "tsnet:listeningPacket";
     pub const PROXY_ADDED: &str = "proxy:added";
@@ -357,6 +367,20 @@ pub(crate) struct PingResultEventData {
     pub relay: String,
     #[serde(default)]
     pub peer_addr: String,
+    #[serde(default)]
+    pub error: String,
+}
+
+/// Data from `tsnet:whoisResult` event.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WhoisResultEventData {
+    #[serde(default)]
+    pub addr: String,
+    /// `None` with an empty `error` = the lookup found nothing: the address
+    /// maps to no known tailnet node (anonymous — absent, not fabricated).
+    #[serde(default)]
+    pub identity: Option<crate::network::TailscalePeerIdentity>,
     #[serde(default)]
     pub error: String,
 }

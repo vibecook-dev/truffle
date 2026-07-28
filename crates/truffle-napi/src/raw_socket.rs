@@ -19,6 +19,8 @@ use truffle_core::network::tailscale::TailscaleProvider;
 use truffle_core::transport::RawListener;
 use truffle_core::Node;
 
+use crate::types::NapiPeerIdentity;
+
 /// Default read size when the caller does not specify one (64 KiB —
 /// matches the file-transfer chunk size).
 const DEFAULT_READ_BYTES: u32 = 64 * 1024;
@@ -45,6 +47,7 @@ pub struct NapiTcpSocket {
     remote_address: String,
     remote_peer_id: Option<String>,
     remote_peer_name: Option<String>,
+    remote_identity: Option<NapiPeerIdentity>,
 }
 
 impl NapiTcpSocket {
@@ -54,6 +57,7 @@ impl NapiTcpSocket {
         remote_address: String,
         remote_peer_id: Option<String>,
         remote_peer_name: Option<String>,
+        remote_identity: Option<NapiPeerIdentity>,
     ) -> Self {
         let (read, write) = stream.into_split();
         Self {
@@ -64,6 +68,7 @@ impl NapiTcpSocket {
             remote_address,
             remote_peer_id,
             remote_peer_name,
+            remote_identity,
         }
     }
 }
@@ -172,9 +177,20 @@ impl NapiTcpSocket {
     }
 
     /// Human-readable peer name from the WhoIs identity (inbound only).
+    ///
+    /// Provenance is indeterminate — it may be a display name, a login, or a
+    /// DNS name. Prefer `remoteIdentity()` when the distinction matters.
     #[napi]
     pub fn remote_peer_name(&self) -> Option<String> {
         self.remote_peer_name.clone()
+    }
+
+    /// The peer's full WhoIs identity (inbound only): DNS name, login,
+    /// display name, profile pic, node id — each individually optional.
+    /// `null` for outbound sockets and anonymous callers.
+    #[napi]
+    pub fn remote_identity(&self) -> Option<NapiPeerIdentity> {
+        self.remote_identity.clone()
     }
 }
 
@@ -227,11 +243,13 @@ impl NapiTcpListener {
                         .or_else(|| i.login_name.clone())
                         .or_else(|| i.dns_name.clone())
                 });
+                let identity = incoming.remote_identity.map(NapiPeerIdentity::from);
                 Ok(Some(NapiTcpSocket::from_stream(
                     incoming.stream,
                     incoming.remote_addr,
                     peer_id,
                     peer_name,
+                    identity,
                 )))
             }
             None => Ok(None),

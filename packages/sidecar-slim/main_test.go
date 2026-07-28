@@ -353,12 +353,14 @@ func TestShouldWrapTLS(t *testing.T) {
 }
 
 // TestStatusEventAdvertisesProtocolVersion verifies the status payload carries
-// protocolVersion so an RFC 023-aware core enables v2 serve features instead of
+// protocolVersion so the core gates capabilities by sidecar version instead of
 // treating this sidecar as v1. The core reads it off the "running" status/started
 // event (protocol.rs StatusEventData.protocol_version, camelCase, integer).
+// The pin is deliberate: v3 = tsnet:whois + node identity headers; bumping the
+// constant means updating this test AND the version gates in provider.rs.
 func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
-	if sidecarProtocolVersion != 2 {
-		t.Fatalf("sidecarProtocolVersion = %d, want 2 (RFC 023 serve v2)", sidecarProtocolVersion)
+	if sidecarProtocolVersion != 3 {
+		t.Fatalf("sidecarProtocolVersion = %d, want 3 (tsnet:whois + node identity headers)", sidecarProtocolVersion)
 	}
 
 	var buf bytes.Buffer
@@ -366,7 +368,7 @@ func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
 	s.sendStatus("running", "host", "host.tail.ts.net", "100.64.0.1", "")
 
 	// The core matches the camelCase key exactly, as a JSON integer.
-	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":2`)) {
+	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":3`)) {
 		t.Errorf("status payload missing protocolVersion on the wire: %s", strings.TrimSpace(buf.String()))
 	}
 
@@ -379,6 +381,45 @@ func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
 	}
 	if ev.Data.ProtocolVersion != sidecarProtocolVersion {
 		t.Errorf("status protocolVersion = %d, want %d", ev.Data.ProtocolVersion, sidecarProtocolVersion)
+	}
+}
+
+// TestWhoisResultWireShape pins the tsnet:whoisResult payload: identity rides
+// as a nested camelCase object (protocol.rs WhoisResultEventData deserializes
+// it straight into TailscalePeerIdentity), and the anonymous case omits the
+// identity key entirely — absent, not an empty object.
+func TestWhoisResultWireShape(t *testing.T) {
+	id := peerIdentityData{
+		DNSName:   "kitchen.tail1234.ts.net",
+		LoginName: "alice@corp.com",
+		NodeID:    "nQRJl4CNTRL",
+	}
+	b, err := json.Marshal(whoisResultData{Addr: "100.64.0.7", Identity: &id, RequestID: "r1"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{
+		`"addr":"100.64.0.7"`,
+		`"identity":{`,
+		`"dnsName":"kitchen.tail1234.ts.net"`,
+		`"loginName":"alice@corp.com"`,
+		`"nodeId":"nQRJl4CNTRL"`,
+		`"requestId":"r1"`,
+	} {
+		if !bytes.Contains(b, []byte(want)) {
+			t.Errorf("whoisResult payload missing %s: %s", want, b)
+		}
+	}
+
+	anon, err := json.Marshal(whoisResultData{Addr: "100.64.0.8"})
+	if err != nil {
+		t.Fatalf("marshal anonymous: %v", err)
+	}
+	if bytes.Contains(anon, []byte(`"identity"`)) {
+		t.Errorf("anonymous whoisResult must omit identity: %s", anon)
+	}
+	if bytes.Contains(anon, []byte(`"error"`)) {
+		t.Errorf("anonymous whoisResult must omit error: %s", anon)
 	}
 }
 
@@ -659,6 +700,8 @@ func TestInjectIdentityHeaders(t *testing.T) {
 		LoginName:     "alice@corp.com",
 		DisplayName:   "Alice Example",
 		ProfilePicURL: "https://corp.example/alice.png",
+		NodeID:        "nQRJl4CNTRL",
+		DNSName:       "alice-mbp.tail1234.ts.net",
 	})
 	if got := h.Get(hdrUserLogin); got != "alice@corp.com" {
 		t.Errorf("%s = %q, want alice@corp.com", hdrUserLogin, got)
@@ -669,6 +712,35 @@ func TestInjectIdentityHeaders(t *testing.T) {
 	if got := h.Get(hdrProfilePic); got != "https://corp.example/alice.png" {
 		t.Errorf("%s = %q, want the profile pic URL", hdrProfilePic, got)
 	}
+	if got := h.Get(hdrNodeID); got != "nQRJl4CNTRL" {
+		t.Errorf("%s = %q, want nQRJl4CNTRL", hdrNodeID, got)
+	}
+	if got := h.Get(hdrNodeName); got != "alice-mbp.tail1234.ts.net" {
+		t.Errorf("%s = %q, want the MagicDNS name", hdrNodeName, got)
+	}
+}
+
+// TestInjectIdentityHeadersTaggedNode is the caller-without-a-user-profile case:
+// a tagged node has Node identity but no UserProfile, so only the node pair is
+// injected. This is exactly what the node headers exist for — the login gate
+// cannot see these callers at all.
+func TestInjectIdentityHeadersTaggedNode(t *testing.T) {
+	h := http.Header{}
+	injectIdentityHeaders(h, peerIdentityData{
+		NodeID:  "nTAGGEDNODE",
+		DNSName: "ci-runner.tail1234.ts.net",
+	})
+	if got := h.Get(hdrNodeID); got != "nTAGGEDNODE" {
+		t.Errorf("%s = %q, want nTAGGEDNODE", hdrNodeID, got)
+	}
+	if got := h.Get(hdrNodeName); got != "ci-runner.tail1234.ts.net" {
+		t.Errorf("%s = %q, want the MagicDNS name", hdrNodeName, got)
+	}
+	for _, k := range []string{hdrUserLogin, hdrUserName, hdrProfilePic} {
+		if _, ok := h[k]; ok {
+			t.Errorf("%s present for tagged node: %q", k, h[k])
+		}
+	}
 }
 
 // TestSanitizeThenInjectOverridesSpoof exercises the real request-path order
@@ -678,15 +750,22 @@ func TestInjectIdentityHeaders(t *testing.T) {
 func TestSanitizeThenInjectOverridesSpoof(t *testing.T) {
 	h := http.Header{}
 	h.Set(hdrUserLogin, "attacker@evil.com")
+	h.Set(hdrNodeID, "nFORGEDNODE")
 
 	sanitizeTailscaleHeaders(h)
-	injectIdentityHeaders(h, peerIdentityData{LoginName: "alice@corp.com"})
+	injectIdentityHeaders(h, peerIdentityData{LoginName: "alice@corp.com", NodeID: "nREALNODE"})
 
 	if got := h.Get(hdrUserLogin); got != "alice@corp.com" {
 		t.Errorf("%s = %q, want alice@corp.com (spoof must be overridden)", hdrUserLogin, got)
 	}
 	if vals := h.Values(hdrUserLogin); len(vals) != 1 {
 		t.Errorf("%s has %d values %q, want exactly 1 (no merge with spoof)", hdrUserLogin, len(vals), vals)
+	}
+	if got := h.Get(hdrNodeID); got != "nREALNODE" {
+		t.Errorf("%s = %q, want nREALNODE (forged node id must be overridden)", hdrNodeID, got)
+	}
+	if vals := h.Values(hdrNodeID); len(vals) != 1 {
+		t.Errorf("%s has %d values %q, want exactly 1 (no merge with forgery)", hdrNodeID, len(vals), vals)
 	}
 }
 
@@ -701,7 +780,7 @@ func TestInjectIdentityHeadersEmptyInjectsNothing(t *testing.T) {
 	sanitizeTailscaleHeaders(h)
 	injectIdentityHeaders(h, peerIdentityData{}) // anonymous
 
-	for _, k := range []string{hdrUserLogin, hdrUserName, hdrProfilePic} {
+	for _, k := range []string{hdrUserLogin, hdrUserName, hdrProfilePic, hdrNodeID, hdrNodeName} {
 		if _, ok := h[k]; ok {
 			t.Errorf("%s present for anonymous caller: %q", k, h[k])
 		}

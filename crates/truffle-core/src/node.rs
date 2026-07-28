@@ -977,6 +977,40 @@ impl<N: NetworkProvider + 'static> Node<N> {
         self.network.ping(&addr).await.map_err(NodeError::Network)
     }
 
+    /// Tailnet identity (WhoIs) of the node that owns an address.
+    ///
+    /// Accepts a raw tailnet IP or `ip:port` (e.g. a QUIC connection's
+    /// `remote_address()` verbatim — the port is ignored), or any
+    /// [`resolve_peer_id`](Self::resolve_peer_id) identifier form for mesh
+    /// peers. Unlike [`peers`](Self::peers), a raw address reaches ANY
+    /// tailnet device — other apps' truffle nodes, plain machines, tagged
+    /// nodes — and the answer carries user identity (login, display name,
+    /// profile pic) that [`Peer`] deliberately does not.
+    ///
+    /// `Ok(None)` means the tailnet has no identity for the address: the
+    /// caller is anonymous — absent, not fabricated.
+    pub async fn whois(
+        &self,
+        addr: &str,
+    ) -> Result<Option<crate::network::TailscalePeerIdentity>, NodeError> {
+        self.ensure_not_stopped()?;
+        // Canonicalize parsed addresses (`ip.to_string()`, not the caller's
+        // spelling): the sidecar echoes the sent string verbatim for
+        // correlation, and a canonical form keeps that byte-exact even for
+        // exotic-but-valid IPv6 spellings.
+        let target = if let Ok(ip) = addr.parse::<std::net::IpAddr>() {
+            ip.to_string()
+        } else if let Ok(sock) = addr.parse::<std::net::SocketAddr>() {
+            sock.ip().to_string()
+        } else {
+            self.resolve_peer(addr).await?.ip.to_string()
+        };
+        self.network
+            .whois(&target)
+            .await
+            .map_err(NodeError::Network)
+    }
+
     /// Return health information from the network layer.
     pub async fn health(&self) -> HealthInfo {
         self.network.health().await
@@ -2195,6 +2229,33 @@ mod tests {
     }
 
     // ── Tests ────────────────────────────────────────────────────────
+
+    /// `whois` semantics on a provider without WhoIs support: a raw IP passes
+    /// straight through to the provider (surfacing `Unsupported`, never a
+    /// fabricated identity), while a non-IP identifier still goes through
+    /// peer resolution and fails as `PeerNotFound` for unknown peers.
+    #[tokio::test]
+    async fn whois_unsupported_provider_and_unknown_peer() {
+        let ws_port = random_port().await;
+        let (node, _event_tx, _network) = make_test_node("whois-node", ws_port).await;
+
+        match node.whois("100.64.0.9").await {
+            Err(NodeError::Network(NetworkError::Unsupported(_))) => {}
+            other => panic!("expected Unsupported for raw IP on mock provider, got {other:?}"),
+        }
+        // An `ip:port` string (a QUIC `remote_address()` verbatim) also
+        // reaches the provider — the port is stripped, never PeerNotFound.
+        match node.whois("100.64.0.9:52133").await {
+            Err(NodeError::Network(NetworkError::Unsupported(_))) => {}
+            other => panic!("expected Unsupported for ip:port on mock provider, got {other:?}"),
+        }
+        match node.whois("no-such-peer").await {
+            Err(NodeError::PeerNotFound(_)) => {}
+            other => panic!("expected PeerNotFound for unknown identifier, got {other:?}"),
+        }
+
+        node.stop().await;
+    }
 
     // ── Exhaustion tests (review: resource-exhaustion section) ────────
 
