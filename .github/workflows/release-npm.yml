@@ -21,7 +21,7 @@ jobs:
   publish:
     name: Publish @vibecook/truffle
     needs: preflight
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       # Draft assets are hidden from read-only workflow tokens.
       contents: write
