@@ -17,7 +17,9 @@ concurrency:
 
 jobs:
   release-please:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # The whole release train stays on GitHub-hosted runners — see the
+    # provenance notes on the publish jobs it gates and dispatches.
+    runs-on: ubuntu-latest
     timeout-minutes: 120
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
