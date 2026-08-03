@@ -164,7 +164,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-go@v6
-        with: { go-version: '1.26', cache-dependency-path: packages/sidecar-slim/go.sum }
+        with: { go-version: '1.26.5', cache-dependency-path: packages/sidecar-slim/go.sum }
       - name: Run real-network integration tests
         env:
           TRUFFLE_TEST_AUTHKEY: ${{ secrets.TRUFFLE_TEST_AUTHKEY }}
@@ -197,7 +197,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-go@v6
-        with: { go-version: '1.26', cache-dependency-path: packages/sidecar-slim/go.sum }
+        with: { go-version: '1.26.5', cache-dependency-path: packages/sidecar-slim/go.sum }
       - name: File transfer (10M x5)
         env: { TRUFFLE_TEST_AUTHKEY: ${{ secrets.TRUFFLE_TEST_AUTHKEY }} }
         run: cargo run -p truffle-bench --release -- file-transfer --size 10M --iterations 5

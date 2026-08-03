@@ -106,8 +106,12 @@ jobs:
       - name: Install Go toolchain
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.26'
+          go-version: '1.26.5'
           cache-dependency-path: packages/sidecar-slim/go.sum
+
+      - name: Test Go sidecar
+        working-directory: packages/sidecar-slim
+        run: go test ./...
 
       - name: Build Go sidecar (Unix)
         if: runner.os != 'Windows'

@@ -102,7 +102,7 @@ jobs:
       - name: Install Go toolchain
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.26'
+          go-version: '1.26.5'
           cache-dependency-path: packages/sidecar-slim/go.sum
 
       - name: Install musl toolchain (Linux x64)
@@ -134,6 +134,11 @@ jobs:
         run: |
           go build -ldflags "-s -w -X main.Version=${RELEASE_TAG}" \
             -o "${{ matrix.sidecar_bin }}" .
+
+      - name: Verify sidecar Go toolchain
+        working-directory: packages/sidecar-slim
+        shell: bash
+        run: go version -m "${{ matrix.sidecar_bin }}" | grep -F 'go1.26.5'
 
       - name: Prepare staging directory
         shell: bash

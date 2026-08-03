@@ -5,16 +5,22 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -179,9 +185,105 @@ func newTestShim() *shim {
 		dynamicListeners: make(map[uint16]net.Listener),
 		udpRelays:        make(map[uint16]*udpRelay),
 		proxies:          make(map[string]*proxyEntry),
+		pendingProxyAdds: make(map[string]*pendingProxyAdd),
 		ctx:              ctx,
 		cancel:           cancel,
 	}
+}
+
+type trackingStaticRoot struct {
+	closeCalls atomic.Int32
+	closeOnce  sync.Once
+	closed     chan struct{}
+	onClose    func()
+}
+
+func newTrackingStaticRoot() *trackingStaticRoot {
+	return &trackingStaticRoot{closed: make(chan struct{})}
+}
+
+func (r *trackingStaticRoot) Open(string) (*os.File, error) {
+	return nil, fs.ErrNotExist
+}
+
+func (r *trackingStaticRoot) Close() error {
+	r.closeCalls.Add(1)
+	r.closeOnce.Do(func() {
+		if r.onClose != nil {
+			r.onClose()
+		}
+		close(r.closed)
+	})
+	return nil
+}
+
+type testListenerAddr string
+
+func (a testListenerAddr) Network() string { return "test" }
+func (a testListenerAddr) String() string  { return string(a) }
+
+type trackingListener struct {
+	closeCalls atomic.Int32
+	closeOnce  sync.Once
+	closed     chan struct{}
+}
+
+func newTrackingListener() *trackingListener {
+	return &trackingListener{closed: make(chan struct{})}
+}
+
+func (l *trackingListener) Accept() (net.Conn, error) {
+	<-l.closed
+	return nil, net.ErrClosed
+}
+
+func (l *trackingListener) Close() error {
+	l.closeCalls.Add(1)
+	l.closeOnce.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *trackingListener) Addr() net.Addr { return testListenerAddr("listener") }
+
+func waitForSignal(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+func waitForProxyEntry(t *testing.T, s *shim, id string) *proxyEntry {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		s.proxyMu.Lock()
+		entry := s.proxies[id]
+		s.proxyMu.Unlock()
+		if entry != nil {
+			return entry
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for proxy %q", id)
+	return nil
+}
+
+func staticProxyAddData(id string, port uint16, dir string) proxyAddData {
+	tlsOff := false
+	return proxyAddData{
+		ID: id, Name: id, ListenPort: port,
+		TargetHost: "localhost", TargetScheme: "http", Tls: &tlsOff,
+		Routes: []proxyRouteData{{Prefix: "/", Dir: dir}},
+	}
+}
+
+func setStaticRootOpener(t *testing.T, opener func(string) (staticRoot, error)) {
+	t.Helper()
+	previous := openStaticRoot
+	openStaticRoot = opener
+	t.Cleanup(func() { openStaticRoot = previous })
 }
 
 // TestMonitorStateExitsAcrossRestart is the goroutine-leak regression: a
@@ -909,10 +1011,41 @@ func writeServeFile(t *testing.T, base, rel, content string) {
 
 // serveRequest drives an http.Handler with httptest and returns the recorder.
 func serveRequest(h http.Handler, method, target string) *httptest.ResponseRecorder {
+	return serveRequestWithHeaders(h, method, target, nil)
+}
+
+func serveRequestWithHeaders(h http.Handler, method, target string, headers http.Header) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, target, nil)
+	for name, values := range headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+func openTestSPAFileServer(t *testing.T, dir, fallback string) http.Handler {
+	t.Helper()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot(%q): %v", dir, err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	return newSPAFileServer(root, fallback)
+}
+
+func makeServeSymlink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		// Local Windows environments may not grant symlink privilege. CI is a
+		// security gate and must never silently skip this coverage.
+		if runtime.GOOS == "windows" && os.Getenv("CI") == "" {
+			t.Skipf("symlinks unavailable on this Windows host: %v", err)
+		}
+		t.Fatalf("symlink %q -> %q: %v", link, target, err)
+	}
 }
 
 // TestSPAFileServer covers the static handler's RFC 023 §6.2 hardening: files
@@ -928,8 +1061,8 @@ func TestSPAFileServer(t *testing.T) {
 	writeServeFile(t, dir, ".env", "SECRET=topsecret")
 	writeServeFile(t, dir, ".git/config", "[core]\n\trepositoryformatversion = 0")
 
-	withFallback := spaFileServer(dir, "/index.html")
-	noFallback := spaFileServer(dir, "")
+	withFallback := openTestSPAFileServer(t, dir, "/index.html")
+	noFallback := openTestSPAFileServer(t, dir, "")
 
 	t.Run("serves file with body and mime", func(t *testing.T) {
 		rec := serveRequest(noFallback, http.MethodGet, "/style.css")
@@ -1021,6 +1154,593 @@ func TestSPAFileServer(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("range and conditional-date behavior remains compatible", func(t *testing.T) {
+		rangeRec := serveRequestWithHeaders(noFallback, http.MethodGet, "/style.css", http.Header{
+			"Range": {"bytes=5-9"},
+		})
+		if rangeRec.Code != http.StatusPartialContent {
+			t.Fatalf("range status = %d, want 206", rangeRec.Code)
+		}
+		if got := rangeRec.Header().Get("Content-Range"); got != "bytes 5-9/15" {
+			t.Errorf("Content-Range = %q, want %q", got, "bytes 5-9/15")
+		}
+		if body := rangeRec.Body.String(); body != "color" {
+			t.Errorf("range body = %q, want %q", body, "color")
+		}
+
+		first := serveRequest(noFallback, http.MethodGet, "/style.css")
+		lastModified := first.Header().Get("Last-Modified")
+		if lastModified == "" {
+			t.Fatal("Last-Modified is empty")
+		}
+		if etag := first.Header().Get("ETag"); etag != "" {
+			t.Errorf("generated ETag = %q, want none", etag)
+		}
+		conditional := serveRequestWithHeaders(noFallback, http.MethodGet, "/style.css", http.Header{
+			"If-Modified-Since": {lastModified},
+		})
+		if conditional.Code != http.StatusNotModified {
+			t.Errorf("conditional status = %d, want 304", conditional.Code)
+		}
+	})
+}
+
+func TestClassifyStaticLookupError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want staticServeResult
+	}{
+		{name: "not exist", err: &os.PathError{Op: "openat", Path: "missing", Err: fs.ErrNotExist}, want: staticServeMiss},
+		{name: "not a directory", err: &os.PathError{Op: "openat", Path: "file/child", Err: syscall.ENOTDIR}, want: staticServeMiss},
+		{name: "permission", err: &os.PathError{Op: "openat", Path: "secret", Err: fs.ErrPermission}, want: staticServeDenied},
+		{name: "root escape", err: errors.New("path escapes from parent"), want: staticServeDenied},
+		{name: "arbitrary failure", err: errors.New("lookup failed"), want: staticServeDenied},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyStaticLookupError(tt.err); got != tt.want {
+				t.Errorf("classifyStaticLookupError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSPAFileServerRootConfinement(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	writeServeFile(t, dir, "index.html", "ROOT_INDEX")
+	writeServeFile(t, dir, "inside.txt", "INSIDE_FILE")
+	writeServeFile(t, dir, "inside-dir/index.html", "INSIDE_INDEX")
+	writeServeFile(t, dir, ".env", "IN_ROOT_DOTFILE")
+	writeServeFile(t, outside, "outside.txt", "OUTSIDE_SECRET")
+	writeServeFile(t, outside, "outside-dir/index.html", "OUTSIDE_INDEX")
+	writeServeFile(t, outside, "outside-dir/child.txt", "OUTSIDE_CHILD")
+
+	makeServeSymlink(t, filepath.Join(outside, "outside.txt"), filepath.Join(dir, "escape-file"))
+	makeServeSymlink(t, filepath.Join(outside, "outside-dir"), filepath.Join(dir, "escape-dir"))
+	makeServeSymlink(t, "inside.txt", filepath.Join(dir, "inside-file-link"))
+	makeServeSymlink(t, "inside-dir", filepath.Join(dir, "inside-dir-link"))
+	makeServeSymlink(t, ".env", filepath.Join(dir, "env-alias"))
+
+	noFallback := openTestSPAFileServer(t, dir, "")
+	withFallback := openTestSPAFileServer(t, dir, "/index.html")
+	externalFallback := openTestSPAFileServer(t, dir, "/escape-file")
+
+	denied := []struct {
+		name   string
+		target string
+		h      http.Handler
+	}{
+		{name: "external file", target: "/escape-file", h: noFallback},
+		{name: "external file trailing slash", target: "/escape-file/", h: noFallback},
+		{name: "external directory child", target: "/escape-dir/child.txt", h: noFallback},
+		{name: "external directory trailing slash", target: "/escape-dir/", h: noFallback},
+		{name: "external file bypasses SPA fallback", target: "/escape-file", h: withFallback},
+		{name: "external directory child bypasses SPA fallback", target: "/escape-dir/child.txt", h: withFallback},
+		{name: "external fallback is denied", target: "/ordinary-miss", h: externalFallback},
+	}
+	for _, tt := range denied {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := serveRequest(tt.h, http.MethodGet, tt.target)
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404; body = %q", rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+			for _, secret := range []string{"OUTSIDE_SECRET", "OUTSIDE_INDEX", "OUTSIDE_CHILD", outside} {
+				if strings.Contains(body, secret) {
+					t.Errorf("response leaked external target detail %q: %q", secret, body)
+				}
+			}
+		})
+	}
+
+	allowed := []struct {
+		name     string
+		target   string
+		wantBody string
+	}{
+		{name: "in-root file symlink", target: "/inside-file-link", wantBody: "INSIDE_FILE"},
+		{name: "in-root directory symlink index", target: "/inside-dir-link", wantBody: "INSIDE_INDEX"},
+		{name: "non-dot alias to in-root dotfile", target: "/env-alias", wantBody: "IN_ROOT_DOTFILE"},
+	}
+	for _, tt := range allowed {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := serveRequest(noFallback, http.MethodGet, tt.target)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %q", rec.Code, rec.Body.String())
+			}
+			if body := rec.Body.String(); body != tt.wantBody {
+				t.Errorf("body = %q, want %q", body, tt.wantBody)
+			}
+		})
+	}
+
+	if rec := serveRequest(noFallback, http.MethodGet, "/.env"); rec.Code != http.StatusNotFound {
+		t.Errorf("direct dotfile status = %d, want 404", rec.Code)
+	}
+	if rec := serveRequest(withFallback, http.MethodGet, "/ordinary-miss"); rec.Code != http.StatusOK || rec.Body.String() != "ROOT_INDEX" {
+		t.Errorf("ordinary fallback = (%d, %q), want (200, ROOT_INDEX)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSPAFileServerTraversalShapedRequests(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	writeServeFile(t, dir, "index.html", "ROOT_INDEX")
+	writeServeFile(t, outside, "outside.txt", "OUTSIDE_SECRET")
+	h := openTestSPAFileServer(t, dir, "")
+
+	for _, target := range []string{
+		"/../outside.txt",
+		"/%2e%2e/outside.txt",
+		"/safe/../../outside.txt",
+		"/safe/%2e%2e/%2e%2e/outside.txt",
+	} {
+		t.Run(target, func(t *testing.T) {
+			rec := serveRequest(h, http.MethodGet, target)
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404; body = %q", rec.Code, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), "OUTSIDE_SECRET") || strings.Contains(rec.Body.String(), outside) {
+				t.Errorf("traversal response leaked external data: %q", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestBindProxyRoutesValidatesRootsAndCleansResources(t *testing.T) {
+	s := newTestShim()
+	t.Cleanup(s.cancel)
+
+	t.Run("missing root", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "missing")
+		_, _, failure := s.bindProxyRoutes(staticProxyAddData("missing", 8443, missing))
+		if failure == nil || failure.code != "STATIC_ROOT_INVALID" {
+			t.Fatalf("failure = %#v, want STATIC_ROOT_INVALID", failure)
+		}
+	})
+
+	t.Run("non-directory root", func(t *testing.T) {
+		dir := t.TempDir()
+		file := filepath.Join(dir, "file.txt")
+		if err := os.WriteFile(file, []byte("not a directory"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, _, failure := s.bindProxyRoutes(staticProxyAddData("file", 8444, file))
+		if failure == nil || failure.code != "STATIC_ROOT_INVALID" {
+			t.Fatalf("failure = %#v, want STATIC_ROOT_INVALID", failure)
+		}
+	})
+
+	t.Run("injected unopenable root", func(t *testing.T) {
+		setStaticRootOpener(t, func(string) (staticRoot, error) {
+			return nil, fs.ErrPermission
+		})
+		_, _, failure := s.bindProxyRoutes(staticProxyAddData("denied", 8445, t.TempDir()))
+		if failure == nil || failure.code != "STATIC_ROOT_INVALID" {
+			t.Fatalf("failure = %#v, want STATIC_ROOT_INVALID", failure)
+		}
+	})
+
+	t.Run("later invalid route closes earlier root", func(t *testing.T) {
+		root := newTrackingStaticRoot()
+		setStaticRootOpener(t, func(string) (staticRoot, error) { return root, nil })
+		data := staticProxyAddData("later-invalid", 8446, t.TempDir())
+		data.Routes = append(data.Routes, proxyRouteData{Prefix: "not-absolute", TargetURL: "http://localhost:3000"})
+		_, _, failure := s.bindProxyRoutes(data)
+		if failure == nil || failure.code != "INVALID_ROUTE" {
+			t.Fatalf("failure = %#v, want INVALID_ROUTE", failure)
+		}
+		waitForSignal(t, root.closed, "earlier root cleanup")
+		if got := root.closeCalls.Load(); got != 1 {
+			t.Errorf("root Close calls = %d, want 1", got)
+		}
+	})
+
+	t.Run("later root-open failure closes earlier root", func(t *testing.T) {
+		first := newTrackingStaticRoot()
+		calls := 0
+		setStaticRootOpener(t, func(string) (staticRoot, error) {
+			calls++
+			if calls == 1 {
+				return first, nil
+			}
+			return nil, fs.ErrPermission
+		})
+		data := staticProxyAddData("later-root", 8447, t.TempDir())
+		data.Routes = append(data.Routes, proxyRouteData{Prefix: "/second", Dir: t.TempDir()})
+		_, _, failure := s.bindProxyRoutes(data)
+		if failure == nil || failure.code != "STATIC_ROOT_INVALID" {
+			t.Fatalf("failure = %#v, want STATIC_ROOT_INVALID", failure)
+		}
+		waitForSignal(t, first.closed, "earlier root cleanup")
+	})
+
+	t.Run("successful binding transfers an idempotent owner", func(t *testing.T) {
+		root := newTrackingStaticRoot()
+		setStaticRootOpener(t, func(string) (staticRoot, error) { return root, nil })
+		_, resources, failure := s.bindProxyRoutes(staticProxyAddData("success", 8448, t.TempDir()))
+		if failure != nil {
+			t.Fatalf("bind failure: %#v", failure)
+		}
+		select {
+		case <-root.closed:
+			t.Fatal("root closed before owner teardown")
+		default:
+		}
+		resources.close()
+		resources.close()
+		waitForSignal(t, root.closed, "resource owner close")
+		if got := root.closeCalls.Load(); got != 1 {
+			t.Errorf("root Close calls = %d, want 1", got)
+		}
+	})
+}
+
+func TestStaticRootInvalidIsStableAddError(t *testing.T) {
+	s := newTestShim()
+	t.Cleanup(s.cancel)
+	var output bytes.Buffer
+	s.writer = json.NewEncoder(&output)
+	missing := filepath.Join(t.TempDir(), "missing")
+	data := staticProxyAddData("invalid-root", 8550, missing)
+
+	s.startProxyAdd(nil, nil, data, func(bool, string) (net.Listener, error) {
+		t.Fatal("listener creation must not run for an invalid static root")
+		return nil, nil
+	})
+
+	var got struct {
+		Event string              `json:"event"`
+		Data  proxyErrorEventData `json:"data"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &got); err != nil {
+		t.Fatalf("decode event: %v; output = %q", err, output.String())
+	}
+	if got.Event != "proxy:error" || got.Data.Code != "STATIC_ROOT_INVALID" {
+		t.Fatalf("event = %#v, want proxy:error/STATIC_ROOT_INVALID", got)
+	}
+	s.proxyMu.Lock()
+	_, exists := s.proxies[data.ID]
+	s.proxyMu.Unlock()
+	if exists {
+		t.Fatal("invalid root installed a placeholder or live proxy")
+	}
+}
+
+func TestProxyAddClosesRootsOnEveryPreTransferBranch(t *testing.T) {
+	run := func(t *testing.T, setup func(*shim, proxyAddData), listen proxyListenFunc) {
+		t.Helper()
+		s := newTestShim()
+		t.Cleanup(s.cancel)
+		root := newTrackingStaticRoot()
+		setStaticRootOpener(t, func(string) (staticRoot, error) { return root, nil })
+		data := staticProxyAddData("pending", 8660, t.TempDir())
+		if setup != nil {
+			setup(s, data)
+		}
+		s.startProxyAdd(nil, nil, data, listen)
+		waitForSignal(t, root.closed, "pending root cleanup")
+		if got := root.closeCalls.Load(); got != 1 {
+			t.Errorf("root Close calls = %d, want 1", got)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			s.proxyMu.Lock()
+			entry, exists := s.proxies[data.ID]
+			pending := s.pendingProxyAdds[data.ID]
+			s.proxyMu.Unlock()
+			if pending == nil && (!exists || entry != nil) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("failed add left a placeholder or pending resource owner")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	t.Run("duplicate proxy id", func(t *testing.T) {
+		run(t, func(s *shim, data proxyAddData) {
+			s.proxies[data.ID] = &proxyEntry{id: data.ID}
+		}, func(bool, string) (net.Listener, error) {
+			t.Fatal("listener called after duplicate ID")
+			return nil, nil
+		})
+	})
+
+	t.Run("proxy port conflict", func(t *testing.T) {
+		run(t, func(s *shim, data proxyAddData) {
+			s.proxies["other"] = &proxyEntry{id: "other", listenPort: data.ListenPort}
+		}, func(bool, string) (net.Listener, error) {
+			t.Fatal("listener called after proxy port conflict")
+			return nil, nil
+		})
+	})
+
+	t.Run("dynamic listener conflict", func(t *testing.T) {
+		var dynamic *trackingListener
+		run(t, func(s *shim, data proxyAddData) {
+			dynamic = newTrackingListener()
+			s.dynamicListeners[data.ListenPort] = dynamic
+		}, func(bool, string) (net.Listener, error) {
+			t.Fatal("listener called after dynamic port conflict")
+			return nil, nil
+		})
+		_ = dynamic.Close()
+	})
+
+	t.Run("listener creation failure", func(t *testing.T) {
+		run(t, nil, func(bool, string) (net.Listener, error) {
+			return nil, errors.New("listen failed")
+		})
+	})
+
+	t.Run("listener creation returns handle and error", func(t *testing.T) {
+		ln := newTrackingListener()
+		run(t, nil, func(bool, string) (net.Listener, error) {
+			return ln, errors.New("partial listen failure")
+		})
+		waitForSignal(t, ln.closed, "partial listener cleanup")
+	})
+
+	t.Run("post-listen not ready", func(t *testing.T) {
+		ln := newTrackingListener()
+		run(t, nil, func(bool, string) (net.Listener, error) { return ln, nil })
+		waitForSignal(t, ln.closed, "listener cleanup")
+	})
+
+	t.Run("panic before transfer", func(t *testing.T) {
+		run(t, nil, func(bool, string) (net.Listener, error) {
+			panic("listener panic")
+		})
+	})
+}
+
+func TestPendingProxyAddCannotInstallAfterShutdown(t *testing.T) {
+	s := newTestShim()
+	root := newTrackingStaticRoot()
+	setStaticRootOpener(t, func(string) (staticRoot, error) { return root, nil })
+	data := staticProxyAddData("shutdown-race", 8770, t.TempDir())
+	listenEntered := make(chan struct{})
+	releaseListen := make(chan struct{})
+	ln := newTrackingListener()
+
+	s.startProxyAdd(nil, nil, data, func(bool, string) (net.Listener, error) {
+		close(listenEntered)
+		<-releaseListen
+		return ln, nil
+	})
+	waitForSignal(t, listenEntered, "listener attempt")
+
+	s.proxyMu.Lock()
+	pending, exists := s.proxies[data.ID]
+	s.proxyMu.Unlock()
+	if !exists || pending != nil {
+		t.Fatalf("pending proxy state = (%v, %v), want existing nil placeholder", exists, pending)
+	}
+
+	s.handleStop()
+	waitForSignal(t, root.closed, "root cleanup after shutdown race")
+	// Listener creation is still blocked, so this proves shutdown directly
+	// drained the registered pending owner rather than waiting for the add
+	// goroutine to return on its own.
+	close(releaseListen)
+	waitForSignal(t, ln.closed, "listener cleanup after shutdown race")
+
+	s.proxyMu.Lock()
+	_, exists = s.proxies[data.ID]
+	s.proxyMu.Unlock()
+	if exists {
+		t.Fatal("pending add installed a proxy after shutdown snapshot")
+	}
+	if got := root.closeCalls.Load(); got != 1 {
+		t.Errorf("root Close calls = %d, want 1", got)
+	}
+}
+
+func TestOldPendingCleanupCannotDeleteNewPlaceholder(t *testing.T) {
+	s := newTestShim()
+	t.Cleanup(s.cancel)
+	oldPending := newPendingProxyAdd(&proxyResources{})
+	newPending := newPendingProxyAdd(&proxyResources{})
+	s.proxies["same-id"] = nil
+	s.pendingProxyAdds["same-id"] = newPending
+
+	s.removeProxyPlaceholder("same-id", oldPending)
+
+	s.proxyMu.Lock()
+	entry, exists := s.proxies["same-id"]
+	gotPending := s.pendingProxyAdds["same-id"]
+	s.proxyMu.Unlock()
+	if !exists || entry != nil || gotPending != newPending {
+		t.Fatalf("new attempt was disturbed: exists=%v entry=%v pending=%p, want nil placeholder/%p", exists, entry, gotPending, newPending)
+	}
+	newPending.abort()
+}
+
+func TestProxyRootOwnershipTransferRemoveAndShutdown(t *testing.T) {
+	for _, mode := range []string{"remove", "shutdown"} {
+		t.Run(mode, func(t *testing.T) {
+			s := newTestShim()
+			t.Cleanup(s.cancel)
+			s.setDNSName("node.example.ts.net")
+			root := newTrackingStaticRoot()
+			setStaticRootOpener(t, func(string) (staticRoot, error) { return root, nil })
+			data := staticProxyAddData("live-"+mode, 8880, t.TempDir())
+			ln := newTrackingListener()
+			s.startProxyAdd(nil, nil, data, func(bool, string) (net.Listener, error) { return ln, nil })
+			entry := waitForProxyEntry(t, s, data.ID)
+			if entry.resources == nil {
+				t.Fatal("live proxy did not own rooted resources")
+			}
+			select {
+			case <-root.closed:
+				t.Fatal("root closed before proxy teardown")
+			default:
+			}
+
+			if mode == "remove" {
+				raw, err := json.Marshal(proxyRemoveData{ID: data.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				s.handleProxyRemove(raw)
+			} else {
+				s.handleStop()
+			}
+			waitForSignal(t, root.closed, "live root teardown")
+			waitForSignal(t, ln.closed, "live listener teardown")
+			if got := root.closeCalls.Load(); got != 1 {
+				t.Errorf("root Close calls = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestProxyShutdownDrainsHTTPBeforeClosingRoots(t *testing.T) {
+	root := newTrackingStaticRoot()
+	resources := &proxyResources{}
+	resources.addRoot(root)
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseRequest) }) })
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpSrv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(requestStarted)
+		<-releaseRequest
+		_, _ = io.WriteString(w, "DONE")
+	})}
+	entry := &proxyEntry{listener: ln, server: httpSrv, resources: resources}
+	serveDone := make(chan struct{})
+	go func() {
+		_ = httpSrv.Serve(ln)
+		close(serveDone)
+	}()
+
+	clientDone := make(chan error, 1)
+	go func() {
+		resp, err := http.Get("http://" + ln.Addr().String())
+		if err != nil {
+			clientDone <- err
+			return
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err == nil && string(body) != "DONE" {
+			err = errors.New("unexpected response body: " + string(body))
+		}
+		clientDone <- err
+	}()
+	waitForSignal(t, requestStarted, "in-flight HTTP request")
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		entry.shutdown(2 * time.Second)
+		close(shutdownDone)
+	}()
+	select {
+	case <-root.closed:
+		t.Fatal("root closed while HTTP request was still in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releaseOnce.Do(func() { close(releaseRequest) })
+	select {
+	case err := <-clientDone:
+		if err != nil {
+			t.Fatalf("HTTP request failed during graceful shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for HTTP request")
+	}
+	waitForSignal(t, shutdownDone, "proxy shutdown")
+	waitForSignal(t, root.closed, "root close after HTTP drain")
+	waitForSignal(t, serveDone, "HTTP server exit")
+}
+
+func TestRootedHandleCountReturnsToBaseline(t *testing.T) {
+	s := newTestShim()
+	t.Cleanup(s.cancel)
+	s.setDNSName("node.example.ts.net")
+	var liveRoots atomic.Int32
+	var openedRoots chan *trackingStaticRoot
+	setStaticRootOpener(t, func(string) (staticRoot, error) {
+		root := newTrackingStaticRoot()
+		liveRoots.Add(1)
+		root.onClose = func() { liveRoots.Add(-1) }
+		openedRoots <- root
+		return root, nil
+	})
+
+	for i := 0; i < 20; i++ {
+		openedRoots = make(chan *trackingStaticRoot, 1)
+		data := staticProxyAddData("repeat-"+strconv.Itoa(i), uint16(9000+i), t.TempDir())
+		ln := newTrackingListener()
+		s.startProxyAdd(nil, nil, data, func(bool, string) (net.Listener, error) { return ln, nil })
+		root := <-openedRoots
+		_ = waitForProxyEntry(t, s, data.ID)
+		raw, err := json.Marshal(proxyRemoveData{ID: data.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.handleProxyRemove(raw)
+		waitForSignal(t, root.closed, "repeated remove root cleanup")
+	}
+	if got := liveRoots.Load(); got != 0 {
+		t.Fatalf("live rooted handles = %d after repeated add/remove, want 0", got)
+	}
+
+	for i := 0; i < 20; i++ {
+		first := newTrackingStaticRoot()
+		liveRoots.Add(1)
+		first.onClose = func() { liveRoots.Add(-1) }
+		calls := 0
+		openStaticRoot = func(string) (staticRoot, error) {
+			calls++
+			if calls == 1 {
+				return first, nil
+			}
+			return nil, fs.ErrPermission
+		}
+		data := staticProxyAddData("rejected-"+strconv.Itoa(i), uint16(9100+i), t.TempDir())
+		data.Routes = append(data.Routes, proxyRouteData{Prefix: "/second", Dir: t.TempDir()})
+		_, _, failure := s.bindProxyRoutes(data)
+		if failure == nil || failure.code != "STATIC_ROOT_INVALID" {
+			t.Fatalf("failure = %#v, want STATIC_ROOT_INVALID", failure)
+		}
+		waitForSignal(t, first.closed, "rejected add root cleanup")
+	}
+	if got := liveRoots.Load(); got != 0 {
+		t.Fatalf("live rooted handles = %d after rejected adds, want 0", got)
+	}
 }
 
 // TestBuildReverseProxy exercises the engine's shared reverse-proxy policy
