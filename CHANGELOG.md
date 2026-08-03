@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.12](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.11...truffle-v0.7.12) (2026-08-03)
+
+
+### Bug Fixes
+
+* **sidecar:** confine static routes to rooted filesystem ([13a283b](https://github.com/vibecook-dev/truffle/commit/13a283b5df7e61fe11e5cf7cb07cf74033fc4f6a))
+
 ## [0.7.11](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.10...truffle-v0.7.11) (2026-07-28)
 
 
