@@ -1286,10 +1286,23 @@ func TestSPAFileServerRootConfinement(t *testing.T) {
 }
 
 func TestSPAFileServerTraversalShapedRequests(t *testing.T) {
-	dir := t.TempDir()
-	outside := t.TempDir()
+	base := t.TempDir()
+	dir := filepath.Join(base, "root")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatalf("mkdir static root: %v", err)
+	}
+	outside := filepath.Join(base, "outside.txt")
 	writeServeFile(t, dir, "index.html", "ROOT_INDEX")
-	writeServeFile(t, outside, "outside.txt", "OUTSIDE_SECRET")
+	writeServeFile(t, base, "outside.txt", "OUTSIDE_SECRET")
+	// Prove the fixture is meaningful: a handler that joined an uncleaned
+	// request name to the root could reach this exact sibling via ../outside.txt.
+	control, err := os.ReadFile(filepath.Join(dir, "..", "outside.txt"))
+	if err != nil {
+		t.Fatalf("read traversal control target: %v", err)
+	}
+	if string(control) != "OUTSIDE_SECRET" {
+		t.Fatalf("traversal control body = %q, want OUTSIDE_SECRET", control)
+	}
 	h := openTestSPAFileServer(t, dir, "")
 
 	for _, target := range []string{
