@@ -35,7 +35,7 @@ import (
 	"syscall"
 	"time"
 
-	"tailscale.com/client/tailscale"
+	"tailscale.com/client/local"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
@@ -1841,7 +1841,10 @@ func (s *shim) handleWatchPeers(data json.RawMessage) {
 		s.sendError("WATCH_PEERS_ERROR", fmt.Sprintf("failed to get local client: %v", err))
 		return
 	}
+	s.startPeerWatch(lc)
+}
 
+func (s *shim) startPeerWatch(lc *local.Client) {
 	// F4: only one watcher at a time — cancel any previous one and start fresh.
 	watchCtx, watchCancel := context.WithCancel(s.lifecycleCtx())
 	s.watchMu.Lock()
@@ -1860,10 +1863,9 @@ func (s *shim) handleWatchPeers(data json.RawMessage) {
 		knownPeers := make(map[string]peerInfo)
 		seeded := false
 
-		// diff re-fetches full status and emits joined/left/updated. It also
-		// backs the periodic poll (F1): Tailscale's delta path only pushes a
-		// NetMap notify for Online/LastSeen, NOT relay/endpoint changes, so a
-		// timer-driven re-diff is the safety net that catches peer roaming.
+		// Peer deltas invalidate our status snapshot; re-fetching also gives
+		// us connection details that aren't present in a tailcfg.Node. Keep
+		// polling as a safety net for connection-path changes and reconnects.
 		diff := func() {
 			ctx, cancel := context.WithTimeout(watchCtx, statusTimeout)
 			defer cancel()
@@ -1918,7 +1920,8 @@ func (s *shim) handleWatchPeers(data json.RawMessage) {
 				return
 			}
 
-			watcher, err := lc.WatchIPNBus(watchCtx, ipn.NotifyWatchEngineUpdates)
+			watcher, err := lc.WatchIPNBus(watchCtx,
+				ipn.NotifyInitialStatus|ipn.NotifyPeerPatches|ipn.NotifyNoNetMap)
 			if err != nil {
 				if watchCtx.Err() != nil {
 					return
@@ -1952,7 +1955,10 @@ func (s *shim) handleWatchPeers(data json.RawMessage) {
 						watchErrCh <- err
 						return
 					}
-					if n.NetMap == nil {
+					// Since 1.102, ongoing NetMap notifications are Windows-only.
+					// PeerPatches also subscribes to full-node changes/removals.
+					if n.InitialStatus == nil && n.SelfChange == nil && n.NetMap == nil &&
+						len(n.PeersChanged) == 0 && len(n.PeersRemoved) == 0 && len(n.PeerChangedPatch) == 0 {
 						continue
 					}
 					select {
@@ -2441,7 +2447,7 @@ func (s *shim) installProxyEntry(id string, lifecycle context.Context, pending *
 // startProxyAdd owns validation through asynchronous listener creation. The
 // injected listener function keeps every pre-transfer cleanup branch unit
 // testable without starting a real tailnet node.
-func (s *shim) startProxyAdd(srv *tsnet.Server, lc *tailscale.LocalClient, data proxyAddData, listen proxyListenFunc) {
+func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddData, listen proxyListenFunc) {
 	// RFC 023 D5: nil preserves the v1 always-TLS listener.
 	tlsOn := data.Tls == nil || *data.Tls
 	lifecycle := s.lifecycleCtx()
@@ -2991,7 +2997,7 @@ func isLoopbackHost(host string) bool {
 // whoisIdentityErr maps a remote address to the peer's identity via WhoIs,
 // surfacing the lookup error so callers can distinguish "the tailnet has no
 // identity for this address" from "the lookup itself failed".
-func (s *shim) whoisIdentityErr(lc *tailscale.LocalClient, remoteAddr string) (peerIdentityData, error) {
+func (s *shim) whoisIdentityErr(lc *local.Client, remoteAddr string) (peerIdentityData, error) {
 	ctx, cancel := context.WithTimeout(s.lifecycleCtx(), whoisTimeout)
 	defer cancel()
 	whois, err := lc.WhoIs(ctx, remoteAddr)
@@ -3016,7 +3022,7 @@ func (s *shim) whoisIdentityErr(lc *tailscale.LocalClient, remoteAddr string) (p
 // identity). That is the right shape for the serve and TCP-accept paths,
 // where anonymous fails closed at the gates; the tsnet:whois command uses
 // whoisIdentityErr so failures reach the caller instead.
-func (s *shim) whoisIdentity(lc *tailscale.LocalClient, remoteAddr string) peerIdentityData {
+func (s *shim) whoisIdentity(lc *local.Client, remoteAddr string) peerIdentityData {
 	identity, err := s.whoisIdentityErr(lc, remoteAddr)
 	if err != nil {
 		log.Printf("whoisIdentity: WhoIs(%s) failed: %v", remoteAddr, err)
@@ -3028,7 +3034,7 @@ func (s *shim) whoisIdentity(lc *tailscale.LocalClient, remoteAddr string) peerI
 // resolvePeerIdentity maps a remote address to a PeerIdentity JSON string via WhoIs.
 // The JSON is placed into the bridge header's remoteDNS field so Rust can
 // extract rich identity info about the connecting peer.
-func (s *shim) resolvePeerIdentity(lc *tailscale.LocalClient, remoteAddr string) string {
+func (s *shim) resolvePeerIdentity(lc *local.Client, remoteAddr string) string {
 	identity := s.whoisIdentity(lc, remoteAddr)
 	if identity == (peerIdentityData{}) {
 		return ""
@@ -3067,7 +3073,7 @@ func (s *shim) storeCachedIdentity(addr string, identity peerIdentityData, now t
 // Failures cache as anonymous for the TTL — deliberate: a flapping WhoIs
 // must not become a per-request RPC storm, and anonymous fails closed at
 // the allow gate.
-func (s *shim) proxyWhois(lc *tailscale.LocalClient, remoteAddr string) peerIdentityData {
+func (s *shim) proxyWhois(lc *local.Client, remoteAddr string) peerIdentityData {
 	now := time.Now()
 	if identity, ok := s.lookupCachedIdentity(remoteAddr, now); ok {
 		return identity
@@ -3081,7 +3087,7 @@ func (s *shim) proxyWhois(lc *tailscale.LocalClient, remoteAddr string) peerIden
 // tsnet:whois command path: successes (including a genuine anonymous
 // answer) cache; failures return to the caller uncached so a retry can
 // succeed as soon as the control plane recovers.
-func (s *shim) cachedWhoisErr(lc *tailscale.LocalClient, addr string) (peerIdentityData, error) {
+func (s *shim) cachedWhoisErr(lc *local.Client, addr string) (peerIdentityData, error) {
 	now := time.Now()
 	if identity, ok := s.lookupCachedIdentity(addr, now); ok {
 		return identity, nil
@@ -3412,7 +3418,7 @@ func (s *shim) prewarmCert(ctx context.Context, srv *tsnet.Server) {
 
 // monitorState polls Tailscale status every 60 seconds and emits events for
 // state changes, upcoming key expiry, and health warnings.
-func (s *shim) monitorState(ctx context.Context, lc *tailscale.LocalClient) {
+func (s *shim) monitorState(ctx context.Context, lc *local.Client) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 

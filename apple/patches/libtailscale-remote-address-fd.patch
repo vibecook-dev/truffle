@@ -83,3 +83,27 @@ diff --git a/tailscale.go b/tailscale.go
  
  	ip := extractIP(addr.String())
  
+diff --git a/tsnetctest/tsnetctest.go b/tsnetctest/tsnetctest.go
+--- a/tsnetctest/tsnetctest.go
++++ b/tsnetctest/tsnetctest.go
+@@ -94,6 +94,20 @@ int test_conn() {
+ 		return set_err(s2, 'a');
+ 	}
+ 
++	// WhoIs attribution depends on this address surviving SCM_RIGHTS.
++	char remote_addr[128];
++	if ((ret = tailscale_getremoteaddr(ln, r, remote_addr, sizeof(remote_addr))) != 0) {
++		return set_err(s1, 'r');
++	}
++	if (strcmp(remote_addr, "100.64.0.2") != 0) {
++		snprintf(err, errlen, "accepted peer address = '%s', want 100.64.0.2", remote_addr);
++		return 1;
++	}
++	if (tailscale_getremoteaddr(ln, r, remote_addr, sizeof(remote_addr)) != EBADF) {
++		snprintf(err, errlen, "accepted peer address was not consumed after lookup");
++		return 1;
++	}
++
+ 	const char want[] = "hello";
+ 	ssize_t wret;
+ 	if ((wret = write(w, want, sizeof(want))) != sizeof(want)) {

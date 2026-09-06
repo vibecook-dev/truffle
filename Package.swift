@@ -13,8 +13,8 @@
 //
 // ## TailscaleKit is pinned to the vendored dependency, not to a release
 //
-// The XCFramework's bytes are a function of the libtailscale revision, the
-// reviewed patch, and the build toolchain — never of Truffle's version. So it
+// The XCFramework's bytes are a function of the libtailscale revision, its
+// locked Go dependencies, the reviewed patches, and the build toolchain. It
 // is published once under a dependency-keyed release tag and referenced by a
 // stable URL, rather than rebuilt per release.
 //
@@ -25,10 +25,11 @@
 // tag. Keying the artifact to the dependency removes the ordering problem
 // entirely, and every Truffle tag gets an immutable, already-valid checksum.
 //
-// To change it: bump the revision in `apple/scripts/materialize-tailscalekit.sh`,
-// re-materialize, publish a new `tailscalekit-<rev>` release, and update the URL
-// and checksum below together. See `apple/Vendor/README.md` for the provenance
-// record and the exact commands.
+// To change it: update the revision, apple/Vendor/libtailscale/go.{mod,sum},
+// and patches; materialize and validate a new framework; publish it under a
+// new dependency-keyed release; then update this URL and checksum together.
+// See apple/Vendor/README.md for provenance and docs/tailscale-upgrade.md
+// for the validation and publication sequence.
 
 import PackageDescription
 
@@ -47,8 +48,8 @@ let package = Package(
         .binaryTarget(
             name: "TailscaleKit",
             url:
-                "https://github.com/vibecook-dev/truffle/releases/download/tailscalekit-5e89501d/TailscaleKit.xcframework.zip",
-            checksum: "25c84847b70f673835e9c0fd75a697fbe76943a0b20314bf56d2f5569c68f494"
+                "https://github.com/vibecook-dev/truffle/releases/download/tailscalekit-59d4bb82-ts1.102.3-go1.26.8/TailscaleKit.xcframework.zip",
+            checksum: "14d224f67360e2ac5b12fb31531401313dc63a0caae4838b1d74879e2ff16964"
         ),
         .target(
             name: "Truffle",

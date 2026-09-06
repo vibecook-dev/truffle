@@ -240,8 +240,11 @@
         private func startBus() async throws {
             guard let localAPI, let busConsumer else { throw MeshError.stopped }
             busProcessor?.cancel()
+            // Tailscale 1.102 no longer emits ongoing full NetMap messages on
+            // iOS. Every peer delta triggers handle(notify:), which refreshes
+            // the canonical status snapshot, including on stream reconnect.
             let mask: Ipn.NotifyWatchOpt = [
-                .initialState, .netmap, .rateLimitNetmaps, .noPrivateKeys,
+                .initialState, .peerChanges, .noNetMap,
             ]
             busProcessor = try await localAPI.watchIPNBus(mask: mask, consumer: busConsumer)
         }

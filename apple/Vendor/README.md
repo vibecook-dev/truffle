@@ -1,77 +1,79 @@
 # TailscaleKit provenance
 
-`TruffleTailscale` consumes a TailscaleKit XCFramework built from:
+`TruffleTailscale` consumes a TailscaleKit XCFramework with these inputs:
 
-- upstream: `https://github.com/tailscale/libtailscale.git`
-- revision: `5e89501def80a6579ca5d0f9a02f336be62b8f2e`
+| Input | Pin |
+| --- | --- |
+| Upstream | `https://github.com/tailscale/libtailscale.git` |
+| Revision | `59d4bb82744915815178e0f0776d60026a397ee7` |
+| Embedded Tailscale | `tailscale.com v1.102.3` |
+| Go | `1.26.8` |
+| Recorded Apple toolchain | Xcode 26.6 (17F113), Apple Swift 6.3.3, Apple silicon macOS |
+| License | BSD-3-Clause; see `TAILSCALE-LICENSE` |
 
-The materialization script applies the reviewed
-`apple/patches/libtailscale-remote-address-fd.patch` in a temporary detached
-worktree. Upstream stores an accepted connection's remote address under the
-sender-side descriptor before passing that descriptor through `SCM_RIGHTS`.
-The receiver gets a duplicate whose integer value may differ, causing
-`tailscale_getremoteaddr` to return `EBADF`. The patch carries the source key in
-the Unix-domain message, remaps the address to the received descriptor inside
-`tailscale_accept`, and consumes it after lookup. The pinned upstream `main`
-branch still contained the defect when this patch was added on 2026-07-18.
+Upstream libtailscale still pins Tailscale 1.94.1. The tracked
+`libtailscale/go.mod` and `libtailscale/go.sum` replace that dependency graph
+in a temporary detached worktree. The materializer requires the same
+Tailscale version as the sidecar, checks the Go toolchain, builds with
+`-mod=readonly -trimpath -buildvcs=false`, and verifies the Go/Tailscale
+versions embedded in the resulting framework binaries.
 
-- patch set: `libtailscale-remote-address-fd.patch` (SHA-256
-  `71423557bd0f0a901c31fb4cbee90c8cbaa5ab5588e1d8e87024fcfa887cad8a`)
-- license: BSD-3-Clause; see `TAILSCALE-LICENSE`
-- recorded build environment: Xcode 26.1 (17B55), Apple Swift 6.2.1,
-  Go 1.25.6, Apple silicon macOS
+## Patches
 
-Run `scripts/materialize-tailscalekit.sh` before resolving the Swift package.
-The resulting 71 MiB framework is ignored by Git; `Package.swift` always
-requires its binary target so missing production runtime artifacts fail closed.
-The known research build used during the initial integration has these payload
-checksums:
+- `libtailscale-remote-address-fd.patch` preserves the authenticated remote
+  address across `SCM_RIGHTS`. The receiving file descriptor can differ from
+  the sending descriptor, so the patch carries the source key, remaps the
+  address during accept, and consumes it after lookup. Its C integration
+  test checks the accepted peer address and that a second lookup fails.
+- `libtailscale-peer-notifications.patch` exposes the upstream `peerChanges`
+  and `noNetMap` watch options to Swift. Truffle subscribes to peer deltas
+  and refreshes LocalAPI status on each notification. This keeps discovery
+  reactive when Tailscale no longer emits full network maps on iOS.
 
-| Payload                    | SHA-256                                                            |
-| -------------------------- | ------------------------------------------------------------------ |
-| device framework binary    | `e00e8239c576df7ccb88fde16263c19090c9c77aa07bb1b77596d0bbf3f627de` |
-| simulator framework binary | `388d316956946b4bfa8e4965c3508496087e800fbd1977073d022e806374c451` |
-| XCFramework Info.plist     | `f0bdfcc3c0fd0a64cb2952540469da3f5a36ef85c022b7b3070915ec8e661810` |
+| Input file | SHA-256 |
+| --- | --- |
+| `libtailscale-remote-address-fd.patch` | `1d4f03330fcae2adcf43514c7d7e5464a629aceb5e5a607c4ae091a73b305417` |
+| `libtailscale-peer-notifications.patch` | `23be455e4c2b1637a276c5574d5e976d1c2c1f23ac5e21418e9b6f2db8fe96bf` |
+| `libtailscale/go.mod` | `f168460643efe18df86cd898fe58a233fc5a1f12a3cc0ed8ceb4c4c246562bf2` |
+| `libtailscale/go.sum` | `9b5aa1f09b761d6b5600e4505794c50e30013e57ec0d9a208c7ac0e1df64c180` |
 
-Build metadata may change the binary digest under a different toolchain. The
-source revision and clean-tree checks in the script are mandatory; update this
-record deliberately when the toolchain or pinned revision changes.
+## Prepared artifact
 
-## Published artifact (authoritative)
-
-The root `Package.swift` consumes this XCFramework as a
-`.binaryTarget(url:checksum:)` rather than building it locally, so the bytes
-below — not the research build recorded above — are what SwiftPM verifies and
-what downstream consumers pin. The two differ because they were produced under
-different toolchains, which is exactly the drift the warning above describes.
+The root `Package.swift` pins the following archive. **Publish this new
+artifact before merging the manifest update.** The local `apple/Package.swift`
+uses the materialized framework directly and can be validated before release.
 
 | Field | Value |
 | --- | --- |
-| Release tag | `tailscalekit-5e89501d` |
-| Asset | `TailscaleKit.xcframework.zip` (24 MiB packed, 71 MiB expanded) |
-| SwiftPM checksum | `25c84847b70f673835e9c0fd75a697fbe76943a0b20314bf56d2f5569c68f494` |
-| device slice | `94796395b2f3aedc6a57fba22f63bbd9bd906d4badec96c6de44fc53929d449e` |
-| simulator slice | `d2bb76de7d7ed225c1e879f225a33d877eac8183b56b93256faff476dc35ac41` |
+| Release tag | `tailscalekit-59d4bb82-ts1.102.3-go1.26.8` |
+| Asset | `TailscaleKit.xcframework.zip` (about 24 MiB) |
+| SwiftPM checksum | `14d224f67360e2ac5b12fb31531401313dc63a0caae4838b1d74879e2ff16964` |
+| Device binary | `fac825f527b988d5235b43e62677be4b289b362c3f16b1ba2103f1a2ca1e9aec` |
+| Simulator binary | `b7f8582d2a873c193d4edb5fbf4bf4dbaa48a9bcfd5b23411c6dab68a4212786` |
 
-The artifact is keyed to the **vendored dependency**, not to a Truffle release:
-its contents depend only on the libtailscale revision, the reviewed patch, and
-the build toolchain. Publishing it once under `tailscalekit-<short-rev>` keeps
-every Truffle tag carrying an already-valid checksum, which a per-release asset
-could not — this repository builds release assets *after* the release commit,
-so a version-keyed artifact would never be hashable at its own tag.
+The artifact key includes the wrapper revision, embedded Tailscale version,
+and Go toolchain. A wrapper revision alone is insufficient because its Go
+dependency is maintained here separately. Use a new tag suffix if the patch
+set or Apple build toolchain changes. Never overwrite an existing release
+asset: SwiftPM caches and downstream manifests pin those exact bytes.
 
-### Replacing it
+## Rebuilding
 
-Only when the pinned revision, the patch, or the recorded toolchain changes:
+Install the recorded Go version on `PATH`, then from the repository root:
 
 ```sh
-apple/scripts/materialize-tailscalekit.sh
-(cd apple/Vendor && zip -qry /tmp/TailscaleKit.xcframework.zip TailscaleKit.xcframework)
-swift package compute-checksum /tmp/TailscaleKit.xcframework.zip
-gh release create tailscalekit-<short-rev> /tmp/TailscaleKit.xcframework.zip \
-  --title "TailscaleKit <short-rev>" --notes "…provenance…"
+TAILSCALE_RUN_TESTS=1 apple/scripts/materialize-tailscalekit.sh
 ```
 
-Then update the URL **and** checksum in the root `Package.swift` together, and
-refresh the table above. Never overwrite an existing `tailscalekit-*` release
-asset: SwiftPM caches by checksum, and consumers pin these bytes.
+The script requires full Xcode; set `DEVELOPER_DIR` if it is installed at a
+different path. `TAILSCALE_RUN_TESTS=1` runs the patched C-binding tests with
+the race detector against a local test coordination server. CI enables it.
+
+The source cache is keyed by revision, so an upgrade does not modify an older
+checkout. The source revision and clean-tree checks remain mandatory. The
+framework includes the reviewed privacy manifest in both slices and is
+ignored by Git. Different toolchains or build paths can change archive bytes;
+recompute the checksum for the archive that is actually published.
+
+See [the upgrade procedure](../../docs/tailscale-upgrade.md) for validation,
+publication order, and rollback.

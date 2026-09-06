@@ -4,11 +4,13 @@ on:
   push:
     branches: [main]
     paths:
+      - 'Package.swift'
       - 'apple/**'
       - 'crates/truffle-core/tests/interop_fixtures.rs'
       - '.github/workflows/apple-tests.yml'
   pull_request:
     paths:
+      - 'Package.swift'
       - 'apple/**'
       - 'crates/truffle-core/tests/interop_fixtures.rs'
       - '.github/workflows/apple-tests.yml'
@@ -74,11 +76,13 @@ jobs:
       - name: Install recorded Go toolchain
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.25.6'
+          go-version: '1.26.8'
           cache: false
 
       - name: Materialize pinned TailscaleKit
         working-directory: apple
+        env:
+          TAILSCALE_RUN_TESTS: '1'
         run: DEVELOPER_DIR="$(xcode-select -p)" ./scripts/materialize-tailscalekit.sh
 
       - name: Build

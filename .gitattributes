@@ -1,0 +1,2 @@
+# Unified diff context has meaningful leading spaces and tabs.
+apple/patches/*.patch -whitespace

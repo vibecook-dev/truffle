@@ -1,0 +1,16 @@
+diff --git a/swift/TailscaleKit/LocalAPI/Types.swift b/swift/TailscaleKit/LocalAPI/Types.swift
+--- a/swift/TailscaleKit/LocalAPI/Types.swift
++++ b/swift/TailscaleKit/LocalAPI/Types.swift
+@@ -65,6 +65,12 @@ public struct Ipn: Sendable {
+         public static let netmap           = NotifyWatchOpt(rawValue: 1 << 3)
+         public static let noPrivateKeys    = NotifyWatchOpt(rawValue: 1 << 4)
+         public static let rateLimitNetmaps = NotifyWatchOpt(rawValue: 1 << 8)
++
++        // tailscale.com/ipn.NotifyWatchOpt in v1.102.3. PeerChanges includes
++        // additions, removals, and per-field updates promoted to full nodes.
++        // Consumers may refresh LocalAPI status instead of decoding deltas.
++        public static let peerChanges     = NotifyWatchOpt(rawValue: 1 << 12)
++        public static let noNetMap        = NotifyWatchOpt(rawValue: 1 << 13)
+     }
+ 
+     public struct Prefs: Codable, Sendable {

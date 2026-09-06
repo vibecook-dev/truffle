@@ -56,7 +56,7 @@ fn main() {
         println!(
             "cargo:warning=truffle-core: test-sidecar is stale or missing and `go` \
              is not on PATH. Real-network integration tests will fail with a clear \
-             message. Install Go 1.22+ to auto-build the sidecar."
+             message. Install the Go version in packages/sidecar-slim/go.mod to auto-build the sidecar."
         );
         return;
     }
@@ -92,7 +92,7 @@ fn main() {
         Err(e) => {
             println!(
                 "cargo:warning=truffle-core: failed to invoke `go build`: {e}. \
-                 Install Go 1.22+ or build the sidecar manually."
+                 Install the Go version in packages/sidecar-slim/go.mod or build the sidecar manually."
             );
         }
     }
