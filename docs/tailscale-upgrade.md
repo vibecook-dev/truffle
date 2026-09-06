@@ -60,10 +60,19 @@ xcodebuild -scheme TruffleTailscale -destination 'generic/platform=iOS Simulator
 Local validation on September 6, 2026 passed: the Go sidecar race suite,
 `go vet`, module verification, all five sidecar release builds, nine live
 tailnet networking/identity tests, the patched C-binding race tests, 68 Swift
-tests, and production iOS device/simulator builds. Archive integrity, embedded
+tests, and iOS device/simulator builds. Archive integrity, embedded
 Go/Tailscale versions, privacy manifests, and recorded checksums were verified.
-The root manifest parses successfully. Publication and root-package resolution
-from the new public URL are the remaining release gates.
+
+The [dependency release](https://github.com/vibecook-dev/truffle/releases/tag/tailscalekit-59d4bb82-ts1.102.3-go1.26.8)
+was published from source commit `1f87fd453bf21ac379a8dc58426f40ae23c1ab46`
+with the framework, patched source archive, and build provenance attached.
+GitHub's uploaded asset digest matches the checksum in `Package.swift`.
+A fresh clone of that tag, with a fresh SwiftPM cache and no local framework,
+resolved the public URL, passed all 68 Swift tests, and built the root
+`TruffleTailscale` target for iOS devices and simulators. The publication gates
+are complete. `truffle-v0.7.12` remains the latest application release.
+
+The sequence used for this upgrade, and required for future artifact changes:
 
 1. Finish the source/build checks and review the pins and patch checksums in
    `apple/Vendor/README.md`.

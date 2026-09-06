@@ -37,11 +37,14 @@ versions embedded in the resulting framework binaries.
 | `libtailscale/go.mod` | `f168460643efe18df86cd898fe58a233fc5a1f12a3cc0ed8ceb4c4c246562bf2` |
 | `libtailscale/go.sum` | `9b5aa1f09b761d6b5600e4505794c50e30013e57ec0d9a208c7ac0e1df64c180` |
 
-## Prepared artifact
+## Published artifact
 
-The root `Package.swift` pins the following archive. **Publish this new
-artifact before merging the manifest update.** The local `apple/Package.swift`
-uses the materialized framework directly and can be validated before release.
+The root `Package.swift` pins the archive published in the
+[dependency release](https://github.com/vibecook-dev/truffle/releases/tag/tailscalekit-59d4bb82-ts1.102.3-go1.26.8).
+The local `apple/Package.swift` uses the materialized framework directly.
+On September 6, 2026, a fresh clone of the release tag resolved the public
+archive with a fresh SwiftPM cache, passed all 68 Swift tests, and built
+`TruffleTailscale` for iOS devices and simulators.
 
 | Field | Value |
 | --- | --- |
