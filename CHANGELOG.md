@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.13](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.12...truffle-v0.7.13) (2026-09-06)
+
+
+### Bug Fixes
+
+* **deps:** upgrade embedded Tailscale to 1.102.3 ([1f87fd4](https://github.com/vibecook-dev/truffle/commit/1f87fd453bf21ac379a8dc58426f40ae23c1ab46))
+
 ## [0.7.12](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.11...truffle-v0.7.12) (2026-08-03)
 
 
