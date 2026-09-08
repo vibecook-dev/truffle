@@ -8,6 +8,7 @@ SOURCE="${TAILSCALE_SOURCE_DIR:-$ROOT/.vendor/libtailscale-$REVISION}"
 DESTINATION="$ROOT/Vendor/TailscaleKit.xcframework"
 PATCH="$ROOT/patches/libtailscale-remote-address-fd.patch"
 PEER_PATCH="$ROOT/patches/libtailscale-peer-notifications.patch"
+STREAM_PATCH="$ROOT/patches/libtailscale-ipn-stream-recovery.patch"
 GO_DEPS="$ROOT/Vendor/libtailscale"
 PRIVACY_MANIFEST="$ROOT/Vendor/TailscaleKit-PrivacyInfo.xcprivacy"
 DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
@@ -67,6 +68,8 @@ git -C "$BUILD_SOURCE" apply --check "$PATCH"
 git -C "$BUILD_SOURCE" apply "$PATCH"
 git -C "$BUILD_SOURCE" apply --check "$PEER_PATCH"
 git -C "$BUILD_SOURCE" apply "$PEER_PATCH"
+git -C "$BUILD_SOURCE" apply --check "$STREAM_PATCH"
+git -C "$BUILD_SOURCE" apply "$STREAM_PATCH"
 cp "$GO_DEPS/go.mod" "$BUILD_SOURCE/go.mod"
 cp "$GO_DEPS/go.sum" "$BUILD_SOURCE/go.sum"
 ACTUAL_TAILSCALE_VERSION="$(cd "$BUILD_SOURCE" && go list -m -f '{{.Version}}' tailscale.com)"
@@ -76,6 +79,7 @@ if [[ "$ACTUAL_TAILSCALE_VERSION" != "$TAILSCALE_VERSION" ]]; then
 fi
 if [[ "${TAILSCALE_RUN_TESTS:-0}" == 1 ]]; then
   (cd "$BUILD_SOURCE" && go test -race -count=1 -timeout=3m .)
+  bash "$ROOT/scripts/test-tailscalekit.sh" "$BUILD_SOURCE"
 fi
 
 echo "Building patched TailscaleKit from $REVISION with Tailscale $TAILSCALE_VERSION and Go $GO_VERSION"

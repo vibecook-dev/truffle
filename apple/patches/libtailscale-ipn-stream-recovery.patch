@@ -1,0 +1,130 @@
+diff --git a/swift/TailscaleKit/LocalAPI/MessageProcessor.swift b/swift/TailscaleKit/LocalAPI/MessageProcessor.swift
+index a851378..019063a 100644
+--- a/swift/TailscaleKit/LocalAPI/MessageProcessor.swift
++++ b/swift/TailscaleKit/LocalAPI/MessageProcessor.swift
+@@ -58,6 +58,7 @@ public class MessageProcessor: @unchecked Sendable {
+ 
+     public  func cancel() {
+         pollTask?.cancel()
++        reader.stop()
+     }
+ 
+     func startMessageQueuePoll() {
+@@ -88,7 +89,7 @@ public class MessageProcessor: @unchecked Sendable {
+                 do {
+                     let notify = try JSONDecoder().decode(Ipn.Notify.self, from: line)
+                     Task {
+-                        await consumer.notify(notify)
++                        await self.consumer.notify(notify)
+                     }
+                 } catch {
+                     logger?.log("Failed to decode message: \(error.localizedDescription)")
+diff --git a/swift/TailscaleKit/LocalAPI/MessageReader.swift b/swift/TailscaleKit/LocalAPI/MessageReader.swift
+index 9dd8ff9..ee9bbb1 100644
+--- a/swift/TailscaleKit/LocalAPI/MessageReader.swift
++++ b/swift/TailscaleKit/LocalAPI/MessageReader.swift
+@@ -5,6 +5,7 @@ import Foundation
+ 
+ enum MessageQueueError: Error {
+     case queueCongested
++    case unexpectedEOF
+ }
+ 
+ /// The maximum number of unprocessed messages that can be queued before we start discarding
+@@ -34,6 +35,7 @@ final class MessageReader: NSObject, URLSessionDataDelegate, @unchecked Sendable
+     /// upstream consumer can use.  Typically, this means we lost messages, so the correct action is to
+     /// restart the processor and queue with an .initialState flag.
+     var congested = false
++    var terminalError: Error?
+ 
+     var errorHandler: (@Sendable (Error) -> Void)?
+ 
+@@ -44,8 +46,17 @@ final class MessageReader: NSObject, URLSessionDataDelegate, @unchecked Sendable
+     }
+ 
+     func stop() {
+-        ipnWatchSession?.invalidateAndCancel()
+-        workQueue.cancelAllOperations()
++        workQueue.addOperation { [weak self] in
++            guard let self else { return }
++            // Invalidate the task before cancellation callbacks can arrive.
++            dataTask = nil
++            ipnWatchSession?.invalidateAndCancel()
++            ipnWatchSession = nil
++            pendingMessages.removeAll()
++            buffer.removeAll()
++            terminalError = nil
++            errorHandler = nil
++        }
+     }
+ 
+     func start(_ request: URLRequest, config: URLSessionConfiguration, errorHandler: @escaping @Sendable (Error) -> Void  ) {
+@@ -57,6 +68,7 @@ final class MessageReader: NSObject, URLSessionDataDelegate, @unchecked Sendable
+             buffer = Data()
+             pendingMessages = []
+             congested = false
++            terminalError = nil
+ 
+             dataTask?.cancel()
+             ipnWatchSession?.invalidateAndCancel()
+@@ -73,13 +85,14 @@ final class MessageReader: NSObject, URLSessionDataDelegate, @unchecked Sendable
+     func consume(_ completion: @escaping @Sendable (Data?) -> Void) {
+         workQueue.addOperation { [weak self] in
+             guard let self else { return }
+-            if congested && pendingMessages.count == 0 {
+-                errorHandler?(MessageQueueError.queueCongested)
+-                completion(nil)
+-                return
+-            }
+-
+             guard pendingMessages.count > 0 else {
++                // Deliver queued notifications before reporting stream loss,
++                // and report it once so the consumer can restart the watch.
++                if let error = terminalError ?? (congested ? MessageQueueError.queueCongested : nil) {
++                    let handler = errorHandler
++                    errorHandler = nil
++                    handler?(error)
++                }
+                 completion(nil)
+                 return
+             }
+@@ -92,26 +105,32 @@ final class MessageReader: NSObject, URLSessionDataDelegate, @unchecked Sendable
+     func urlSession(_ session: URLSession,
+                     task: URLSessionTask,
+                     didCompleteWithError error: Error?) {
+-        if let error = error {
+-            let nsError = error as NSError
+-            // Ignore cancellation errors, those are deliberate.
+-            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+-                return
++        workQueue.addOperation { [weak self] in
++            guard let self, task === dataTask else { return }
++            if let error {
++                let nsError = error as NSError
++                // Cancellation is deliberate; old tasks must not restart a new watch.
++                if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
++                    return
++                }
+             }
+-            errorHandler?(error)
++            // IPN watches are indefinite. Tailscale can close them with HTTP
++            // success (for example, after a slow-consumer terminal message).
++            terminalError = error ?? MessageQueueError.unexpectedEOF
+         }
+     }
+ 
+     func urlSession(_ session: URLSession,
+                     dataTask: URLSessionDataTask,
+                     didReceive data: Data) {
+-        if congested {
++        if dataTask !== self.dataTask || congested {
+             return
+         }
+         receiveData(data)
+     }
+ 
+     func receiveData(_ data: Data) {
++        guard !data.isEmpty else { return }
+         workQueue.addOperation { [weak self] in
+             guard let self else { return }
+ 

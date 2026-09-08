@@ -1,92 +1,374 @@
 diff --git a/tailscale.go b/tailscale.go
+index 316efdd..977dc85 100644
 --- a/tailscale.go
 +++ b/tailscale.go
-@@ -237,19 +237,28 @@ func TsnetListen(sd C.int, network, addr *C.char, listenerOut *C.int) C.int {
- 			}
- 			rights := syscall.UnixRights(int(connFd))
--			err = syscall.Sendmsg(sp, nil, rights, nil, 0)
+@@ -9,6 +9,7 @@ import "C"
+ 
+ import (
+ 	"context"
++	"encoding/binary"
+ 	"encoding/json"
+ 	"fmt"
+ 	"io"
+@@ -57,17 +58,26 @@ var listeners struct {
+ }
+ 
+ type listener struct {
+-	s  *server
+-	ln net.Listener
+-	fd int // go side fd of socketpair sent to C
+-	mu sync.Mutex
+-	m  map[C.int]net.Addr //maps fds to remote addresses for lookup
++	s         *server
++	ln        net.Listener
++	fd        int        // go side fd of socketpair sent to C
++	acceptMu  sync.Mutex // serializes reads of complete transfer frames
++	mu        sync.Mutex
++	nextToken uint64
++	pending   map[uint64]pendingConn // transfer tokens, independent of reusable FDs
++	closed    bool
++	m         map[C.int]net.Addr // received FDs, consumed by getremoteaddr
++}
 +
-+			// SCM_RIGHTS duplicates the descriptor in the receiving process, so
-+			// the integer returned by Recvmsg is not required to equal connFd.
-+			// Carry the sender-side key as ordinary payload so TsnetAccept can
-+			// remap the authenticated remote address to the received descriptor.
-+			sourceFD := []byte(strconv.Itoa(int(connFd)))
-+
-+			// Map before Sendmsg so a receiver cannot race ahead of this write.
-+			listener.mu.Lock()
-+			listener.m[connFd] = netConn.RemoteAddr()
-+			listener.mu.Unlock()
-+			err = syscall.Sendmsg(sp, sourceFD, rights, nil, 0)
++type pendingConn struct {
++	addr net.Addr
++	fd   int // owned reference until accept or listener cleanup
+ }
+ 
+ // conns tracks all the pipe(2)s allocated via tsnet_dial.
+ var conns struct {
+ 	mu sync.Mutex
+-	m  map[C.int]*conn // keyed by the FD given to C (w)
++	m  map[C.int]*conn // keyed by the Go-owned FD, which stays open until cleanup
+ }
+ 
+ type conn struct {
+@@ -257,6 +267,7 @@ func TsnetListen(sd C.int, network, addr *C.char, listenerOut *C.int) C.int {
+ 		}
+ 		listeners.mu.Unlock()
+ 
++		listener.closePending()
+ 		ln.Close()
+ 	}
+ 	go func() {
+@@ -276,31 +287,25 @@ func TsnetListen(sd C.int, network, addr *C.char, listenerOut *C.int) C.int {
  			if err != nil {
-+				listener.mu.Lock()
-+				delete(listener.m, connFd)
-+				listener.mu.Unlock()
+ 				return
+ 			}
+-			var connFd C.int
+-			if err := newConn(s, netConn, &connFd); err != nil {
++			connFd, err := newConn(s, netConn)
++			if err != nil {
+ 				if s.s.Logf != nil {
+ 					s.s.Logf("libtailscale.accept: newConn: %v", err)
+ 				}
+ 				netConn.Close()
+ 				continue
+ 			}
+-			rights := syscall.UnixRights(int(connFd))
+-			err = syscall.Sendmsg(sp, nil, rights, nil, 0)
++			err = listener.sendConn(connFd, netConn.RemoteAddr())
++			syscall.Close(connFd) // sendConn owns the reference until accept
+ 			if err != nil {
  				// We handle sp being closed in the read goroutine above.
  				if s.s.Logf != nil {
  					s.s.Logf("libtailscale.accept: sendmsg failed: %v", err)
  				}
  				netConn.Close()
- 				// fallthrough to close connFd, then continue Accept()ing
+-				// fallthrough to close connFd, then continue Accept()ing
++				// A partial frame cannot be resumed by a later connection.
++				return
  			}
 -
 -			// map the connection to the remote address
 -			listener.mu.Lock()
 -			listener.m[connFd] = netConn.RemoteAddr()
 -			listener.mu.Unlock()
- 
- 			syscall.Close(int(connFd)) // now owned by recvmsg
+-
+-			syscall.Close(int(connFd)) // now owned by recvmsg
  		}
-@@ -267,7 +276,8 @@ func TsnetAccept(listenerFd C.int, connOut *C.int) C.int {
+ 	}()
+ 
+@@ -318,52 +323,194 @@ func TsnetAccept(listenerFd C.int, connOut *C.int) C.int {
+ 		return C.EBADF
  	}
  
- 	buf := make([]byte, unix.CmsgLen(int(unsafe.Sizeof((C.int)(0)))))
+-	buf := make([]byte, unix.CmsgLen(int(unsafe.Sizeof((C.int)(0)))))
 -	_, oobn, _, _, err := syscall.Recvmsg(int(listenerFd), nil, buf, 0)
-+	sourceFDBytes := make([]byte, 32)
-+	n, oobn, _, _, err := syscall.Recvmsg(int(listenerFd), sourceFDBytes, buf, 0)
++	fd, err := ln.acceptConn(int(listenerFd))
  	if err != nil {
  		return ln.s.recErr(err)
  	}
-@@ -286,7 +296,27 @@ func TsnetAccept(listenerFd C.int, connOut *C.int) C.int {
- 	if len(fds) != 1 {
- 		return ln.s.recErr(fmt.Errorf("libtailscale: got %d FDs, want 1", len(fds)))
++	*connOut = C.int(fd)
++	return 0
++}
+ 
+-	scms, err := syscall.ParseSocketControlMessage(buf[:oobn])
++// sendConn associates an address with a unique transfer, not the source FD:
++// that FD can be reused as soon as Sendmsg returns, before C calls accept.
++func (ln *listener) sendConn(fd int, addr net.Addr) error {
++	ln.mu.Lock()
++	if ln.closed {
++		ln.mu.Unlock()
++		return net.ErrClosed
++	}
++	if ln.nextToken == ^uint64(0) {
++		ln.mu.Unlock()
++		return fmt.Errorf("libtailscale: exhausted connection transfer tokens")
++	}
++	// Keep an owned socket reference until the receiver has accepted it.
++	// A queued SCM_RIGHTS reference alone must not control connection lifetime.
++	heldFD, err := syscall.Dup(fd)
+ 	if err != nil {
+-		return ln.s.recErr(err)
++		ln.mu.Unlock()
++		return err
+ 	}
+-	if len(scms) != 1 {
+-		return ln.s.recErr(fmt.Errorf("libtailscale: got %d control messages, want 1", len(scms)))
++	syscall.CloseOnExec(heldFD)
++	ln.nextToken++
++	token := ln.nextToken
++	if ln.pending == nil {
++		ln.pending = make(map[uint64]pendingConn)
++	}
++	ln.pending[token] = pendingConn{addr: addr, fd: heldFD}
++	ln.mu.Unlock()
++
++	var payload [8]byte
++	binary.BigEndian.PutUint64(payload[:], token)
++	var n int
++	for {
++		n, err = syscall.SendmsgN(ln.fd, payload[:], syscall.UnixRights(fd), nil, 0)
++		if err != syscall.EINTR {
++			break
++		}
++	}
++	if err == nil {
++		// SOCK_STREAM may write only part of the fixed-size token. Rights
++		// have already been sent; send any remaining bytes without them.
++		for n < len(payload) {
++			var written int
++			written, err = syscall.Write(ln.fd, payload[n:])
++			if err == syscall.EINTR {
++				continue
++			}
++			if err != nil {
++				break
++			}
++			if written == 0 {
++				err = io.ErrShortWrite
++				break
++			}
++			n += written
++		}
+ 	}
+-	fds, err := syscall.ParseUnixRights(&scms[0])
+ 	if err != nil {
+-		return ln.s.recErr(err)
++		ln.mu.Lock()
++		if pending, ok := ln.pending[token]; ok {
++			delete(ln.pending, token)
++			syscall.Close(pending.fd)
++		}
++		ln.mu.Unlock()
+ 	}
+-	if len(fds) != 1 {
+-		return ln.s.recErr(fmt.Errorf("libtailscale: got %d FDs, want 1", len(fds)))
++	return err
++}
++
++func (ln *listener) acceptConn(listenerFD int) (fd int, err error) {
++	// A token can span stream reads; concurrent accept calls must not split it.
++	ln.acceptMu.Lock()
++	defer ln.acceptMu.Unlock()
++	var payload [8]byte
++	buf := make([]byte, unix.CmsgSpace(4))
++	var n, oobn, flags int
++	for {
++		n, oobn, flags, _, err = syscall.Recvmsg(listenerFD, payload[:], buf, 0)
++		if err != syscall.EINTR {
++			break
++		}
++	}
++	if err != nil {
++		return -1, err
  	}
 -	*connOut = (C.int)(fds[0])
-+	receivedFD := C.int(fds[0])
-+	sourceFDValue, err := strconv.ParseInt(string(sourceFDBytes[:n]), 10, 32)
+ 
+-	return 0
++	scms, err := syscall.ParseSocketControlMessage(buf[:oobn])
 +	if err != nil {
-+		syscall.Close(fds[0])
-+		return ln.s.recErr(fmt.Errorf("libtailscale: parse source FD: %w", err))
++		return -1, err
 +	}
-+	sourceFD := C.int(sourceFDValue)
++	var fds []int
++	defer func() {
++		if err != nil {
++			for _, received := range fds {
++				syscall.Close(received)
++			}
++		}
++	}()
++	for _, scm := range scms {
++		rights, parseErr := syscall.ParseUnixRights(&scm)
++		if parseErr != nil {
++			return -1, parseErr
++		}
++		fds = append(fds, rights...)
++	}
++	if n == 0 && len(fds) == 0 {
++		return -1, io.EOF
++	}
++	if flags&syscall.MSG_CTRUNC != 0 || len(fds) != 1 {
++		return -1, fmt.Errorf("libtailscale: incomplete connection rights (%d FDs, flags %d)", len(fds), flags)
++	}
++	for n < len(payload) {
++		read, readErr := syscall.Read(listenerFD, payload[n:])
++		if readErr == syscall.EINTR {
++			continue
++		}
++		if readErr != nil {
++			return -1, readErr
++		}
++		if read == 0 {
++			return -1, io.ErrUnexpectedEOF
++		}
++		n += read
++	}
++	token := binary.BigEndian.Uint64(payload[:])
 +
 +	ln.mu.Lock()
-+	remoteAddr, ok := ln.m[sourceFD]
++	pending, ok := ln.pending[token]
 +	if ok {
-+		delete(ln.m, sourceFD)
-+		ln.m[receivedFD] = remoteAddr
++		delete(ln.pending, token)
++		if ln.m == nil {
++			ln.m = make(map[C.int]net.Addr)
++		}
++		ln.m[C.int(fds[0])] = pending.addr
++		syscall.Close(pending.fd)
 +	}
 +	ln.mu.Unlock()
 +	if !ok {
-+		syscall.Close(fds[0])
-+		return ln.s.recErr(fmt.Errorf("libtailscale: no remote address for source FD %d", sourceFD))
++		return -1, fmt.Errorf("libtailscale: no remote address for transfer %d", token)
 +	}
++	return fds[0], nil
++}
 +
-+	*connOut = receivedFD
- 
- 	return 0
++func (ln *listener) closePending() {
++	ln.mu.Lock()
++	defer ln.mu.Unlock()
++	ln.closed = true
++	for token, pending := range ln.pending {
++		syscall.Close(pending.fd)
++		delete(ln.pending, token)
++	}
++}
++
++func (ln *listener) takeRemoteAddr(fd int) (net.Addr, bool) {
++	ln.mu.Lock()
++	defer ln.mu.Unlock()
++	addr, ok := ln.m[C.int(fd)]
++	delete(ln.m, C.int(fd))
++	return addr, ok
  }
-@@ -362,6 +392,7 @@ func TsnetGetRemoteAddr(listener C.int, conn C.int, buf *C.char, buflen C.size_
- 		out[0] = '\x00'
+ 
+-func newConn(s *server, netConn net.Conn, connOut *C.int) error {
++func newConn(s *server, netConn net.Conn) (int, error) {
+ 	fds, err := syscall.Socketpair(syscall.AF_LOCAL, syscall.SOCK_STREAM, 0)
+ 	if err != nil {
+-		return err
++		return -1, err
+ 	}
+ 	r := os.NewFile(uintptr(fds[1]), "socketpair-r")
+ 	c := &conn{s: s.s, c: netConn, r: r}
+-	fdC := C.int(fds[0])
++	fdGo := C.int(fds[1])
+ 
+ 	conns.mu.Lock()
+ 	if conns.m == nil {
+ 		conns.m = make(map[C.int]*conn)
+ 	}
+-	conns.m[fdC] = c
++	conns.m[fdGo] = c
+ 	conns.mu.Unlock()
+ 
+ 	connCleanup := func() {
+ 		var inCleanup bool
+ 		conns.mu.Lock()
+-		if tsConn, ok := conns.m[fdC]; ok && tsConn.c == netConn {
+-			delete(conns.m, fdC)
++		if tsConn, ok := conns.m[fdGo]; ok && tsConn.c == netConn {
++			delete(conns.m, fdGo)
+ 			inCleanup = true
+ 		}
+ 		conns.mu.Unlock()
+@@ -375,11 +522,18 @@ func newConn(s *server, netConn net.Conn, connOut *C.int) error {
+ 		r.Close()
+ 		netConn.Close()
+ 	}
++	// Hold the os.File descriptor reference across shutdown. A raw Fd()
++	// lookup can race with the other pump closing and reusing that number.
++	shutdown := func(how int) {
++		if raw, err := r.SyscallConn(); err == nil {
++			raw.Control(func(fd uintptr) { syscall.Shutdown(int(fd), how) })
++		}
++	}
+ 	go func() {
+ 		defer connCleanup()
+ 		var b [1 << 16]byte
+ 		io.CopyBuffer(r, netConn, b[:])
+-		syscall.Shutdown(int(r.Fd()), syscall.SHUT_WR)
++		shutdown(syscall.SHUT_WR)
+ 		if cr, ok := netConn.(interface{ CloseRead() error }); ok {
+ 			cr.CloseRead()
+ 		}
+@@ -388,14 +542,13 @@ func newConn(s *server, netConn net.Conn, connOut *C.int) error {
+ 		defer connCleanup()
+ 		var b [1 << 16]byte
+ 		io.CopyBuffer(netConn, r, b[:])
+-		syscall.Shutdown(int(r.Fd()), syscall.SHUT_RD)
++		shutdown(syscall.SHUT_RD)
+ 		if cw, ok := netConn.(interface{ CloseWrite() error }); ok {
+ 			cw.CloseWrite()
+ 		}
+ 	}()
+ 
+-	*connOut = fdC
+-	return nil
++	return fds[0], nil
+ }
+ 
+ //export TsnetGetRemoteAddr
+@@ -415,9 +568,7 @@ func TsnetGetRemoteAddr(listener C.int, conn C.int, buf *C.char, buflen C.size_t
  		return C.EBADF
  	}
-+	delete(l.m, conn)
  
- 	ip := extractIP(addr.String())
+-	l.mu.Lock()
+-	defer l.mu.Unlock()
+-	addr, ok := l.m[conn]
++	addr, ok := l.takeRemoteAddr(int(conn))
+ 	if !ok {
+ 		out[0] = '\x00'
+ 		return C.EBADF
+@@ -452,9 +603,12 @@ func TsnetDial(sd C.int, network, addr *C.char, connOut *C.int) C.int {
+ 		return s.recErr(err)
+ 	}
+ 	s.started = true
+-	if err := newConn(s, netConn, connOut); err != nil {
++	fd, err := newConn(s, netConn)
++	if err != nil {
++		netConn.Close()
+ 		return s.recErr(err)
+ 	}
++	*connOut = C.int(fd)
+ 	return 0
+ }
  
 diff --git a/tsnetctest/tsnetctest.go b/tsnetctest/tsnetctest.go
+index a2d17df..8bd953b 100644
 --- a/tsnetctest/tsnetctest.go
 +++ b/tsnetctest/tsnetctest.go
-@@ -94,6 +94,20 @@ int test_conn() {
+@@ -85,6 +85,20 @@ int test_conn() {
  		return set_err(s2, 'a');
  	}
  
@@ -107,3 +389,305 @@ diff --git a/tsnetctest/tsnetctest.go b/tsnetctest/tsnetctest.go
  	const char want[] = "hello";
  	ssize_t wret;
  	if ((wret = write(w, want, sizeof(want))) != sizeof(want)) {
+@@ -109,6 +123,56 @@ int test_conn() {
+ 		snprintf(err, errlen, "failed to close r: %d (%s)", errno, strerror(errno));
+ 		return 1;
+ 	}
++	// Queue connections before accepting any, alternating address families.
++	// This exercises the real C entry points and cleanup with reusable FDs.
++	char ips1[256], ips2[256];
++	if (tailscale_getips(s1, ips1, sizeof(ips1)) != 0 ||
++	    tailscale_getips(s2, ips2, sizeof(ips2)) != 0) {
++		return set_err(s1, 'i');
++	}
++	char *ipv6_1 = strchr(ips1, ',');
++	char *ipv6_2 = strchr(ips2, ',');
++	if (!ipv6_1 || !ipv6_2) {
++		snprintf(err, errlen, "test nodes did not receive IPv6 addresses");
++		return 1;
++	}
++	ipv6_1++;
++	ipv6_2++;
++	char target6[128], expected6[128];
++	snprintf(target6, sizeof(target6), "[%s]:8081", ipv6_1);
++	snprintf(expected6, sizeof(expected6), "[%s]", ipv6_2);
++	tailscale_conn queued[8];
++	for (int i = 0; i < 8; i++) {
++		if (tailscale_dial(s2, "tcp", i % 2 ? target6 : "100.64.0.1:8081", &queued[i]) != 0) {
++			return set_err(s2, 'q');
++		}
++		char payload = '0' + i;
++		if (write(queued[i], &payload, 1) != 1) {
++			return set_err(s2, 'w');
++		}
++	}
++	for (int i = 0; i < 8; i++) {
++		if (tailscale_accept(ln, &r) != 0 ||
++		    tailscale_getremoteaddr(ln, r, remote_addr, sizeof(remote_addr)) != 0) {
++			return set_err(s1, 'r');
++		}
++		char payload = 0;
++		ssize_t nread;
++		do { nread = read(r, &payload, 1); } while (nread == -1 && errno == EINTR);
++		if (nread != 1 || payload < '0' || payload > '7') {
++			snprintf(err, errlen, "queued connection payload was lost: fd=%d n=%zd byte=%d errno=%d", r, nread, payload, errno);
++			return 1;
++		}
++		// Network accept order may differ from dial order across families.
++		const char *expected = (payload - '0') % 2 ? expected6 : "100.64.0.2";
++		if (strcmp(remote_addr, expected) != 0) {
++			snprintf(err, errlen, "queued peer %c = '%s', want '%s'", payload, remote_addr, expected);
++			return 1;
++		}
++		close(r);
++	}
++	for (int i = 0; i < 8; i++) { close(queued[i]); }
++
+ 	if ((ret = close(ln)) != 0) {
+ 		return set_err(s1, 'a');
+ 	}
+diff --git a/remote_address_test.go b/remote_address_test.go
+new file mode 100644
+index 0000000..2e5c862
+--- /dev/null
++++ b/remote_address_test.go
+@@ -0,0 +1,239 @@
++package main
++
++import (
++	"encoding/binary"
++	"fmt"
++	"io"
++	"net"
++	"syscall"
++	"testing"
++	"time"
++
++	"golang.org/x/sys/unix"
++)
++
++func testSocketPair(t *testing.T) [2]int {
++	t.Helper()
++	pair, err := syscall.Socketpair(syscall.AF_LOCAL, syscall.SOCK_STREAM, 0)
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { syscall.Close(pair[0]); syscall.Close(pair[1]) })
++	return pair
++}
++
++func TestQueuedConnectionsKeepRemoteIdentityAfterFDReuse(t *testing.T) {
++	control := testSocketPair(t)
++	ln := &listener{fd: control[1]}
++	defer ln.closePending()
++	source, err := syscall.Dup(control[0])
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer syscall.Close(source)
++	const count = 8
++	want := make([]net.Addr, count)
++	for i := range count {
++		pair := testSocketPair(t)
++		// Deterministically reuse the sender descriptor while previous
++		// SCM_RIGHTS references remain queued and none have been accepted.
++		if err := syscall.Dup2(pair[0], source); err != nil {
++			t.Fatal(err)
++		}
++		ip := fmt.Sprintf("100.64.0.%d", i+1)
++		if i%2 != 0 {
++			ip = fmt.Sprintf("fd7a:115c:a1e0::%x", i+1)
++		}
++		want[i] = &net.TCPAddr{IP: net.ParseIP(ip), Port: 12345 + i}
++		if err := ln.sendConn(source, want[i]); err != nil {
++			t.Fatal(err)
++		}
++		if _, err := syscall.Write(pair[1], []byte{byte(i)}); err != nil {
++			t.Fatal(err)
++		}
++	}
++	var received []int
++	for range count {
++		fd, err := ln.acceptConn(control[0])
++		if err != nil {
++			t.Fatal(err)
++		}
++		received = append(received, fd)
++		defer syscall.Close(fd)
++	}
++	// Delay all lookups until after all accepts to exercise both maps.
++	for i, fd := range received {
++		addr, ok := ln.takeRemoteAddr(fd)
++		if !ok || addr.String() != want[i].String() {
++			t.Fatalf("connection %d: got %v, want %v", i, addr, want[i])
++		}
++		var payload [1]byte
++		if n, err := syscall.Read(fd, payload[:]); err != nil || n != 1 || payload[0] != byte(i) {
++			t.Fatalf("connection %d: wrong socket payload %v (n=%d, err=%v)", i, payload, n, err)
++		}
++		if _, ok := ln.takeRemoteAddr(fd); ok {
++			t.Fatal("remote address was not consumed")
++		}
++	}
++	if len(ln.pending) != 0 || len(ln.m) != 0 {
++		t.Fatal("remote address entries leaked")
++	}
++}
++
++func TestAcceptReadsSplitTransferToken(t *testing.T) {
++	control := testSocketPair(t)
++	conn := testSocketPair(t)
++	want := &net.TCPAddr{IP: net.ParseIP("100.64.0.2"), Port: 12345}
++	heldFD, err := syscall.Dup(conn[0])
++	if err != nil {
++		t.Fatal(err)
++	}
++	ln := &listener{pending: map[uint64]pendingConn{42: {addr: want, fd: heldFD}}}
++	defer ln.closePending()
++	var payload [8]byte
++	binary.BigEndian.PutUint64(payload[:], 42)
++	if err := syscall.Sendmsg(control[1], payload[:1], syscall.UnixRights(conn[0]), nil, 0); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := syscall.Write(control[1], payload[1:]); err != nil {
++		t.Fatal(err)
++	}
++	fd, err := ln.acceptConn(control[0])
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer syscall.Close(fd)
++	if addr, ok := ln.takeRemoteAddr(fd); !ok || addr.String() != want.String() {
++		t.Fatalf("got %v, want %v", addr, want)
++	}
++}
++
++func TestFailedTransferDoesNotKeepRemoteAddress(t *testing.T) {
++	conn := testSocketPair(t)
++	ln := &listener{fd: -1}
++	if err := ln.sendConn(conn[0], &net.TCPAddr{}); err == nil {
++		t.Fatal("send on invalid FD succeeded")
++	}
++	if len(ln.pending) != 0 {
++		t.Fatal("failed transfer leaked remote address")
++	}
++}
++
++func TestListenerCloseReleasesPendingSockets(t *testing.T) {
++	control := testSocketPair(t)
++	conn := testSocketPair(t)
++	ln := &listener{fd: control[1]}
++	if err := ln.sendConn(conn[0], &net.TCPAddr{}); err != nil {
++		t.Fatal(err)
++	}
++	var held []int
++	for _, pending := range ln.pending {
++		held = append(held, pending.fd)
++	}
++	ln.closePending()
++	ln.closePending() // cleanup may be called by either listener goroutine
++	for _, fd := range held {
++		if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != unix.EBADF {
++			t.Fatalf("pending descriptor %d still open after listener close: %v", fd, err)
++		}
++	}
++	if err := ln.sendConn(conn[0], &net.TCPAddr{}); err != net.ErrClosed {
++		t.Fatalf("send after listener close = %v, want net.ErrClosed", err)
++	}
++}
++
++func TestQueuedConnectionPumpsSurviveReuseAndCleanUp(t *testing.T) {
++	control := testSocketPair(t)
++	ln := &listener{fd: control[1]}
++	defer ln.closePending()
++	var peers []net.Conn
++	var received []int
++	defer func() {
++		for _, fd := range received {
++			syscall.Close(fd)
++		}
++		for _, peer := range peers {
++			peer.Close()
++		}
++		// Ensure the two copy pumps finish, including the concurrent
++		// shutdown/close path checked by the race detector.
++		deadline := time.Now().Add(time.Second)
++		for {
++			conns.mu.Lock()
++			remaining := len(conns.m)
++			conns.mu.Unlock()
++			if remaining == 0 {
++				return
++			}
++			if time.Now().After(deadline) {
++				t.Errorf("%d connection pumps leaked", remaining)
++				return
++			}
++			time.Sleep(time.Millisecond)
++		}
++	}()
++	for i := range 8 {
++		a, b := net.Pipe()
++		peers = append(peers, b)
++		fd, err := newConn(&server{}, a)
++		if err != nil {
++			a.Close()
++			t.Fatal(err)
++		}
++		if err := ln.sendConn(fd, &net.TCPAddr{IP: net.ParseIP("100.64.0.2"), Port: i}); err != nil {
++			syscall.Close(fd)
++			t.Fatal(err)
++		}
++		syscall.Close(fd)
++		b.SetWriteDeadline(time.Now().Add(time.Second))
++		if _, err := b.Write([]byte{byte(i)}); err != nil {
++			t.Fatal(err)
++		}
++	}
++	for i := range 8 {
++		fd, err := ln.acceptConn(control[0])
++		if err != nil {
++			t.Fatal(err)
++		}
++		received = append(received, fd)
++		addr, ok := ln.takeRemoteAddr(fd)
++		if !ok || addr.(*net.TCPAddr).Port != i {
++			t.Fatalf("wrong address for connection %d: %v", i, addr)
++		}
++		var payload [1]byte
++		if n, err := syscall.Read(fd, payload[:]); err != nil || n != 1 || payload[0] != byte(i) {
++			t.Fatalf("connection %d payload = %v (n=%d, err=%v)", i, payload, n, err)
++		}
++	}
++}
++
++func TestAcceptRejectsIncompleteAndUnknownTransfers(t *testing.T) {
++	for _, truncated := range []bool{false, true} {
++		t.Run(fmt.Sprint("truncated=", truncated), func(t *testing.T) {
++			control := testSocketPair(t)
++			conn := testSocketPair(t)
++			ln := &listener{}
++			payload := make([]byte, 8)
++			if truncated {
++				payload = payload[:1]
++			}
++			if err := syscall.Sendmsg(control[1], payload, syscall.UnixRights(conn[0]), nil, 0); err != nil {
++				t.Fatal(err)
++			}
++			if err := syscall.Shutdown(control[1], syscall.SHUT_WR); err != nil {
++				t.Fatal(err)
++			}
++			fd, err := ln.acceptConn(control[0])
++			if err == nil {
++				syscall.Close(fd)
++				t.Fatal("invalid transfer accepted")
++			}
++			if truncated && err != io.ErrUnexpectedEOF {
++				t.Fatalf("got %v, want unexpected EOF", err)
++			}
++			if len(ln.m) != 0 {
++				t.Fatal("invalid transfer created an authenticated address")
++			}
++		})
++	}
++}
