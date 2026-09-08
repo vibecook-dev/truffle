@@ -152,6 +152,9 @@
 
         public func whoIs(remoteEndpoint: String) async throws -> AuthenticatedPeer {
             guard let node else { throw MeshError.stopped }
+            guard let endpoint = TailscaleEndpoint(remoteEndpoint) else {
+                throw MeshError.protocolViolation("invalid accepted Tailscale endpoint")
+            }
             let (sessionConfiguration, loopback) =
                 try await URLSessionConfiguration.tailscaleSession(node)
             guard let ip = loopback.ip, let port = loopback.port else {
@@ -162,7 +165,7 @@
             components.host = ip
             components.port = port
             components.path = "/localapi/v0/whois"
-            components.queryItems = [URLQueryItem(name: "addr", value: remoteEndpoint)]
+            components.queryItems = [URLQueryItem(name: "addr", value: endpoint.whoIsAddress)]
             guard let url = components.url else {
                 throw MeshError.transport("could not form LocalAPI WhoIs URL")
             }
@@ -182,10 +185,10 @@
             guard !stableID.isEmpty else {
                 throw MeshError.protocolViolation("LocalAPI WhoIs returned no stable node ID")
             }
-            let addresses = decoded.Node.Addresses?.map(Self.stripPrefix) ?? []
-            guard let remoteIP = Self.remoteIP(remoteEndpoint),
-                addresses.contains(remoteIP)
-            else {
+            let addresses = decoded.Node.Addresses?.compactMap {
+                TailscaleEndpoint(Self.stripPrefix($0))?.ip
+            } ?? []
+            guard addresses.contains(endpoint.ip) else {
                 throw MeshError.protocolViolation(
                     "LocalAPI WhoIs address does not match accepted endpoint")
             }
@@ -238,15 +241,21 @@
         }
 
         private func startBus() async throws {
-            guard let localAPI, let busConsumer else { throw MeshError.stopped }
+            guard !stopped, let localAPI, let busConsumer else { throw MeshError.stopped }
             busProcessor?.cancel()
+            busProcessor = nil
             // Tailscale 1.102 no longer emits ongoing full NetMap messages on
             // iOS. Every peer delta triggers handle(notify:), which refreshes
             // the canonical status snapshot, including on stream reconnect.
             let mask: Ipn.NotifyWatchOpt = [
                 .initialState, .peerChanges, .noNetMap,
             ]
-            busProcessor = try await localAPI.watchIPNBus(mask: mask, consumer: busConsumer)
+            let processor = try await localAPI.watchIPNBus(mask: mask, consumer: busConsumer)
+            guard !stopped, !Task.isCancelled else {
+                processor.cancel()
+                throw MeshError.stopped
+            }
+            busProcessor = processor
         }
 
         private func handleBus(error: Error) {
@@ -258,7 +267,9 @@
                 guard let self else { return }
                 var delay = 500
                 while !Task.isCancelled, !(await self.stopped) {
-                    try? await Task.sleep(for: .milliseconds(delay))
+                    do { try await Task.sleep(for: .milliseconds(delay)) }
+                    catch { return }
+                    guard !Task.isCancelled, !(await self.stopped) else { return }
                     do {
                         try await self.startBus()
                         _ = try? await self.refreshStatus(emitChange: true)
@@ -328,14 +339,6 @@
         private static func endpoint(host: String, port: UInt16) -> String {
             host.contains(":") && !host.hasPrefix("[")
                 ? "[\(host)]:\(port)" : "\(host):\(port)"
-        }
-
-        private static func remoteIP(_ endpoint: String) -> String? {
-            if endpoint.hasPrefix("["), let close = endpoint.firstIndex(of: "]") {
-                return String(endpoint[endpoint.index(after: endpoint.startIndex)..<close])
-            }
-            guard let colon = endpoint.lastIndex(of: ":") else { return endpoint }
-            return String(endpoint[..<colon])
         }
 
         private static func stripPrefix(_ address: String) -> String {

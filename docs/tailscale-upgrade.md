@@ -70,7 +70,39 @@ GitHub's uploaded asset digest matches the checksum in `Package.swift`.
 A fresh clone of that tag, with a fresh SwiftPM cache and no local framework,
 resolved the public URL, passed all 68 Swift tests, and built the root
 `TruffleTailscale` target for iOS devices and simulators. The publication gates
-are complete. `truffle-v0.7.12` remains the latest application release.
+are complete. The upgrade subsequently shipped in `truffle-v0.7.13`.
+
+## Apple review fixes
+
+The post-release review found two existing identity issues and an IPN stream
+recovery gap exposed by the upgrade. The corrected patch set:
+
+- Associates remote addresses with unique transfer IDs and retains queued
+  socket references until acceptance. Connection cleanup uses the Go-owned
+  descriptor and protects shutdown against concurrent close/reuse.
+- Reports unexpected successful EOF from the indefinite IPN watch, allowing
+  the backend to reconnect and refresh its snapshot. Deliberate cancellation
+  stops the URLSession; stale callbacks cannot restart a replacement watch.
+- Normalizes IPv4, bare IPv6, and bracketed IPv6 before WhoIs, preserves a
+  supplied port, and compares canonical addresses when validating identity.
+
+The C regression suite exercises multiple queued connections over IPv4 and
+IPv6, forced sender-descriptor reuse, payload attribution, split transfer
+tokens, and cleanup. `TAILSCALE_RUN_TESTS=1` also compiles the exact patched
+Swift reader/processor sources and tests terminal notifications, clean EOF,
+reconnection, cancellation, stale callbacks, and transport errors through
+URLSession. The regular Swift package tests include the production endpoint
+parser on macOS, so this part of the iOS integration now has runtime coverage.
+
+Changes to the wrapper patch set require a new immutable dependency artifact,
+even when the upstream revision and Go/Tailscale versions stay the same.
+The corrected artifact is published as
+[`tailscalekit-59d4bb82-ts1.102.3-go1.26.8-r2`](https://github.com/vibecook-dev/truffle/releases/tag/tailscalekit-59d4bb82-ts1.102.3-go1.26.8-r2),
+with its source inputs and checksums recorded in `apple/Vendor/README.md`.
+A fresh clone of that tag downloaded the public archive, passed all 70
+Swift tests, and built the production runtime for iOS devices and simulators.
+
+## Future publication sequence
 
 The sequence used for this upgrade, and required for future artifact changes:
 
@@ -84,7 +116,7 @@ The sequence used for this upgrade, and required for future artifact changes:
    ```
 
 3. Publish the archive under the new immutable dependency tag
-   `tailscalekit-59d4bb82-ts1.102.3-go1.26.8`, recording the source revision,
+   (including a new suffix when the patch set changes), recording the source revision,
    module locks, patch checksums, and toolchains in the release notes.
    The checksum must match both `Package.swift` and the provenance record.
    Never replace the previous `tailscalekit-5e89501d` asset.
