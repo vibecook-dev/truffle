@@ -48,8 +48,8 @@ let package = Package(
         .binaryTarget(
             name: "TailscaleKit",
             url:
-                "https://github.com/vibecook-dev/truffle/releases/download/tailscalekit-59d4bb82-ts1.102.3-go1.26.8/TailscaleKit.xcframework.zip",
-            checksum: "14d224f67360e2ac5b12fb31531401313dc63a0caae4838b1d74879e2ff16964"
+                "https://github.com/vibecook-dev/truffle/releases/download/tailscalekit-59d4bb82-ts1.102.3-go1.26.8-r2/TailscaleKit.xcframework.zip",
+            checksum: "4d97655a8776c0f76c21fa91ef51c2e00a2e7339100f56987391dcb0c67541d2"
         ),
         .target(
             name: "Truffle",
@@ -67,6 +67,11 @@ let package = Package(
                 .target(name: "TailscaleKit", condition: .when(platforms: [.iOS])),
             ],
             path: "apple/Sources/TruffleTailscale"
+        ),
+        .testTarget(
+            name: "TruffleTailscaleTests",
+            dependencies: ["TruffleTailscale"],
+            path: "apple/Tests/TruffleTailscaleTests"
         ),
         .testTarget(
             name: "TruffleTests",

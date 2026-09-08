@@ -34,6 +34,11 @@ let packageTargets: [Target] = [
         path: "Sources/TruffleTailscale"
     ),
     .testTarget(
+        name: "TruffleTailscaleTests",
+        dependencies: ["TruffleTailscale"],
+        path: "Tests/TruffleTailscaleTests"
+    ),
+    .testTarget(
         name: "TruffleTests",
         dependencies: ["Truffle"],
         path: "Tests/TruffleTests",
