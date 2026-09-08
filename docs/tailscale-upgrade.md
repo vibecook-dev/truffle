@@ -96,8 +96,11 @@ parser on macOS, so this part of the iOS integration now has runtime coverage.
 
 Changes to the wrapper patch set require a new immutable dependency artifact,
 even when the upstream revision and Go/Tailscale versions stay the same.
-Record the new artifact and input checksums in `apple/Vendor/README.md`, then
-update the root SwiftPM URL and checksum together after publication.
+The corrected artifact is published as
+[`tailscalekit-59d4bb82-ts1.102.3-go1.26.8-r2`](https://github.com/vibecook-dev/truffle/releases/tag/tailscalekit-59d4bb82-ts1.102.3-go1.26.8-r2),
+with its source inputs and checksums recorded in `apple/Vendor/README.md`.
+A fresh clone of that tag downloaded the public archive, passed all 70
+Swift tests, and built the production runtime for iOS devices and simulators.
 
 ## Future publication sequence
 

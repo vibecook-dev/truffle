@@ -57,8 +57,10 @@ The root `Package.swift` pins the archive published in the
 The local `apple/Package.swift` uses the materialized framework directly.
 On September 7, 2026, the local artifact passed the C-binding race tests,
 six exact-source IPN stream tests, 70 Swift package tests, and production
-iOS device/simulator builds. The public URL must also be validated from a
-fresh checkout after publication.
+iOS device/simulator builds. A fresh clone of the dependency tag, with a
+fresh SwiftPM cache and no local framework, downloaded the public archive,
+passed all 70 Swift tests, and built `TruffleTailscale` for iOS devices and
+simulators. GitHub's uploaded asset digest matches the pinned checksum.
 
 | Field | Value |
 | --- | --- |
