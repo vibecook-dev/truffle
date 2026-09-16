@@ -412,3 +412,216 @@ async fn test_health() {
     let beta = beta;
     let _ = beta.stop().await;
 }
+
+// ---------------------------------------------------------------------------
+// Test 9: RFC 025 §3.3 — a gated node reports only peers whose login matches
+// ---------------------------------------------------------------------------
+
+/// Build one provider on the shared authkey, optionally gated.
+///
+/// Deliberately does NOT go through `common::make_pair_of_nodes`: that helper
+/// rendezvouses BOTH ways, and a node gated against a login that cannot match
+/// is supposed to see nothing, so waiting for it would hang by design.
+fn gated_config(
+    authkey: &str,
+    app_id: &str,
+    hostname: &str,
+    device_name: &str,
+    state_dir: &std::path::Path,
+    login_allow: Vec<String>,
+) -> truffle_core::network::tailscale::TailscaleConfig {
+    truffle_core::network::tailscale::TailscaleConfig {
+        binary_path: common::default_sidecar_path(),
+        app_id: app_id.to_string(),
+        device_id: ulid::Ulid::new().to_string(),
+        device_name: device_name.to_string(),
+        hostname: hostname.to_string(),
+        state_dir: state_dir.to_string_lossy().into_owned(),
+        auth_key: Some(authkey.to_string()),
+        ephemeral: Some(common::test_ephemeral()),
+        tags: common::test_tags(),
+        idle_timeout_secs: None,
+        login_allow,
+    }
+}
+
+/// Poll until `pred` holds or the deadline passes. Returns whether it held.
+async fn wait_until<F>(timeout_dur: Duration, mut pred: F) -> bool
+where
+    F: AsyncFnMut() -> bool,
+{
+    let deadline = tokio::time::Instant::now() + timeout_dur;
+    loop {
+        if pred().await {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+#[tokio::test]
+async fn test_gated_pair_reports_only_matching_login() {
+    let Some(authkey) = common::require_authkey("test_gated_pair_reports_only_matching_login")
+    else {
+        return;
+    };
+    common::init_test_tracing();
+
+    let short: String = uuid::Uuid::new_v4().to_string().chars().take(8).collect();
+    let app_id = format!("{}-{short}", common::TEST_APP_ID);
+
+    let beta_state =
+        tempfile::TempDir::with_prefix("truffle-test-login-beta-").expect("beta tempdir");
+    let blocked_state =
+        tempfile::TempDir::with_prefix("truffle-test-login-blocked-").expect("blocked tempdir");
+    let allowed_state =
+        tempfile::TempDir::with_prefix("truffle-test-login-allowed-").expect("allowed tempdir");
+
+    let beta_hostname = format!("truffle-{app_id}-b{short}");
+    let blocked_hostname = format!("truffle-{app_id}-a{short}");
+    let allowed_hostname = format!("truffle-{app_id}-c{short}");
+
+    // ---- beta: ungated. The source of the real login, and the node the two
+    // gated nodes are meant to disagree about. ----
+    let mut beta = truffle_core::network::tailscale::TailscaleProvider::new(gated_config(
+        &authkey,
+        &app_id,
+        &beta_hostname,
+        &format!("beta-{short}"),
+        beta_state.path(),
+        Vec::new(),
+    ));
+    beta.start().await.expect("ungated beta should start");
+
+    // RFC 025 §3.6 / petition T4: the node's own login is a real Layer 3 fact,
+    // not a placeholder. Everything below depends on it, so assert it first.
+    let real_login = beta
+        .local_identity_async()
+        .await
+        .login_name
+        .expect("RFC 025 §3.6: a running node on a real tailnet must report its own login");
+    assert!(
+        !real_login.is_empty(),
+        "an empty login must reach us as None, never as Some(\"\")"
+    );
+    const IMPOSSIBLE: &str = "nobody@example.invalid";
+    assert_ne!(
+        real_login, IMPOSSIBLE,
+        "the negative glob must not accidentally be the tailnet's own login"
+    );
+    eprintln!(
+        "  [login] beta reports its own login (len={})",
+        real_login.len()
+    );
+
+    // ---- Two gated nodes, started together, identical but for the glob. ----
+    let mut blocked = truffle_core::network::tailscale::TailscaleProvider::new(gated_config(
+        &authkey,
+        &app_id,
+        &blocked_hostname,
+        &format!("blocked-{short}"),
+        blocked_state.path(),
+        vec![IMPOSSIBLE.to_string()],
+    ));
+    let mut allowed = truffle_core::network::tailscale::TailscaleProvider::new(gated_config(
+        &authkey,
+        &app_id,
+        &allowed_hostname,
+        &format!("allowed-{short}"),
+        allowed_state.path(),
+        vec![real_login.clone()],
+    ));
+    // D3's happy path, witnessed live: a gated node starts against a
+    // protocol-5 sidecar. (The refusal below 5 is unit-tested in provider.rs.)
+    let (blocked_start, allowed_start) = tokio::join!(blocked.start(), allowed.start());
+    blocked_start.expect("a gated node must start against a protocol-5 sidecar");
+    allowed_start.expect("a gated node must start against a protocol-5 sidecar");
+    let started_at = tokio::time::Instant::now();
+
+    // ---- Control 1: the tailnet really did converge for BOTH gated nodes.
+    // Without this, "blocked sees nothing" could just mean discovery was slow.
+    let beta_sees_both = wait_until(CONNECTIVITY_TIMEOUT, async || {
+        let peers = beta.peers().await;
+        peers.iter().any(|p| p.hostname == blocked_hostname)
+            && peers.iter().any(|p| p.hostname == allowed_hostname)
+    })
+    .await;
+    assert!(
+        beta_sees_both,
+        "ungated beta should discover both gated nodes; beta peers: {:?}",
+        beta.peers()
+            .await
+            .iter()
+            .map(|p| &p.hostname)
+            .collect::<Vec<_>>()
+    );
+
+    // Beta's rows carry the login the gate is evaluated against.
+    let blocked_row = beta
+        .peers()
+        .await
+        .into_iter()
+        .find(|p| p.hostname == blocked_hostname)
+        .expect("blocked row");
+    assert_eq!(
+        blocked_row.login_name.as_deref(),
+        Some(real_login.as_str()),
+        "RFC 025 §3.3: a peer row must carry its owner's login"
+    );
+
+    // ---- Control 2: an identically-placed node whose glob DOES match finds
+    // beta, and how long that took calibrates the settle window below.
+    let allowed_sees_beta = wait_until(CONNECTIVITY_TIMEOUT, async || {
+        allowed
+            .peers()
+            .await
+            .iter()
+            .any(|p| p.hostname == beta_hostname)
+    })
+    .await;
+    assert!(
+        allowed_sees_beta,
+        "a node gated on its own tailnet login must still see its own peers; saw: {:?}",
+        allowed
+            .peers()
+            .await
+            .iter()
+            .map(|p| &p.hostname)
+            .collect::<Vec<_>>()
+    );
+    let discovery_took = started_at.elapsed();
+    eprintln!("  [login] the allowed node found beta in {discovery_took:?}");
+
+    // ---- The assertion. The blocked node reports NOTHING, and keeps
+    // reporting nothing for a window an order of magnitude longer than the
+    // discovery its twin just needed. A single early poll would be a race;
+    // this is not.
+    let settle = std::cmp::max(discovery_took * 4, Duration::from_secs(15));
+    let settle_deadline = tokio::time::Instant::now() + settle;
+    loop {
+        let peers = blocked.peers().await;
+        assert!(
+            peers.is_empty(),
+            "a node gated on {IMPOSSIBLE} must report no peers, saw: {:?}",
+            peers
+                .iter()
+                .map(|p| (&p.hostname, &p.login_name))
+                .collect::<Vec<_>>()
+        );
+        if tokio::time::Instant::now() >= settle_deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    eprintln!(
+        "  [login] the blocked node stayed at 0 peers for {settle:?} while its \
+         twin saw beta — the gate holds and it is not a race"
+    );
+
+    let _ = blocked.stop().await;
+    let _ = allowed.stop().await;
+    let _ = beta.stop().await;
+}
