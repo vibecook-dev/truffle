@@ -1773,27 +1773,6 @@ impl NodeBuilder {
         self
     }
 
-    /// Restrict the mesh to nodes whose tailnet login matches one of these
-    /// globs (RFC 025 §3.1).
-    ///
-    /// Empty or never called = the whole tailnet, which is the behaviour
-    /// before RFC 025. Non-empty and the node is **gated**: Layer 3 reports
-    /// only peers whose login matches, and a node whose login cannot be known
-    /// is not a peer at all (the gate fails closed, §3.2). The list is fixed
-    /// for the node's lifetime — to change it, restart the node.
-    ///
-    /// The grammar is Go's `path.Match`, applied case-insensitively:
-    /// `alice@example.com`, `*@example.com`, `?lice@example.com`,
-    /// `[ab]lice@example.com`. A malformed glob never matches and never panics.
-    ///
-    /// A gated node requires sidecar protocol 5 — the first that reports
-    /// `loginName` — and `build()` fails loudly against an older one rather
-    /// than run silently peerless.
-    pub fn login_allow(mut self, globs: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.login_allow = globs.into_iter().map(Into::into).collect();
-        self
-    }
-
     /// Resolve RFC 017 identity values and the Tailscale config.
     ///
     /// Shared between [`build()`](Self::build) and
