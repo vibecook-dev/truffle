@@ -67,6 +67,9 @@ pub(crate) enum SidecarInternalEvent {
         dns_name: String,
         tailscale_ip: String,
         node_id: String,
+        /// The node's own tailnet login (RFC 025 §3.3); `None` below
+        /// sidecar protocol 5 or when the status named no profile for us.
+        login_name: Option<String>,
         /// Sidecar control-protocol version; `None` = pre-RFC-023 (v1).
         protocol_version: Option<u32>,
     },
@@ -474,6 +477,7 @@ impl GoSidecar {
                             dns_name: data.dns_name,
                             tailscale_ip: data.tailscale_ip,
                             node_id: data.node_id,
+                            login_name: data.login_name.filter(|l| !l.is_empty()),
                             protocol_version: data.protocol_version,
                         })
                     } else if data.state == "error" {

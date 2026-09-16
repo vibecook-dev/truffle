@@ -16,6 +16,7 @@
 
 use super::header::{BridgeHeader, Direction, HeaderError, MAGIC, MIN_HEADER_SIZE, VERSION};
 use super::protocol::*;
+use super::provider::TailscaleProvider;
 use std::io::Cursor;
 
 // ===== Helper functions =====
@@ -443,6 +444,7 @@ fn filter_app_peers_only() {
             last_seen: None,
             key_expiry: None,
             expired: false,
+            login_name: Some("alice@example.com".into()),
         },
         // Different app — rejected.
         SidecarPeer {
@@ -457,6 +459,7 @@ fn filter_app_peers_only() {
             last_seen: None,
             key_expiry: None,
             expired: false,
+            login_name: Some("bob@example.com".into()),
         },
         // Non-truffle host — rejected.
         SidecarPeer {
@@ -471,6 +474,7 @@ fn filter_app_peers_only() {
             last_seen: None,
             key_expiry: None,
             expired: false,
+            login_name: Some("carol@example.com".into()),
         },
         // Empty-slug edge (`truffle-playground-` with nothing after the
         // hyphen) — rejected per `is_app_peer` requiring trailing content.
@@ -486,6 +490,7 @@ fn filter_app_peers_only() {
             last_seen: None,
             key_expiry: None,
             expired: false,
+            login_name: Some("alice@example.com".into()),
         },
         // Another playground peer — kept.
         SidecarPeer {
@@ -500,6 +505,7 @@ fn filter_app_peers_only() {
             last_seen: None,
             key_expiry: None,
             expired: false,
+            login_name: Some("bob@example.com".into()),
         },
     ];
 
@@ -511,6 +517,100 @@ fn filter_app_peers_only() {
     assert_eq!(admitted.len(), 2);
     assert_eq!(admitted[0].hostname, "truffle-playground-alice");
     assert_eq!(admitted[1].hostname, "truffle-playground-bob");
+
+    // RFC 025 §2: an ungated node keeps exactly this behaviour. The provider
+    // calls `admit_peer`, not `is_app_peer`, so the empty-list path is
+    // asserted through the predicate the provider actually applies.
+    let ungated: Vec<_> = peers
+        .iter()
+        .filter(|p| TailscaleProvider::admit_peer(p, "playground", &[]))
+        .collect();
+    assert_eq!(ungated.len(), 2);
+    assert_eq!(ungated[0].hostname, "truffle-playground-alice");
+    assert_eq!(ungated[1].hostname, "truffle-playground-bob");
+}
+
+/// A `SidecarPeer` fixture: an app-prefixed hostname and an optional owner.
+fn peer_row(id: &str, hostname: &str, login: Option<&str>) -> SidecarPeer {
+    SidecarPeer {
+        id: id.into(),
+        hostname: hostname.into(),
+        dns_name: format!("{hostname}.tailnet.ts.net"),
+        tailscale_ips: vec!["100.64.0.2".into()],
+        online: true,
+        os: "linux".into(),
+        cur_addr: String::new(),
+        relay: String::new(),
+        last_seen: None,
+        key_expiry: None,
+        expired: false,
+        login_name: login.map(Into::into),
+    }
+}
+
+/// RFC 025 §3.3: under a gate, only rows whose login matches are peers.
+#[test]
+fn gated_filter_admits_only_matching_logins() {
+    let rows = [
+        peer_row("n1", "truffle-playground-alice", Some("alice@example.com")),
+        peer_row("n2", "truffle-playground-bob", Some("bob@example.com")),
+        peer_row("n3", "truffle-playground-carol", Some("carol@other.test")),
+        // Right login, wrong app — the hostname half of the predicate still bites.
+        peer_row("n4", "truffle-chat-alice", Some("alice@example.com")),
+    ];
+
+    let gate = vec!["alice@example.com".to_string()];
+    let admitted: Vec<&str> = rows
+        .iter()
+        .filter(|p| TailscaleProvider::admit_peer(p, "playground", &gate))
+        .map(|p| p.id.as_str())
+        .collect();
+    assert_eq!(admitted, ["n1"]);
+
+    // The glob form of the same gate (§3.2) admits both example.com owners.
+    let domain_gate = vec!["*@example.com".to_string()];
+    let admitted: Vec<&str> = rows
+        .iter()
+        .filter(|p| TailscaleProvider::admit_peer(p, "playground", &domain_gate))
+        .map(|p| p.id.as_str())
+        .collect();
+    assert_eq!(admitted, ["n1", "n2"]);
+
+    // Case is irrelevant on both sides (§3.2).
+    let shouty = vec!["ALICE@EXAMPLE.COM".to_string()];
+    assert!(TailscaleProvider::admit_peer(
+        &rows[0],
+        "playground",
+        &shouty
+    ));
+}
+
+/// RFC 025 §3.3: a row WITHOUT a login is not a peer under a gate, and is a
+/// peer without one. This is the fail-closed half — a legacy sidecar (or a
+/// node whose owner the status did not name) cannot widen a gated mesh.
+#[test]
+fn gated_filter_drops_a_login_less_row() {
+    let anonymous = peer_row("n1", "truffle-playground-ghost", None);
+    let empty_login = peer_row("n2", "truffle-playground-blank", Some(""));
+    let gate = vec!["*@example.com".to_string()];
+
+    assert!(!TailscaleProvider::admit_peer(
+        &anonymous,
+        "playground",
+        &gate
+    ));
+    assert!(!TailscaleProvider::admit_peer(
+        &empty_login,
+        "playground",
+        &gate
+    ));
+    // Ungated, the same rows are ordinary peers.
+    assert!(TailscaleProvider::admit_peer(&anonymous, "playground", &[]));
+    assert!(TailscaleProvider::admit_peer(
+        &empty_login,
+        "playground",
+        &[]
+    ));
 }
 
 #[test]

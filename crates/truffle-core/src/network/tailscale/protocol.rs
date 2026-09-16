@@ -274,9 +274,16 @@ pub(crate) struct StatusEventData {
     pub node_id: String,
     #[serde(default)]
     pub error: String,
+    /// The node's OWN tailnet login (RFC 025 §3.3), resolved by the sidecar
+    /// through the status `User` map. Absent below protocol 5 and on a node
+    /// whose status carries no profile for our user id — `None`, never
+    /// fabricated.
+    #[serde(default)]
+    pub login_name: Option<String>,
     /// Sidecar control-protocol version (RFC 023: `2` = proxy engine v2 +
-    /// 443-free). Absent on older sidecars → treated as v1; the provider
-    /// rejects v2-only features rather than let them be silently ignored.
+    /// 443-free; RFC 025: `5` = `loginName` on peers and status). Absent on
+    /// older sidecars → treated as v1; the provider rejects version-gated
+    /// features rather than let them be silently ignored.
     #[serde(default)]
     pub protocol_version: Option<u32>,
 }
@@ -331,6 +338,13 @@ pub(crate) struct SidecarPeer {
     pub key_expiry: Option<String>,
     #[serde(default)]
     pub expired: bool,
+    /// The peer owner's tailnet login (RFC 025 §3.3), from the sidecar's
+    /// `ipnstate.Status.User[peer.UserID]`. `None` on a sidecar below
+    /// protocol 5 and on a row whose owner the status did not name; a tagged
+    /// node reports Tailscale's `tagged-devices` pseudo-login. A gated node
+    /// admits no peer without one (`login_allowed` fails closed).
+    #[serde(default)]
+    pub login_name: Option<String>,
 }
 
 /// Data from `tsnet:peers` event.
@@ -871,6 +885,45 @@ mod tests {
         let event: SidecarEvent = serde_json::from_str(legacy).unwrap();
         let data: StatusEventData = serde_json::from_value(event.data).unwrap();
         assert_eq!(data.protocol_version, None);
+    }
+
+    /// RFC 025 §4: the node's own login rides `tsnet:status`/`tsnet:started`
+    /// as camelCase `loginName`, and a pre-protocol-5 sidecar that omits it
+    /// parses to `None` rather than failing the event.
+    #[test]
+    fn status_event_parses_login_name() {
+        let json = r#"{"event":"tsnet:status","data":{"state":"running","hostname":"h","dnsName":"h.t.ts.net","tailscaleIP":"100.64.0.1","loginName":"alice@example.com","protocolVersion":5}}"#;
+        let event: SidecarEvent = serde_json::from_str(json).unwrap();
+        let data: StatusEventData = serde_json::from_value(event.data).unwrap();
+        assert_eq!(data.login_name.as_deref(), Some("alice@example.com"));
+        assert_eq!(data.protocol_version, Some(5));
+
+        // A sidecar below protocol 5 omits the key entirely.
+        let legacy = r#"{"event":"tsnet:status","data":{"state":"running","hostname":"h","dnsName":"h.t.ts.net","tailscaleIP":"100.64.0.1","protocolVersion":4}}"#;
+        let event: SidecarEvent = serde_json::from_str(legacy).unwrap();
+        let data: StatusEventData = serde_json::from_value(event.data).unwrap();
+        assert_eq!(data.login_name, None);
+        assert_eq!(data.protocol_version, Some(4));
+    }
+
+    /// RFC 025 §4: `loginName` on a peer row, absent on a legacy sidecar and
+    /// on a row whose owner the status did not name.
+    #[test]
+    fn event_peers_parses_login_name() {
+        let json = r#"{"event":"tsnet:peers","data":{"peers":[
+            {"id":"nodeA","hostname":"truffle-cli-abc","dnsName":"a.ts.net","tailscaleIPs":["100.64.0.2"],"online":true,"loginName":"alice@example.com"},
+            {"id":"nodeB","hostname":"truffle-cli-def","dnsName":"b.ts.net","tailscaleIPs":["100.64.0.3"],"online":true},
+            {"id":"nodeC","hostname":"truffle-cli-ghi","dnsName":"c.ts.net","tailscaleIPs":["100.64.0.4"],"online":true,"loginName":"tagged-devices"}
+        ]}}"#;
+        let event: SidecarEvent = serde_json::from_str(json).unwrap();
+        let data: PeersEventData = serde_json::from_value(event.data).unwrap();
+        assert_eq!(
+            data.peers[0].login_name.as_deref(),
+            Some("alice@example.com")
+        );
+        assert_eq!(data.peers[1].login_name, None);
+        // A tagged node's pseudo-login passes through verbatim.
+        assert_eq!(data.peers[2].login_name.as_deref(), Some("tagged-devices"));
     }
 
     #[test]
