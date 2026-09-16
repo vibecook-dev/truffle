@@ -512,6 +512,10 @@ public actor MeshNode {
 
     public func dial(to peer: Peer, port: UInt16) async throws -> any MeshConnection {
         let entry = try resolveLive(peer)
+        // The raw plane is not gated for INBOUND connections (§3.7, D9), but
+        // an outbound dial is this node's own act: a gated node does not open
+        // one to a peer it cannot attribute (RFC 025 §3.3).
+        try requireKnownLogin(entry)
         return try await backend.dial(host: dialHost(for: entry), port: port)
     }
 
@@ -640,10 +644,16 @@ public actor MeshNode {
     /// gate REFUSES is therefore a departure — the caller evicts the entry,
     /// which closes its session and emits `peerLeft`.
     ///
-    /// An ABSENT login on an existing row is sticky instead: a transient
-    /// overlay failure must not empty a gated mesh. Provisional entries from a
-    /// raced inbound hello keep merging — that hello passed the gate in
-    /// `Handshake.server` — but they are evicted on a refused login like any
+    /// A row that names NO owner neither evicts nor keeps the last-known
+    /// login: the entry stays (a transient failure to read the logins must not
+    /// empty a gated mesh) and its `loginName` goes `nil`, because the row
+    /// names no owner and so neither do we — RFC 022's absent-never-fabricated
+    /// rule applies to a login we can no longer source as much as to one we
+    /// never had. A gated node then opens no NEW session to that peer
+    /// (`requireKnownLogin`), which is the dial-side half of the same rule.
+    /// Provisional entries from a raced inbound hello keep merging — that hello
+    /// passed the gate in `Handshake.server`, and `confirm` restores the login
+    /// WhoIs authenticated — but they are evicted on a refused login like any
     /// other row.
     ///
     /// - Returns: `true` when this row must be evicted. Eviction is async and
@@ -658,7 +668,7 @@ public actor MeshNode {
             existing.hostname = peer.hostname
             existing.tailnetIPs = peer.tailnetIPs
             existing.online = peer.online
-            existing.loginName = peer.loginName ?? existing.loginName
+            existing.loginName = peer.loginName
             existing.provisional = false
             entries[peer.tailscaleId] = existing
             emit(.peerUpsert(makePeer(from: existing)))
@@ -714,13 +724,33 @@ public actor MeshNode {
         entry.tailnetIPs.first ?? entry.hostname
     }
 
+    /// A gated node opens no NEW connection to a kept peer whose current row
+    /// cannot name its owner (RFC 025 §3.3): we would be dialing someone we
+    /// cannot attribute, and the inbound gate already refuses that peer's own
+    /// fresh hello (WhoIs with no login → 4004), so both directions agree.
+    ///
+    /// It is a rule about OPENING, never about tearing down: an existing
+    /// session stands, so a momentary gap in the logins cannot flap a live
+    /// connection. An ungated node ignores the field entirely.
+    private func requireKnownLogin(_ entry: RegistryEntry) throws {
+        guard config.loginAllow.isEmpty || entry.loginName != nil else {
+            throw MeshError.loginUnknown(
+                peer: PeerRef(
+                    tailscaleId: entry.tailscaleId, generation: entry.generation
+                ).description)
+        }
+    }
+
     /// Get or create the session for a peer. Concurrent callers share one
     /// in-flight dial (no duplicate sessions across actor reentrancy).
     private func session(for entry: RegistryEntry) async throws -> SessionState {
         if let existing = sessions[entry.tailscaleId] { return existing }
         if let inFlight = dialsInFlight[entry.tailscaleId] {
+            // A dial already opened under a known login is joined, not
+            // re-judged: the check below guards STARTING one.
             return try await inFlight.value
         }
+        try requireKnownLogin(entry)
         let tailscaleId = entry.tailscaleId
         let host = dialHost(for: entry)
         let dial = Task { [weak self] () throws -> SessionState in
