@@ -597,7 +597,7 @@ Phase 1 (they are what Swift↔Swift messaging runs on); Phase 2 is *verificatio
 2. **Role ordering:** the dialing/client side completes the RFC 6455 upgrade, sends its hello, then reads the server hello. The accepting/server side upgrades, reads and validates the client hello, performs inbound identity verification, then sends its hello.  
 3. **Hello frame:** emitted as a WebSocket **Text** frame containing hello v2 (§8.2). Receivers accept Text or Binary JSON for compatibility. The first application-level frame in each direction must be hello; up to 16 control frames may precede it.  
 4. **Timeouts:** hello read timeout **5s**. The complete incoming upgrade + hello exchange is bounded by **10s**.  
-5. **Close codes:** `appId` mismatch → **4001**; malformed, invalid, or missing hello → **4002**; claimed `tailscale_id` contradicting authenticated identity → **4003**. A rejected hello never confirms the peer and never enables application traffic.  
+5. **Close codes:** `appId` mismatch → **4001**; malformed, invalid, or missing hello → **4002**; claimed `tailscale_id` contradicting authenticated identity, or no authenticated identity at all → **4003**; a WhoIs login that no `loginAllow` glob admits → **4004** (added 2026-09-16, §8.1.2). A rejected hello never confirms the peer and never enables application traffic.  
 6. **Application frames:** compact JSON envelopes (§8.3) are emitted as WebSocket **Binary** frames; receivers also accept Text frames containing JSON.  
 7. **Bounds:** maximum WebSocket frame/message size **16 MiB**; maximum **256** simultaneous incoming upgrade/hello handshakes. Envelope field and payload bounds in §8.3 apply within that transport limit.  
 8. **Keepalive:** after hello, send Ping every **10s** and require a Pong within **30s**. Peers must answer Ping according to RFC 6455. Ping payload contents are not semantically significant.  
@@ -618,6 +618,63 @@ WhoIs identity on an inbound connection. That is shipped behavior, not the
 desired Swift security policy. It does not prevent interop when WhoIs succeeds,
 and the difference must be covered by the live interop matrix. Swift cannot
 claim 4003 support until the Phase 0 backend exposes WhoIs.
+
+#### 8.1.2 Login gate (RFC 025, 2026-09-16)
+
+RFC 025 makes a node's **tailnet login** the mesh boundary. Its §3 is the
+normative text for the grammar, the Layer 3 filter, and the hello table; this
+section records only what the Swift surfaces are and where they live.
+
+A node declares the gate once, for its lifetime:
+
+```swift
+MeshConfiguration(appId: "field-tools", deviceName: "Alice's iPhone",
+                  loginAllow: ["*@corp.com"])     // empty (default) = no gate
+```
+
+- **`LoginGlob`** (`Sources/Truffle/Identity/LoginGlob.swift`) is the grammar —
+  a port of Go's `path.Match`, matched after lowercasing both sides.
+  `LoginGlob.match(_:_:)` is the case-sensitive primitive and throws
+  `LoginGlob.BadPattern` on a malformed pattern; `LoginGlob.allowed(_:login:)`
+  is the gate: empty list → `true`, absent or empty login under a non-empty
+  list → `false`, malformed globs skipped. Both of the Rust port's test tables
+  (`network/login_allow.rs`) are reproduced verbatim in `LoginGlobTests`, so
+  the Go sidecar, the Rust core, and the Swift core cannot drift.
+- **The login is on every identity surface** (RFC 025 §3.6, D7), optional and
+  never fabricated — an empty string on the wire becomes `nil`:
+  `AuthenticatedPeer.loginName` / `.displayName`, `BackendPeer.loginName`,
+  `BackendStatus.loginName`, `Peer.loginName` (part of `Peer`'s equality, so a
+  SwiftUI row re-renders when it changes), `MeshNode.loginName` (self) and
+  `MeshNode.loginAllow`, and `MeshModel.loginName`. A tagged node's
+  `tagged-devices` pseudo-login is passed through, not special-cased.
+- **Layer 3** — `MeshNode.upsertFromLayer3` admits a row only if
+  `Hostname.isAppPeer(...) && LoginGlob.allowed(loginAllow, login:)`. On a
+  gated node a row with no login is **not a peer**. Provisional entries from a
+  raced inbound hello keep merging as before: that hello already passed the
+  gate, so re-gating it would drop a peer the node has a live session with.
+  A gated node that sees a login-less app peer emits one `.health` notice, so
+  a mesh emptied by the gate is never silent.
+- **The hello** — `Handshake.server(..., loginAllow:)` implements RFC 025
+  §3.4's table in order: validate hello → absent authenticated identity →
+  **4003** (on a gated node under EITHER `IdentityPolicy`; a gate is never
+  bypassed by `.allowUnverified`, because without WhoIs there is no login to
+  gate on) → claimed `tailscale_id` mismatch → **4003** → login absent or
+  matching no glob → **4004** `SessionCloseCode.loginRefused`, thrown as
+  `MeshError.loginRefused(login:)`. All of it happens **before** our hello is
+  sent, so a refused caller never learns our identity block. The dialing side
+  needs no new check: a gated node only dials peers Layer 3 reported.
+- **Unchanged**: the hello envelope stays at version 2 and never carries a
+  login — WhoIs is the only authority (RFC 025 §3.7, D8). An empty
+  `loginAllow` is today's behaviour exactly, including the existing fail-open
+  under `.allowUnverified`.
+
+Where TailscaleKit's binding could not supply the login RFC 025 §3.3
+specifies, see that section's dated correction: `IpnState.PeerStatus` decodes
+without `UserID`, so `TailscaleKitBackend` reads `/localapi/v0/status` itself
+for the logins and overlays them onto the mapped `BackendStatus`
+(`Sources/TruffleTailscale/LocalAPIIdentity.swift`, covered by
+`LocalAPIIdentityTests` on the macOS host). When `PeerStatus` grows `UserID`,
+the overlay collapses into the decoder.
 
 ### 8.2 Hello envelope (hello v2 — `session/hello.rs`, RFC 017 §8)
 
