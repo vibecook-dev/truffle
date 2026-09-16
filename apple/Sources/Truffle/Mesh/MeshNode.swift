@@ -515,6 +515,19 @@ public actor MeshNode {
         return try await backend.dial(host: dialHost(for: entry), port: port)
     }
 
+    /// WhoIs for an address this node accepted on the RAW plane
+    /// (RFC 025 §3.7, D9). `listen(port:)` is NOT gated by `loginAllow` — the
+    /// node's list admits peers and session-plane hellos, and the app owns
+    /// admission on its own port. This is how an app gates an accepted
+    /// connection: resolve `MeshAcceptedConnection.remoteEndpoint`, then
+    /// decide on `loginName` (with `LoginGlob.allowed` if it wants the same
+    /// grammar). Throws when the lookup fails; an empty `tailscaleId` means
+    /// WhoIs produced no concrete identity and must be treated as untrusted.
+    public func whoIs(remoteEndpoint: String) async throws -> AuthenticatedPeer {
+        guard !isStopped else { throw MeshError.stopped }
+        return try await backend.whoIs(remoteEndpoint: remoteEndpoint)
+    }
+
     public func listen(port: UInt16) async throws -> any MeshListener {
         guard !isStopped else { throw MeshError.stopped }
         guard port != SessionLimits.sessionPort else {
@@ -546,7 +559,9 @@ public actor MeshNode {
         case .status(let status):
             await apply(status: status)
         case .peerUpsert(let peer):
-            upsertFromLayer3(peer)
+            if upsertFromLayer3(peer) {
+                await removeEntry(tailscaleId: peer.tailscaleId)
+            }
         case .peerLeft(let tailscaleId):
             await removeEntry(tailscaleId: tailscaleId)
         case .authRequired(let url):
@@ -583,7 +598,9 @@ public actor MeshNode {
         var seen = Set<String>()
         for peer in status.peers {
             seen.insert(peer.tailscaleId)
-            upsertFromLayer3(peer)
+            if upsertFromLayer3(peer) {
+                await removeEntry(tailscaleId: peer.tailscaleId)
+            }
         }
         // RFC 025 §3.3: a gated node cannot admit a peer whose login Layer 3
         // never reported. Say so — once — rather than presenting an
@@ -615,12 +632,29 @@ public actor MeshNode {
     /// allow-list. A gated node treats a row WITHOUT a login as not a peer
     /// (fail closed).
     ///
-    /// Provisional entries created by a raced inbound hello merge Layer 3
-    /// metadata into the same generation as before: that hello already passed
-    /// the gate in `Handshake.server`, so re-gating it here would drop a peer
-    /// the node has an authenticated session with.
-    private func upsertFromLayer3(_ peer: BackendPeer) {
+    /// The gate runs on entry CREATION and on every later row for an entry
+    /// that already exists. A stable node ID survives a device transfer, so
+    /// the netmap reports a re-signed node as an UPDATE, not a new row: if the
+    /// gate ran only at creation, a peer admitted as `bob@corp.com` would keep
+    /// its place after re-signing as a foreign login. A row whose login the
+    /// gate REFUSES is therefore a departure — the caller evicts the entry,
+    /// which closes its session and emits `peerLeft`.
+    ///
+    /// An ABSENT login on an existing row is sticky instead: a transient
+    /// overlay failure must not empty a gated mesh. Provisional entries from a
+    /// raced inbound hello keep merging — that hello passed the gate in
+    /// `Handshake.server` — but they are evicted on a refused login like any
+    /// other row.
+    ///
+    /// - Returns: `true` when this row must be evicted. Eviction is async and
+    ///   this is not, so the caller performs it.
+    private func upsertFromLayer3(_ peer: BackendPeer) -> Bool {
         if var existing = entries[peer.tailscaleId] {
+            if let login = peer.loginName,
+                !LoginGlob.allowed(config.loginAllow, login: login)
+            {
+                return true
+            }
             existing.hostname = peer.hostname
             existing.tailnetIPs = peer.tailnetIPs
             existing.online = peer.online
@@ -628,13 +662,13 @@ public actor MeshNode {
             existing.provisional = false
             entries[peer.tailscaleId] = existing
             emit(.peerUpsert(makePeer(from: existing)))
-            return
+            return false
         }
         guard Hostname.isAppPeer(hostname: peer.hostname, appId: appId.value) else {
-            return
+            return false
         }
         guard LoginGlob.allowed(config.loginAllow, login: peer.loginName) else {
-            return
+            return false
         }
         generationCounter += 1
         let entry = RegistryEntry(
@@ -648,6 +682,7 @@ public actor MeshNode {
             provisional: false)
         entries[peer.tailscaleId] = entry
         emit(.peerUpsert(makePeer(from: entry)))
+        return false
     }
 
     private func removeEntry(tailscaleId: String) async {
@@ -713,7 +748,12 @@ public actor MeshNode {
                     expectedTailscaleId: tailscaleId)
             }
         } catch {
-            await frames.close(code: SessionCloseCode.helloProtocol, reason: "handshake failed")
+            // A refusal (4001–4004) already closed the socket from the far
+            // end; echoing a close would be noise. Anything else gets one.
+            if !Handshake.isRefusal(error) {
+                await frames.close(
+                    code: SessionCloseCode.helloProtocol, reason: "handshake failed")
+            }
             throw error
         }
 
@@ -748,9 +788,11 @@ public actor MeshNode {
     /// Record a completed hello: confirm an existing candidate, or create a
     /// provisional entry when the hello raced ahead of the netmap
     /// (RFC 024 §7.2).
-    private func confirm(identity: PeerIdentity, tailscaleId: String) {
+    private func confirm(identity: PeerIdentity, tailscaleId: String, loginName: String? = nil) {
         if var entry = entries[tailscaleId] {
             entry.identity = identity
+            // Never overwrite a known login with nothing.
+            if let loginName { entry.loginName = loginName }
             entries[tailscaleId] = entry
             emit(.peerUpsert(makePeer(from: entry)))
         } else {
@@ -761,7 +803,10 @@ public actor MeshNode {
                 hostname: "",
                 tailnetIPs: [],
                 online: true,
-                loginName: nil,
+                // On a gated node this login is the one that PASSED the hello
+                // gate, so the provisional row is honest about who it admitted
+                // instead of waiting for the netmap to say.
+                loginName: loginName,
                 identity: identity,
                 provisional: true)
             entries[tailscaleId] = entry
@@ -906,7 +951,9 @@ public actor MeshNode {
                     authenticated: authenticated,
                     policy: identityPolicy,
                     loginAllow: loginAllow)
-                return InboundHandshake(frames: frames, identity: identity)
+                return InboundHandshake(
+                    frames: frames, identity: identity,
+                    loginName: authenticated?.loginName)
             }
             await adoptInbound(identity)
         } catch {
@@ -918,10 +965,14 @@ public actor MeshNode {
     private struct InboundHandshake: Sendable {
         let frames: any SessionFrames
         let identity: PeerIdentity
+        /// The WhoIs login this caller passed the gate with, if any.
+        let loginName: String?
     }
 
     private func adoptInbound(_ handshake: InboundHandshake) async {
-        confirm(identity: handshake.identity, tailscaleId: handshake.identity.tailscaleId)
+        confirm(
+            identity: handshake.identity, tailscaleId: handshake.identity.tailscaleId,
+            loginName: handshake.loginName)
         if let previous = sessions.removeValue(forKey: handshake.identity.tailscaleId) {
             previous.pump?.cancel()
             previous.heartbeat?.cancel()
