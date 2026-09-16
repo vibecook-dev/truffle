@@ -70,7 +70,10 @@ where
                             handle_peer_joined(&node, &inner, &namespace, &state.id).await;
                         }
                         Ok(PeerEvent::Left(state)) => {
-                            handle_peer_left(&inner, &state.id).await;
+                            // Slices are keyed by the departed peer's PUBLISHED
+                            // device id, which the event's final state carries
+                            // (RFC 022 §16.4) — never by its Tailscale id.
+                            handle_peer_left(&inner, &state.id, state.published_device_id()).await;
                         }
                         Ok(_) => {} // Updated, WsConnected, WsDisconnected, AuthRequired — ignore
                         Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -130,7 +133,13 @@ where
 }
 
 /// Handle an incoming sync message from a peer.
-async fn handle_incoming_message<N, T>(
+///
+/// `from` is the sender's WhoIs-verified Tailscale id (the session's
+/// routing key). A slice or a `Clear` is honoured only under the SENDER'S
+/// published device id (RFC 025 §3.5): the `device_id` a payload names is
+/// a claim, and a claim that does not match the authenticated sender is
+/// dropped — a peer can neither write another device's slice nor clear it.
+pub(super) async fn handle_incoming_message<N, T>(
     node: &Node<N>,
     inner: &StoreInner<T>,
     namespace: &str,
@@ -165,6 +174,9 @@ async fn handle_incoming_message<N, T>(
             version,
             updated_at,
         } => {
+            if !sender_owns(node, inner, from, &device_id, "slice").await {
+                return;
+            }
             apply_remote_slice(inner, &device_id, data, version, updated_at).await;
         }
 
@@ -200,6 +212,9 @@ async fn handle_incoming_message<N, T>(
         }
 
         SyncMessage::Clear { device_id } => {
+            if !sender_owns(node, inner, from, &device_id, "clear").await {
+                return;
+            }
             let mut remotes = inner.remotes.write().await;
             if remotes.remove(&device_id).is_some() {
                 let _ = inner.event_tx.send(StoreEvent::PeerRemoved {
@@ -211,6 +226,44 @@ async fn handle_incoming_message<N, T>(
                     "synced_store: cleared remote slice (Clear message)"
                 );
             }
+        }
+    }
+}
+
+/// Bind a payload's `device_id` to the sender (RFC 025 §3.5): true only when
+/// the session has a PUBLISHED device id for the sender's Tailscale id and
+/// it equals the id the payload names. A sender with no published identity
+/// (no hello yet, or suppressed under RFC 022 first-wins) owns nothing.
+async fn sender_owns<N, T>(
+    node: &Node<N>,
+    inner: &StoreInner<T>,
+    from: &str,
+    claimed_device_id: &str,
+    what: &str,
+) -> bool
+where
+    N: NetworkProvider + 'static,
+{
+    match node.peer_device_id(from).await {
+        Some(published) if published == claimed_device_id => true,
+        Some(published) => {
+            tracing::warn!(
+                store = inner.store_id.as_str(),
+                from = from,
+                sender_device = published.as_str(),
+                claimed_device = claimed_device_id,
+                "synced_store: {what} names a device the sender is not; dropped"
+            );
+            false
+        }
+        None => {
+            tracing::warn!(
+                store = inner.store_id.as_str(),
+                from = from,
+                claimed_device = claimed_device_id,
+                "synced_store: {what} from a sender with no published identity; dropped"
+            );
+            false
         }
     }
 }
@@ -331,22 +384,34 @@ async fn handle_peer_joined<N, T>(
     }
 }
 
-/// Handle a peer leaving: remove their slice and emit PeerRemoved.
-async fn handle_peer_left<T>(inner: &StoreInner<T>, peer_id: &str)
+/// Handle a peer leaving: remove its slice (keyed by its PUBLISHED device
+/// id, never its Tailscale id — RFC 022 I1 keeps the two distinct) and emit
+/// `PeerRemoved`. A peer that never published an identity owns no slice:
+/// nothing to remove.
+async fn handle_peer_left<T>(inner: &StoreInner<T>, peer_id: &str, device_id: Option<&str>)
 where
     T: Clone + Send + Sync + 'static,
 {
+    let Some(device_id) = device_id else {
+        tracing::debug!(
+            store = inner.store_id.as_str(),
+            peer = peer_id,
+            "synced_store: departed peer had no published device id; no slice to remove"
+        );
+        return;
+    };
     let mut remotes = inner.remotes.write().await;
-    if remotes.remove(peer_id).is_some() {
+    if remotes.remove(device_id).is_some() {
         // Remove persisted slice for departed peer.
-        inner.backend.remove(&inner.store_id, peer_id);
+        inner.backend.remove(&inner.store_id, device_id);
 
         let _ = inner.event_tx.send(StoreEvent::PeerRemoved {
-            device_id: peer_id.to_string(),
+            device_id: device_id.to_string(),
         });
         tracing::debug!(
             store = inner.store_id.as_str(),
-            device = peer_id,
+            peer = peer_id,
+            device = device_id,
             "synced_store: removed peer slice (peer left)"
         );
     }

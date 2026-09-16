@@ -323,6 +323,15 @@ pub struct WsConfig {
     /// HELLO_TIMEOUT (5s) so hello timeouts keep their specific
     /// classification.
     pub handshake_timeout: Duration,
+    /// Login allow-list (RFC 025 §3.4): `loginName` globs of the tailnet
+    /// users whose nodes may complete the hello with us. Empty = no gate
+    /// (every caller that passes the app and identity checks is admitted,
+    /// and a connection with no authenticated identity is admitted
+    /// unverified — the v1 behaviour). Non-empty = the accepting side
+    /// refuses, BEFORE revealing its own hello, every caller whose
+    /// WhoIs login matches no glob (close code 4004) and every caller the
+    /// bridge attached no authenticated identity to (close code 4003).
+    pub login_allow: Vec<String>,
 }
 
 impl Default for WsConfig {
@@ -334,6 +343,7 @@ impl Default for WsConfig {
             max_message_size: 16 * 1024 * 1024, // 16 MiB
             max_pending_handshakes: 256,
             handshake_timeout: Duration::from_secs(10),
+            login_allow: Vec::new(),
         }
     }
 }
@@ -418,6 +428,36 @@ pub enum TransportError {
         claimed: String,
         /// The Tailscale-authenticated node ID (WhoIs) of the connection.
         authenticated: String,
+    },
+
+    /// This node admits only listed logins (RFC 025 §3.4) and the bridge
+    /// attached no authenticated identity to the incoming connection — a
+    /// mock provider, a failed WhoIs, or a legacy header. A gated node
+    /// never falls open (close code 4003).
+    #[error("identity unavailable: this node admits only listed logins and the connection carried no authenticated identity")]
+    IdentityUnavailable,
+
+    /// The caller's Tailscale-authenticated login is not on this node's
+    /// allow-list (RFC 025 §3.4, close code 4004). `login` is the WhoIs
+    /// login the bridge reported, or `None` when it reported none (a tagged
+    /// node with no user profile, or a sidecar that omits the field).
+    #[error("login refused: {} is not on this node's allow-list", login.as_deref().unwrap_or("<no login>"))]
+    LoginRefused {
+        /// The authenticated login that was refused, if the bridge reported one.
+        login: Option<String>,
+    },
+
+    /// The remote closed the socket with an application close code before
+    /// completing the hello — it refused us (RFC 017 §8 / RFC 025 §4:
+    /// 4001 app mismatch, 4002 hello protocol, 4003 identity mismatch or
+    /// unavailable, 4004 login refused). The dialing side surfaces the code
+    /// so a consumer can tell "not my app" from "not my login".
+    #[error("hello refused by remote: close code {code} ({reason})")]
+    HelloRefused {
+        /// The WebSocket close code the remote sent.
+        code: u16,
+        /// The close reason the remote sent (may be empty).
+        reason: String,
     },
 
     /// The connection was closed unexpectedly.

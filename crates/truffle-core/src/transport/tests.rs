@@ -1282,3 +1282,137 @@ async fn ws_connect_to_unreachable_returns_connect_failed() {
         other => panic!("expected ConnectFailed, got: {other}"),
     }
 }
+
+// ===========================================================================
+// RFC 025 §3.4 — the login gate at the hello, over a real loopback WebSocket
+// ===========================================================================
+
+/// A gated server transport plus an ungated client transport on a fresh
+/// loopback port. `identity` is the WhoIs JSON the server's bridge attaches
+/// to the incoming connection.
+async fn gated_pair(
+    identity: &str,
+    login_allow: &[&str],
+) -> (
+    crate::transport::websocket::WebSocketTransport<MockNetworkProvider>,
+    crate::transport::websocket::WebSocketTransport<MockNetworkProvider>,
+    PeerAddr,
+) {
+    use crate::transport::websocket::WebSocketTransport;
+
+    let server_provider =
+        Arc::new(MockNetworkProvider::new("server").with_incoming_identity(identity));
+    let client_provider = Arc::new(MockNetworkProvider::new("client"));
+
+    let port = {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let config = WsConfig {
+        port,
+        ping_interval: Duration::from_secs(60),
+        pong_timeout: Duration::from_secs(60),
+        ..Default::default()
+    };
+    let server_config = WsConfig {
+        login_allow: login_allow.iter().map(|s| s.to_string()).collect(),
+        ..config.clone()
+    };
+    let server_ws = WebSocketTransport::new(server_provider, server_config);
+    let client_ws = WebSocketTransport::new(client_provider, config);
+    let peer_addr = PeerAddr {
+        ip: Some("127.0.0.1".parse().unwrap()),
+        hostname: "localhost".to_string(),
+        dns_name: None,
+    };
+    (server_ws, client_ws, peer_addr)
+}
+
+/// Dial a gated listener and return what the client saw and whether the
+/// listener yielded a stream.
+async fn dial_gated(
+    identity: &str,
+    login_allow: &[&str],
+) -> (
+    Result<crate::transport::websocket::WsFramedStream, TransportError>,
+    bool,
+) {
+    let (server_ws, client_ws, peer_addr) = gated_pair(identity, login_allow).await;
+    let mut listener = server_ws.listen().await.unwrap();
+    let (client_result, server_accept) = tokio::join!(
+        client_ws.connect(&peer_addr),
+        tokio::time::timeout(Duration::from_secs(2), listener.accept())
+    );
+    let yielded = matches!(server_accept, Ok(Some(_)));
+    (client_result, yielded)
+}
+
+#[tokio::test]
+async fn ws_gated_listener_admits_a_listed_login() {
+    let (client_result, yielded) = dial_gated(
+        r#"{"dnsName":"client.ts.net","nodeId":"client","loginName":"Alice@Corp.com"}"#,
+        &["*@corp.com"],
+    )
+    .await;
+    let mut stream = client_result.expect("a listed login completes the hello");
+    assert!(yielded, "the listener yields the admitted stream");
+    stream.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn ws_gated_listener_refuses_an_unlisted_login_with_4004() {
+    let (client_result, yielded) = dial_gated(
+        r#"{"dnsName":"mallory.ts.net","nodeId":"client","loginName":"bob@evil.com"}"#,
+        &["*@corp.com"],
+    )
+    .await;
+    match client_result {
+        Err(TransportError::HelloRefused { code, .. }) => assert_eq!(code, 4004),
+        other => panic!("the dialer must see close code 4004, got {other:?}"),
+    }
+    assert!(!yielded, "a refused caller never reaches the session layer");
+}
+
+#[tokio::test]
+async fn ws_gated_listener_refuses_a_caller_with_no_login_with_4004() {
+    // The bridge verified the node but WhoIs carried no user profile (a
+    // tagged node, or an older sidecar omitting the field).
+    let (client_result, yielded) = dial_gated(
+        r#"{"dnsName":"tagged.ts.net","nodeId":"client"}"#,
+        &["*@corp.com"],
+    )
+    .await;
+    assert!(matches!(
+        client_result,
+        Err(TransportError::HelloRefused { code: 4004, .. })
+    ));
+    assert!(!yielded);
+}
+
+#[tokio::test]
+async fn ws_gated_listener_refuses_a_caller_with_no_identity_with_4003() {
+    // The v1 fall-open row: an empty bridge identity is admitted UNGATED
+    // (`ws_connect_and_exchange_messages` proves it) and refused GATED.
+    let (client_result, yielded) = dial_gated("", &["*@corp.com"]).await;
+    assert!(matches!(
+        client_result,
+        Err(TransportError::HelloRefused { code: 4003, .. })
+    ));
+    assert!(!yielded);
+}
+
+#[tokio::test]
+async fn ws_dialer_sees_the_identity_mismatch_close_code() {
+    // The pre-existing 4003 refusal now reaches the dialer as a typed
+    // refusal instead of a generic "closed before hello".
+    let (client_result, yielded) = dial_gated(
+        r#"{"dnsName":"mallory.ts.net","nodeId":"real-node-id","loginName":"alice@corp.com"}"#,
+        &["alice@corp.com"],
+    )
+    .await;
+    assert!(matches!(
+        client_result,
+        Err(TransportError::HelloRefused { code: 4003, .. })
+    ));
+    assert!(!yielded);
+}
