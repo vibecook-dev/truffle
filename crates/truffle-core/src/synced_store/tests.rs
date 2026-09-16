@@ -147,7 +147,197 @@ async fn make_test_node(
     (node, event_tx)
 }
 
+/// A Layer 3 peer row keyed by its Tailscale id (never its device id).
+fn network_peer(tailscale_id: &str) -> NetworkPeer {
+    NetworkPeer {
+        id: tailscale_id.to_string(),
+        hostname: format!("truffle-test-{tailscale_id}"),
+        ip: "127.0.0.1".parse().unwrap(),
+        online: true,
+        cur_addr: Some("127.0.0.1:41641".to_string()),
+        relay: None,
+        os: None,
+        last_seen: None,
+        key_expiry: None,
+        dns_name: None,
+        login_name: None,
+    }
+}
+
+/// The identity a peer would advertise in its hello (RFC 017 §8).
+fn hello_identity(device_id: &str, tailscale_id: &str) -> crate::session::PeerIdentity {
+    crate::session::PeerIdentity {
+        app_id: "test".to_string(),
+        device_id: device_id.to_string(),
+        device_name: format!("Node {device_id}"),
+        os: "linux".to_string(),
+        tailscale_id: tailscale_id.to_string(),
+    }
+}
+
+/// Feed one sync message to the store's inbound handler as if it had
+/// arrived from the peer routed by `from` (the WhoIs-verified Tailscale id).
+async fn deliver(
+    node: &Arc<crate::node::Node<MockNetworkProvider>>,
+    store: &Arc<SyncedStore<TestState>>,
+    from: &str,
+    msg: crate::synced_store::types::SyncMessage,
+) {
+    let namespace = format!("ss:{}", store.store_id());
+    super::sync::handle_incoming_message(
+        node,
+        &store.inner,
+        &namespace,
+        from,
+        serde_json::to_value(&msg).unwrap(),
+    )
+    .await;
+}
+
+fn update(device_id: &str, value: i32, version: u64) -> crate::synced_store::types::SyncMessage {
+    crate::synced_store::types::SyncMessage::Update {
+        device_id: device_id.to_string(),
+        data: serde_json::to_value(TestState {
+            value,
+            label: format!("from-{device_id}"),
+        })
+        .unwrap(),
+        version,
+        updated_at: 12345,
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
+
+// ── RFC 025 §3.5: a slice is honoured only under its sender's identity ──
+
+#[tokio::test]
+async fn test_slice_is_bound_to_its_authenticated_sender() {
+    let ws_port = random_port().await;
+    let (node, event_tx) = make_test_node("device-a", ws_port).await;
+    let store: Arc<SyncedStore<TestState>> = node.synced_store("bound-store");
+
+    // Peer B joins and completes a hello: Tailscale id "ts-b", ULID "device-b".
+    let _ = event_tx.send(NetworkPeerEvent::Joined(network_peer("ts-b")));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        node.session()
+            .test_stamp_identity("ts-b", hello_identity("device-b", "ts-b"))
+            .await
+    );
+
+    // B's own slice, from B: applied.
+    deliver(&node, &store, "ts-b", update("device-b", 1, 1)).await;
+    assert_eq!(store.get("device-b").await.map(|s| s.data.value), Some(1));
+
+    // A slice naming ANOTHER device, from B: dropped — B cannot write C's slice.
+    deliver(&node, &store, "ts-b", update("device-c", 99, 1)).await;
+    assert!(
+        store.get("device-c").await.is_none(),
+        "a spoofed slice must not be applied"
+    );
+
+    // A slice naming B, from a sender the registry does not know: dropped.
+    deliver(&node, &store, "ts-stranger", update("device-b", 2, 2)).await;
+    assert_eq!(
+        store.get("device-b").await.map(|s| s.data.value),
+        Some(1),
+        "an unknown sender must not overwrite B's slice"
+    );
+
+    // A Clear naming B, from a stranger: ignored. From B: honoured.
+    use crate::synced_store::types::SyncMessage;
+    deliver(
+        &node,
+        &store,
+        "ts-stranger",
+        SyncMessage::Clear {
+            device_id: "device-b".to_string(),
+        },
+    )
+    .await;
+    assert!(
+        store.get("device-b").await.is_some(),
+        "a stranger cannot clear B's slice"
+    );
+    deliver(
+        &node,
+        &store,
+        "ts-b",
+        SyncMessage::Clear {
+            device_id: "device-b".to_string(),
+        },
+    )
+    .await;
+    assert!(
+        store.get("device-b").await.is_none(),
+        "B clears its own slice"
+    );
+
+    store.stop().await;
+}
+
+#[tokio::test]
+async fn test_slice_from_a_sender_without_a_published_identity_is_dropped() {
+    let ws_port = random_port().await;
+    let (node, event_tx) = make_test_node("device-a", ws_port).await;
+    let store: Arc<SyncedStore<TestState>> = node.synced_store("unidentified-store");
+
+    // B is known to Layer 3 but has not completed a hello: no published ULID.
+    let _ = event_tx.send(NetworkPeerEvent::Joined(network_peer("ts-b")));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    deliver(&node, &store, "ts-b", update("device-b", 1, 1)).await;
+    assert!(
+        store.get("device-b").await.is_none(),
+        "a sender with no published identity owns no slice"
+    );
+
+    store.stop().await;
+}
+
+#[tokio::test]
+async fn test_departed_peer_without_identity_removes_nothing() {
+    let ws_port = random_port().await;
+    let (node, event_tx) = make_test_node("device-a", ws_port).await;
+    let store: Arc<SyncedStore<TestState>> = node.synced_store("left-store");
+    let mut events = store.subscribe();
+
+    // A slice B legitimately wrote earlier (B helloed, then its identity
+    // is not what the departing state carries — e.g. another peer's leave).
+    let _ = event_tx.send(NetworkPeerEvent::Joined(network_peer("ts-b")));
+    let _ = event_tx.send(NetworkPeerEvent::Joined(network_peer("ts-c")));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        node.session()
+            .test_stamp_identity("ts-b", hello_identity("device-b", "ts-b"))
+            .await
+    );
+    deliver(&node, &store, "ts-b", update("device-b", 1, 1)).await;
+    assert!(store.get("device-b").await.is_some());
+
+    // C (never helloed) leaves: B's slice stays, no PeerRemoved fires.
+    let _ = event_tx.send(NetworkPeerEvent::Left("ts-c".to_string()));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        store.get("device-b").await.is_some(),
+        "another peer's leave must not touch B"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), async {
+            loop {
+                if let Ok(StoreEvent::PeerRemoved { .. }) = events.recv().await {
+                    return;
+                }
+            }
+        })
+        .await
+        .is_err(),
+        "no PeerRemoved for a peer that owned no slice"
+    );
+
+    store.stop().await;
+}
 
 #[tokio::test]
 async fn test_set_and_local() {
@@ -404,24 +594,20 @@ async fn test_peer_leave_removes_slice() {
 
     assert!(store.get("device-b").await.is_some());
 
-    // Simulate peer leaving.
-    let peer_b = NetworkPeer {
-        id: "device-b".to_string(),
-        hostname: "truffle-test-device-b".to_string(),
-        ip: "127.0.0.1".parse().unwrap(),
-        online: true,
-        cur_addr: Some("127.0.0.1:41641".to_string()),
-        relay: None,
-        os: None,
-        last_seen: None,
-        key_expiry: None,
-        dns_name: None,
-        login_name: None,
-    };
-    // First join, then leave (the sync task needs Joined to register the peer).
-    let _ = event_tx.send(NetworkPeerEvent::Joined(peer_b));
+    // Simulate peer leaving. The peer's Tailscale id ("ts-b") and its
+    // durable device id ("device-b") are DISTINCT (RFC 022 I1) — the
+    // previous version of this row used one string for both and passed
+    // while production, which keys slices by the ULID, never removed a
+    // departed peer's slice (RFC 025 §1 finding 3).
+    let _ = event_tx.send(NetworkPeerEvent::Joined(network_peer("ts-b")));
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let _ = event_tx.send(NetworkPeerEvent::Left("device-b".to_string()));
+    assert!(
+        node.session()
+            .test_stamp_identity("ts-b", hello_identity("device-b", "ts-b"))
+            .await,
+        "the joined peer must be stampable"
+    );
+    let _ = event_tx.send(NetworkPeerEvent::Left("ts-b".to_string()));
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Remote slice should be removed.

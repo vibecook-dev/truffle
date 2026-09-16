@@ -142,6 +142,12 @@ pub struct Peer {
     pub os: Option<String>,
     /// Last time the peer was seen online (RFC 3339 string).
     pub last_seen: Option<String>,
+    /// The peer owner's Tailscale login name, e.g. `alice@example.com`, as
+    /// Layer 3 reported it (RFC 025 §3.6). `None` when the provider cannot
+    /// know it (a sidecar older than protocol 5, a node with no user
+    /// profile). Tagged nodes carry Tailscale's `tagged-devices`
+    /// pseudo-login. Never self-declared: the hello does not carry it.
+    pub login_name: Option<String>,
 }
 
 impl From<PeerState> for Peer {
@@ -191,6 +197,7 @@ impl From<PeerState> for Peer {
             connection_type: s.connection_type,
             os,
             last_seen: s.last_seen,
+            login_name: s.login_name,
         }
     }
 }
@@ -743,6 +750,22 @@ impl<N: NetworkProvider + 'static> Node<N> {
             .into_iter()
             .map(|s| Self::project_peer(s, &app_id))
             .collect()
+    }
+
+    /// The **published** durable device id of the peer whose WhoIs-verified
+    /// Tailscale id is `tailscale_id` (RFC 025 §3.5) — `None` for an unknown
+    /// peer, a peer that has not completed a hello, or one whose ULID is
+    /// suppressed under first-wins (RFC 022 §7.7). Subsystems bind an
+    /// inbound message's `from` to a device id through this, never through
+    /// an id the payload names.
+    pub async fn peer_device_id(&self, tailscale_id: &str) -> Option<String> {
+        self.session.published_device_id(tailscale_id).await
+    }
+
+    /// The Layer 5 registry (test seam: stamping identities on mock peers).
+    #[cfg(test)]
+    pub(crate) fn session(&self) -> &Arc<PeerRegistry<N>> {
+        &self.session
     }
 
     /// Project a session [`PeerState`] to the public [`Peer`] view.
@@ -1496,6 +1519,9 @@ pub struct NodeBuilder {
     idle_timeout_secs: Option<u64>,
     /// RFC 022 Phase C: proactively exchange hello with online peers.
     eager_identity: bool,
+    /// RFC 025 §3.1: `loginName` globs of the tailnet users whose nodes may
+    /// be peers. Empty = the whole tailnet.
+    login_allow: Vec<String>,
 }
 
 /// Manual `Debug`: `auth_key` is a tailnet credential and must never reach
@@ -1514,6 +1540,7 @@ impl std::fmt::Debug for NodeBuilder {
             .field("ws_port", &self.ws_port)
             .field("idle_timeout_secs", &self.idle_timeout_secs)
             .field("eager_identity", &self.eager_identity)
+            .field("login_allow", &self.login_allow)
             .finish()
     }
 }
@@ -1615,6 +1642,7 @@ impl Default for NodeBuilder {
             ws_port: 9417,
             idle_timeout_secs: None,
             eager_identity: true,
+            login_allow: Vec::new(),
         }
     }
 }
@@ -1703,6 +1731,30 @@ impl NodeBuilder {
     /// online peers so durable `device_id` is learned without app `send`.
     pub fn eager_identity(mut self, enabled: bool) -> Self {
         self.eager_identity = enabled;
+        self
+    }
+
+    /// Restrict the mesh to nodes owned by the given tailnet logins
+    /// (RFC 025 §3.1). Each entry is a `loginName` glob in the grammar of
+    /// RFC 023 §9.7 — Go's `path.Match`, case-insensitive: `alice@corp.com`,
+    /// `*@corp.com`. An empty list (the default) is the whole tailnet.
+    ///
+    /// With a non-empty list the node (a) reports as peers only nodes whose
+    /// owner's login matches, (b) refuses every inbound hello whose WhoIs
+    /// login does not match — with close code 4004, before revealing its
+    /// own hello — and (c) refuses a connection the bridge attached no
+    /// authenticated identity to (close code 4003) instead of admitting it
+    /// unverified. Every subsystem on the session plane (the synced store,
+    /// request/reply, file transfer, chat) is thereby scoped to those
+    /// logins by construction. The list is fixed for the node's lifetime;
+    /// build a new node to change it. Requires a sidecar speaking protocol
+    /// 5 (`loginName` on peer rows): `build()` fails otherwise.
+    pub fn login_allow<I, S>(mut self, globs: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.login_allow = globs.into_iter().map(Into::into).collect();
         self
     }
 
@@ -1830,7 +1882,7 @@ impl NodeBuilder {
             ephemeral: if self.ephemeral { Some(true) } else { None },
             tags: None,
             idle_timeout_secs: self.idle_timeout_secs,
-            login_allow: Vec::new(),
+            login_allow: self.login_allow.clone(),
         })
     }
 
@@ -1858,6 +1910,7 @@ impl NodeBuilder {
         // 2. Create WebSocket transport.
         let ws_config = WsConfig {
             port: ws_port,
+            login_allow: self.login_allow.clone(),
             ..Default::default()
         };
         let ws_transport = Arc::new(WebSocketTransport::new(network.clone(), ws_config));
@@ -1936,6 +1989,7 @@ impl NodeBuilder {
         // 6. Create WebSocket transport.
         let ws_config = WsConfig {
             port: ws_port,
+            login_allow: self.login_allow.clone(),
             ..Default::default()
         };
         let ws_transport = Arc::new(WebSocketTransport::new(network.clone(), ws_config));
@@ -3315,6 +3369,7 @@ mod tests {
             last_seen: None,
             identity: None,
             identity_suppressed: false,
+            login_name: None,
         };
         let p = Peer::from(pre);
         assert!(p.device_id.is_none());
@@ -3346,6 +3401,7 @@ mod tests {
                 tailscale_id: "ts-abc".into(),
             }),
             identity_suppressed: false,
+            login_name: None,
         };
         let p = Peer::from(post);
         assert_eq!(p.device_id.as_deref(), Some("01J4K9M2Z8AB3RNYQPW6H5TC0X"));
@@ -3371,6 +3427,7 @@ mod tests {
                 tailscale_id: "ts-xyz".into(),
             }),
             identity_suppressed: true,
+            login_name: None,
         };
         let p = Peer::from(suppressed);
         assert!(

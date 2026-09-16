@@ -27,7 +27,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, Mutex as AsyncMutex, RwLock, Semaphore};
 
 pub use self::hello::{
-    HelloEnvelope, HelloKind, PeerIdentity, CLOSE_APP_MISMATCH, CLOSE_HELLO_PROTOCOL, HELLO_TIMEOUT,
+    HelloEnvelope, HelloKind, PeerIdentity, CLOSE_APP_MISMATCH, CLOSE_HELLO_PROTOCOL,
+    CLOSE_IDENTITY_MISMATCH, CLOSE_LOGIN_REFUSED, HELLO_TIMEOUT,
 };
 use self::reconnect::ReconnectBackoff;
 
@@ -83,6 +84,10 @@ pub struct PeerState {
     /// because another live peer already owns that ULID in `by_device`
     /// (first-wins, RFC 022 §7.7).
     pub identity_suppressed: bool,
+    /// The peer's Tailscale login (owner) name as Layer 3 reported it
+    /// (RFC 025 §3.3). `None` when the provider does not know it. Refreshed
+    /// on every Layer 3 `Updated`; never taken from the hello.
+    pub login_name: Option<String>,
 }
 
 impl PeerState {
@@ -1110,6 +1115,20 @@ impl<N: NetworkProvider + 'static> PeerRegistry<N> {
         self.by_device.read().await.get(device_id).cloned()
     }
 
+    /// The **published** durable device id of the peer routed by
+    /// `tailscale_id`, if the registry knows the peer, it has completed a
+    /// hello, and its ULID is not suppressed under first-wins (RFC 022
+    /// §7.7). Subsystems that key state by device id (the synced store)
+    /// bind an inbound message to its sender through this — never through
+    /// a device id the payload names (RFC 025 §3.5).
+    pub async fn published_device_id(&self, tailscale_id: &str) -> Option<String> {
+        self.peers
+            .read()
+            .await
+            .get(tailscale_id)
+            .and_then(|state| state.published_device_id().map(str::to_string))
+    }
+
     /// Disconnect a specific peer's WebSocket connection.
     ///
     /// Removes the cached connection and marks the peer as disconnected.
@@ -1689,6 +1708,7 @@ fn network_peer_to_state(peer: &NetworkPeer, generation: u64) -> PeerState {
         last_seen: peer.last_seen.clone(),
         identity: None,
         identity_suppressed: false,
+        login_name: peer.login_name.clone(),
     }
 }
 

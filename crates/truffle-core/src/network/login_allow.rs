@@ -131,11 +131,7 @@ fn scan_chunk(pattern: &[char]) -> (bool, &[char], &[char]) {
             }
             '[' => in_range = true,
             ']' => in_range = false,
-            '*' => {
-                if !in_range {
-                    break 'scan;
-                }
-            }
+            '*' if !in_range => break 'scan,
             _ => {}
         }
         i += 1;
@@ -398,8 +394,8 @@ mod tests {
         assert!(!ok("a[^a][^a][^a]b", "a☺b"));
         assert!(ok("[a-ζ]*", "α"));
         assert!(!ok("*[a-ζ]", "A"));
-        assert!(ok("a?b", "a/b") == false);
-        assert!(ok("a*b", "a/b") == false);
+        assert!(!ok("a?b", "a/b"));
+        assert!(!ok("a*b", "a/b"));
         assert!(ok("[\\]a]", "]"));
         assert!(ok("[\\-]", "-"));
         assert!(ok("[x\\-]", "x"));
