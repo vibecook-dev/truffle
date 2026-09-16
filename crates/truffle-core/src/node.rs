@@ -1830,6 +1830,7 @@ impl NodeBuilder {
             ephemeral: if self.ephemeral { Some(true) } else { None },
             tags: None,
             idle_timeout_secs: self.idle_timeout_secs,
+            login_allow: Vec::new(),
         })
     }
 
@@ -2045,6 +2046,7 @@ mod tests {
                     tailscale_id: id.to_string(),
                     dns_name: None,
                     ip: Some("127.0.0.1".parse().unwrap()),
+                    login_name: None,
                 },
                 local_addr: PeerAddr {
                     ip: Some("127.0.0.1".parse().unwrap()),
@@ -2175,6 +2177,7 @@ mod tests {
             last_seen: Some("2026-03-25T12:00:00Z".to_string()),
             key_expiry: None,
             dns_name: None,
+            login_name: None,
         }
     }
 
@@ -2769,6 +2772,7 @@ mod tests {
             last_seen: None,
             key_expiry: None,
             dns_name: None,
+            login_name: None,
         };
         let peer_a = NetworkPeer {
             id: "node-a".to_string(),
@@ -2781,6 +2785,7 @@ mod tests {
             last_seen: None,
             key_expiry: None,
             dns_name: None,
+            login_name: None,
         };
 
         let _ = event_tx_a.send(NetworkPeerEvent::Joined(peer_b));
@@ -2866,6 +2871,7 @@ mod tests {
             last_seen: None,
             key_expiry: None,
             dns_name: None,
+            login_name: None,
         };
         let _ = event_tx_a.send(NetworkPeerEvent::Joined(self_peer));
         tokio::time::sleep(Duration::from_millis(100)).await;

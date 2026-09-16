@@ -44,6 +44,7 @@ impl MockNetworkProvider {
                 tailscale_id: id.to_string(),
                 dns_name: None,
                 ip: Some("127.0.0.1".parse().unwrap()),
+                login_name: None,
             },
             local_addr: PeerAddr {
                 ip: Some("127.0.0.1".parse().unwrap()),
@@ -415,6 +416,7 @@ async fn test_peer_leave_removes_slice() {
         last_seen: None,
         key_expiry: None,
         dns_name: None,
+        login_name: None,
     };
     // First join, then leave (the sync task needs Joined to register the peer).
     let _ = event_tx.send(NetworkPeerEvent::Joined(peer_b));
