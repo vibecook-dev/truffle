@@ -236,11 +236,15 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         #expect(merged.peers[1].loginName == "alice@corp.com")
     }
 
-    /// …and a gated node therefore DROPS that row. This asserts the exact
-    /// predicate `MeshNode.upsertFromLayer3` applies, at the seam where the
-    /// overlay and the gate meet: an unresolvable owner is not an owner, so
-    /// the peer is not a peer.
-    @Test func aGatedNodeDropsAnUnresolvableOwnersRow() throws {
+    /// Checks the overlay's OUTPUT against the gate's grammar — not against a
+    /// node. It re-states `LoginGlob.allowed` here rather than driving
+    /// `MeshNode`, so it cannot witness the node applying the predicate (nor
+    /// the `isAppPeer` half beside it); `NodeLoginGateTests`'
+    /// `aGatedNodeAdmitsOnlyTheRowThatPassesBothHalves` is the witness for
+    /// that. What this pins is narrower and still worth pinning: of the row
+    /// shapes the overlay can emit, only a resolvable owner on an allowed
+    /// login yields a login the grammar accepts.
+    @Test func onlyAResolvableAllowedOwnerYieldsAnAcceptedLogin() throws {
         let gate = ["*@corp.com"]
         let merged = try overlay().applied(
             to: BackendStatus(
