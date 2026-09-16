@@ -36,6 +36,13 @@ pub struct StartConfig {
     pub ephemeral: bool,
     /// WebSocket listen port (defaults to 9417 if not set).
     pub ws_port: Option<u16>,
+    /// RFC 025 §3.1: `loginName` globs of the tailnet users whose nodes may
+    /// be peers, e.g. `["*@corp.com"]`. Empty or absent = the whole tailnet
+    /// (the behaviour before RFC 025). Non-empty and the node is gated: only
+    /// peers whose login matches are discovered, a peer whose login cannot be
+    /// known is not a peer at all, and starting against a sidecar older than
+    /// protocol 5 fails loudly instead of running peerless.
+    pub login_allow: Option<Vec<String>>,
 }
 
 /// Manual `Debug`: `auth_key` is a tailnet credential and must never reach
@@ -51,6 +58,7 @@ impl std::fmt::Debug for StartConfig {
             .field("auth_key", &self.auth_key.as_ref().map(|_| "[REDACTED]"))
             .field("ephemeral", &self.ephemeral)
             .field("ws_port", &self.ws_port)
+            .field("login_allow", &self.login_allow)
             .finish()
     }
 }
@@ -94,6 +102,8 @@ pub struct NodeIdentityJs {
     pub tailscale_id: String,
     pub dns_name: Option<String>,
     pub ip: Option<String>,
+    /// This node's own tailnet login (RFC 025 §3.6); `null` when unknown.
+    pub login_name: Option<String>,
 }
 
 impl From<truffle_core::network::NodeIdentity> for NodeIdentityJs {
@@ -106,6 +116,7 @@ impl From<truffle_core::network::NodeIdentity> for NodeIdentityJs {
             tailscale_id: i.tailscale_id,
             dns_name: i.dns_name,
             ip: i.ip.map(|a| a.to_string()),
+            login_name: i.login_name,
         }
     }
 }
@@ -131,6 +142,8 @@ pub struct PeerJs {
     pub tailscale_id: String,
     pub peer_ref: String,
     pub generation: u64,
+    /// The peer owner's tailnet login (RFC 025 §3.6); `null` when unknown.
+    pub login_name: Option<String>,
 }
 
 impl From<truffle_core::Peer> for PeerJs {
@@ -149,6 +162,7 @@ impl From<truffle_core::Peer> for PeerJs {
             tailscale_id: p.tailscale_id,
             peer_ref: p.peer_ref,
             generation: p.generation,
+            login_name: p.login_name,
         }
     }
 }
@@ -293,6 +307,8 @@ pub struct PeerStateJs {
     pub tailscale_id: String,
     pub peer_ref: String,
     pub generation: u64,
+    /// The peer owner's tailnet login (RFC 025 §3.6); `null` when unknown.
+    pub login_name: Option<String>,
 }
 
 impl From<truffle_core::session::PeerState> for PeerStateJs {
@@ -314,6 +330,7 @@ impl From<truffle_core::session::PeerState> for PeerStateJs {
             tailscale_id: peer.tailscale_id,
             peer_ref: peer.peer_ref,
             generation: peer.generation,
+            login_name: peer.login_name,
         }
     }
 }
@@ -619,10 +636,13 @@ mod start_config_debug_tests {
             auth_key: Some("dummy-auth-SECRET123".to_string()),
             ephemeral: false,
             ws_port: None,
+            login_allow: Some(vec!["*@corp.com".to_string()]),
         };
         let dbg = format!("{config:?}");
         assert!(!dbg.contains("SECRET123"));
         assert!(dbg.contains("[REDACTED]"));
+        // The gate is not a credential — it stays readable in the debug line.
+        assert!(dbg.contains("*@corp.com"));
     }
 }
 

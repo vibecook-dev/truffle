@@ -263,6 +263,7 @@ mod tests {
                 connection_type: "direct".to_string(),
                 os: Some("macos".to_string()),
                 last_seen: None,
+                login_name: Some("alice@example.com".to_string()),
             },
             Peer {
                 device_id: Some("01J4K9M2Z8AB3RNYQPW6H5TC0Y".to_string()),
@@ -278,6 +279,7 @@ mod tests {
                 connection_type: "direct".to_string(),
                 os: Some("linux".to_string()),
                 last_seen: None,
+                login_name: Some("ops@example.com".to_string()),
             },
         ]
     }
@@ -370,6 +372,7 @@ mod tests {
             connection_type: "direct".to_string(),
             os: Some("macos".to_string()),
             last_seen: None,
+            login_name: Some("alice@example.com".to_string()),
         });
         let resolver = NameResolver::new(HashMap::new(), peers);
         let result = resolver.resolve("Alice's MacBook").unwrap();
@@ -396,6 +399,7 @@ mod tests {
             connection_type: "direct".to_string(),
             os: Some("macos".to_string()),
             last_seen: None,
+            login_name: Some("alice@example.com".to_string()),
         });
         let resolver = NameResolver::new(HashMap::new(), peers);
         let result = resolver.resolve("01J4K9M2Z8AB3RNYQPW6H5TC0Z").unwrap();
