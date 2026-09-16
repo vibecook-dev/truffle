@@ -960,6 +960,55 @@ struct PongDroppingTransport: FrameTransport {
         await bob.stop()
     }
 
+    /// The witness the overlay-level row cannot be: a REAL `MeshNode` over a
+    /// real `LoopbackNetwork`, applying its own predicate to every row shape
+    /// the status overlay can produce — plus the `isAppPeer` half, which an
+    /// inline re-statement of the login check silently drops.
+    ///
+    /// The overlay renders BOTH "a `UserID` with no profile" and "a row with
+    /// no `UserID`" as an absent login, so those two arrive at the node
+    /// identically; they are kept as separate rows here because they are
+    /// separate nodes on the tailnet, not because the node can tell them
+    /// apart.
+    @Test func aGatedNodeAdmitsOnlyTheRowThatPassesBothHalves() async throws {
+        let network = LoopbackNetwork()
+        let (alice, dirA) = try await startNode(
+            network: network, tailscaleId: "ts-a", deviceName: "Alice",
+            loginName: "alice@corp.com", loginAllow: ["*@corp.com"])
+        defer { try? FileManager.default.removeItem(at: dirA) }
+
+        func appHostname(_ name: String) throws -> String {
+            Hostname.tailscaleHostname(
+                appId: try AppId(parsing: "demo"), deviceName: DeviceName(name))
+        }
+
+        // A UserID the status's User{} does not describe.
+        _ = await network.join(
+            tailscaleId: "ts-orphan", hostname: try appHostname("Orphan"), loginName: nil)
+        // A row carrying no UserID at all.
+        _ = await network.join(
+            tailscaleId: "ts-nouser", hostname: try appHostname("NoUser"), loginName: nil)
+        // A resolvable owner, on the wrong domain.
+        _ = await network.join(
+            tailscaleId: "ts-mallory", hostname: try appHostname("Mallory"),
+            loginName: "mallory@evil.com")
+        // An allowed login that is NOT an app peer — the half a login-only
+        // predicate would admit.
+        _ = await network.join(
+            tailscaleId: "ts-stranger", hostname: "workstation-corp",
+            loginName: "bob@corp.com")
+        // Both halves.
+        _ = await network.join(
+            tailscaleId: "ts-bob", hostname: try appHostname("Bob"), loginName: "bob@corp.com")
+
+        try await alice.refresh()
+        let admitted = await alice.peers().map(\.tailscaleId).sorted()
+        #expect(admitted == ["ts-bob"])
+        #expect(try await alice.peer("ts-bob")?.loginName == "bob@corp.com")
+
+        await alice.stop()
+    }
+
     /// An ungated node is unchanged: a login-less row is still a peer.
     @Test func ungatedNodeStillAdmitsLoginlessRows() async throws {
         let network = LoopbackNetwork()
