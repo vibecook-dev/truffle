@@ -137,6 +137,7 @@ mod tests {
                     tailscale_id: id.to_string(),
                     dns_name: None,
                     ip: Some("127.0.0.1".parse().unwrap()),
+                    login_name: None,
                 },
                 local_addr: PeerAddr {
                     ip: Some("127.0.0.1".parse().unwrap()),
@@ -231,6 +232,7 @@ mod tests {
             last_seen: Some("2026-03-25T12:00:00Z".to_string()),
             key_expiry: None,
             dns_name: None,
+            login_name: None,
         }
     }
 

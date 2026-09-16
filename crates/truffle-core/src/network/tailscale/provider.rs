@@ -53,6 +53,12 @@ pub struct TailscaleConfig {
     /// Idle timeout for bridged connections in seconds (RFC 021 §6.5).
     /// `None` → the sidecar's 600s default.
     pub idle_timeout_secs: Option<u64>,
+    /// Login allow-list (RFC 025 §3.1): `loginName` globs of the tailnet
+    /// users whose nodes may be peers. Empty = the whole tailnet (the v1
+    /// behaviour). Non-empty = only peers whose login matches are reported,
+    /// and the provider refuses to start on a sidecar that cannot report
+    /// logins (protocol < 5).
+    pub login_allow: Vec<String>,
 }
 
 /// Manual `Debug`: `auth_key` is a tailnet credential and must never reach
@@ -70,6 +76,7 @@ impl std::fmt::Debug for TailscaleConfig {
             .field("ephemeral", &self.ephemeral)
             .field("tags", &self.tags)
             .field("idle_timeout_secs", &self.idle_timeout_secs)
+            .field("login_allow", &self.login_allow)
             .finish()
     }
 }
@@ -165,6 +172,7 @@ impl TailscaleProvider {
             tailscale_id: String::new(),
             dns_name: None,
             ip: None,
+            login_name: None,
         };
 
         Self {
@@ -229,6 +237,7 @@ impl TailscaleProvider {
             last_seen: peer.last_seen.clone(),
             key_expiry: peer.key_expiry.clone(),
             dns_name: Some(peer.dns_name.clone()),
+            login_name: None,
         }
     }
 
@@ -1490,6 +1499,7 @@ mod config_debug_tests {
             ephemeral: None,
             tags: None,
             idle_timeout_secs: None,
+            login_allow: Vec::new(),
         };
         let dbg = format!("{config:?}");
         assert!(!dbg.contains("SECRET123"));

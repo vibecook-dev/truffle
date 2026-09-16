@@ -325,6 +325,7 @@ fn build_config(
         ephemeral: Some(test_ephemeral()),
         tags: test_tags(),
         idle_timeout_secs: None,
+        login_allow: Vec::new(),
     }
 }
 

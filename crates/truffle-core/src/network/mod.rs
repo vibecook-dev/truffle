@@ -6,6 +6,7 @@
 //! The [`tailscale`] submodule contains the [`TailscaleProvider`](tailscale::TailscaleProvider) implementation
 //! that wraps the Go sidecar (tsnet) and bridge.
 
+pub mod login_allow;
 pub mod tailscale;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -268,6 +269,11 @@ pub struct NetworkPeer {
     pub key_expiry: Option<String>,
     /// DNS name on the tailnet (e.g., "truffle-cli-abc123.tailnet.ts.net").
     pub dns_name: Option<String>,
+    /// Tailscale login (owner) name of the peer, e.g. "alice@example.com"
+    /// (RFC 025 §3.3). `None` when the provider cannot know it — a sidecar
+    /// older than protocol 5, or a node with no user profile. Tagged nodes
+    /// report Tailscale's `tagged-devices` pseudo-login.
+    pub login_name: Option<String>,
 }
 
 /// Events emitted when network peers change state.
@@ -321,6 +327,9 @@ pub struct NodeIdentity {
     pub dns_name: Option<String>,
     /// Tailscale IP address.
     pub ip: Option<IpAddr>,
+    /// The node's own Tailscale login (owner) name, e.g. "alice@example.com"
+    /// (RFC 025 §3.6). `None` until the sidecar reports it, or when it cannot.
+    pub login_name: Option<String>,
 }
 
 /// Result of a network-level ping.
