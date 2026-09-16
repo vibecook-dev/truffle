@@ -18,6 +18,7 @@ use super::protocol::{
     PingResultEventData, ProxyAddCommandData, ProxyInfoEventData, WhoisResultEventData,
 };
 use super::sidecar::{GoSidecar, ReplyGuard, SidecarConfig, SidecarInternalEvent};
+use crate::network::login_allow::login_allowed;
 use crate::network::{
     DialOpts, HealthInfo, IncomingConnection, ListenOpts, NetworkError, NetworkPeer,
     NetworkPeerEvent, NetworkTcpListener, NodeIdentity, PeerAddr, PingResult, ProxyAddParams,
@@ -237,8 +238,40 @@ impl TailscaleProvider {
             last_seen: peer.last_seen.clone(),
             key_expiry: peer.key_expiry.clone(),
             dns_name: Some(peer.dns_name.clone()),
-            login_name: None,
+            // RFC 025 §3.3: absent, never fabricated. The sidecar omits the
+            // key for an owner it cannot name; an empty string is the same
+            // fact and must not become `Some("")` (the gate fails closed on
+            // both, but callers read `None` as "unknown").
+            login_name: peer.login_name.as_ref().filter(|l| !l.is_empty()).cloned(),
         }
+    }
+
+    /// RFC 025 §3.3: a sidecar row becomes a peer only when it belongs to our
+    /// app **and** its login passes the node's gate.
+    ///
+    /// `login_allow` empty is today's behaviour exactly (no gate). Under a
+    /// gate a row with no login is **not** a peer — [`login_allowed`] fails
+    /// closed — so a legacy sidecar cannot quietly widen the mesh; `start()`
+    /// refuses that pairing outright (see [`login_gate_supported`]).
+    pub(crate) fn admit_peer(
+        peer: &super::protocol::SidecarPeer,
+        app_id: &str,
+        login_allow: &[String],
+    ) -> bool {
+        if !is_app_peer(&peer.hostname, app_id) {
+            return false;
+        }
+        if !login_allowed(login_allow, peer.login_name.as_deref()) {
+            // Peer id and hostname only: the login itself is a tailnet
+            // identity and does not belong in our logs.
+            tracing::debug!(
+                peer_id = %peer.id,
+                hostname = %peer.hostname,
+                "peer dropped by the login gate (RFC 025 §3.3)"
+            );
+            return false;
+        }
+        true
     }
 
     /// Spawn the background event processing loop that maps sidecar events
@@ -255,6 +288,7 @@ impl TailscaleProvider {
         state: Arc<RwLock<ProviderState>>,
         started_tx: Option<oneshot::Sender<Result<(), NetworkError>>>,
         app_id: String,
+        login_allow: Vec<String>,
         proxy_error_tx: broadcast::Sender<ProxyRuntimeError>,
         sidecar_protocol_version: Arc<std::sync::atomic::AtomicU32>,
     ) {
@@ -270,6 +304,7 @@ impl TailscaleProvider {
                                 dns_name,
                                 tailscale_ip,
                                 node_id,
+                                login_name,
                                 protocol_version,
                             } => {
                                 // 0 = v1/unknown; gates RFC 023 v2 proxy features.
@@ -291,6 +326,13 @@ impl TailscaleProvider {
                                     id.ip = ip;
                                     if !node_id.is_empty() {
                                         id.tailscale_id = node_id.clone();
+                                    }
+                                    // RFC 025 §3.6: our own login, from the
+                                    // same status event. `None` stays `None`
+                                    // — never fabricated, and never cleared
+                                    // by a later status that omits it.
+                                    if login_name.is_some() {
+                                        id.login_name = login_name.clone();
                                     }
                                 }
 
@@ -366,7 +408,7 @@ impl TailscaleProvider {
                                                 return false;
                                             }
                                         }
-                                        is_app_peer(&p.hostname, &app_id)
+                                        Self::admit_peer(p, &app_id, &login_allow)
                                     })
                                     .map(|p| {
                                         let np = Self::sidecar_peer_to_network_peer(p);
@@ -406,7 +448,7 @@ impl TailscaleProvider {
                                                     continue;
                                                 }
                                             }
-                                            if is_app_peer(&p.hostname, &app_id) {
+                                            if Self::admit_peer(&p, &app_id, &login_allow) {
                                                 let np = Self::sidecar_peer_to_network_peer(&p);
                                                 peer_map.insert(np.id.clone(), np.clone());
                                                 let _ = peer_event_tx
@@ -427,7 +469,7 @@ impl TailscaleProvider {
                                                     continue;
                                                 }
                                             }
-                                            if is_app_peer(&p.hostname, &app_id) {
+                                            if Self::admit_peer(&p, &app_id, &login_allow) {
                                                 let np = Self::sidecar_peer_to_network_peer(&p);
                                                 peer_map.insert(np.id.clone(), np.clone());
                                                 let _ = peer_event_tx
@@ -503,6 +545,31 @@ pub(crate) fn is_app_peer(hostname: &str, app_id: &str) -> bool {
     hostname.len() > prefix.len() && hostname.starts_with(&prefix)
 }
 
+/// The first sidecar protocol that reports `loginName` on peers and status
+/// (RFC 025 §4). Below it a node cannot know any login.
+pub(crate) const LOGIN_NAME_PROTOCOL_VERSION: u32 = 5;
+
+/// RFC 025 D3: may a node with this `login_allow` run against a sidecar
+/// speaking `protocol_version`?
+///
+/// An ungated node is unaffected — every version qualifies. A gated one needs
+/// protocol 5: below it every row arrives login-less, the gate fails closed on
+/// all of them, and the node would run silently peerless. `start()` turns the
+/// `Err` into a refusal rather than that. `protocol_version` is `0` for a
+/// sidecar that reported none (v1/unknown).
+pub(crate) fn login_gate_supported(
+    login_allow: &[String],
+    protocol_version: u32,
+) -> Result<(), NetworkError> {
+    if login_allow.is_empty() || protocol_version >= LOGIN_NAME_PROTOCOL_VERSION {
+        return Ok(());
+    }
+    Err(NetworkError::StartFailed(format!(
+        "login_allow requires sidecar protocol {LOGIN_NAME_PROTOCOL_VERSION} \
+         (loginName on peers); this sidecar speaks {protocol_version}"
+    )))
+}
+
 impl super::super::NetworkProvider for TailscaleProvider {
     async fn start(&mut self) -> Result<(), NetworkError> {
         {
@@ -568,6 +635,7 @@ impl super::super::NetworkProvider for TailscaleProvider {
             self.state.clone(),
             Some(started_tx),
             self.config.app_id.clone(),
+            self.config.login_allow.clone(),
             self.proxy_error_tx.clone(),
             self.sidecar_protocol_version.clone(),
         );
@@ -594,6 +662,20 @@ impl super::super::NetworkProvider for TailscaleProvider {
 
         match result {
             Ok(()) => {
+                // RFC 025 D3: a gated node whose sidecar cannot report logins
+                // would run peerless (every row fails the gate closed) or,
+                // read carelessly, ungated. Refuse loudly instead, and tear
+                // the pair down rather than leave a half-started node behind.
+                if let Err(e) = login_gate_supported(
+                    &self.config.login_allow,
+                    self.sidecar_protocol_version
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                ) {
+                    tracing::error!("{e}");
+                    let _ = self.stop().await;
+                    return Err(e);
+                }
+
                 // Fetch initial peer list
                 if let Some(ref sidecar) = *self.sidecar.lock().await {
                     let _ = sidecar.send_get_peers().await;
@@ -1504,5 +1586,258 @@ mod config_debug_tests {
         let dbg = format!("{config:?}");
         assert!(!dbg.contains("SECRET123"));
         assert!(dbg.contains("[REDACTED]"));
+    }
+}
+
+/// RFC 025 §3.3 (D3): the login gate as the provider actually applies it —
+/// these drive the real `spawn_event_processor`, not a re-derivation of its
+/// predicate, so a filter that stops being called fails here.
+#[cfg(test)]
+mod login_gate_tests {
+    use super::*;
+    use crate::network::tailscale::protocol::{PeerChangedEventData, SidecarPeer};
+    use std::sync::atomic::AtomicU32;
+    use std::time::Duration;
+
+    fn peer_row(id: &str, hostname: &str, login: Option<&str>) -> SidecarPeer {
+        SidecarPeer {
+            id: id.into(),
+            hostname: hostname.into(),
+            dns_name: format!("{hostname}.tailnet.ts.net"),
+            tailscale_ips: vec!["100.64.0.2".into()],
+            online: true,
+            os: "linux".into(),
+            cur_addr: String::new(),
+            relay: String::new(),
+            last_seen: None,
+            key_expiry: None,
+            expired: false,
+            login_name: login.map(Into::into),
+        }
+    }
+
+    struct Harness {
+        sidecar_tx: broadcast::Sender<SidecarInternalEvent>,
+        events: broadcast::Receiver<NetworkPeerEvent>,
+        identity: Arc<std::sync::RwLock<NodeIdentity>>,
+        peers: Arc<RwLock<HashMap<String, NetworkPeer>>>,
+    }
+
+    /// Spawn the real event processor for `app_id` under `login_allow`.
+    fn harness(app_id: &str, login_allow: Vec<String>) -> Harness {
+        let (sidecar_tx, sidecar_rx) = broadcast::channel(64);
+        let (peer_event_tx, events) = broadcast::channel(64);
+        let (proxy_error_tx, _) = broadcast::channel(8);
+        let peers = Arc::new(RwLock::new(HashMap::new()));
+        let identity = Arc::new(std::sync::RwLock::new(NodeIdentity {
+            app_id: app_id.to_string(),
+            device_id: "01JZZZZZZZZZZZZZZZZZZZZZZZ".to_string(),
+            device_name: "dev".to_string(),
+            tailscale_hostname: format!("truffle-{app_id}-dev"),
+            tailscale_id: String::new(),
+            dns_name: None,
+            ip: None,
+            login_name: None,
+        }));
+        TailscaleProvider::spawn_event_processor(
+            sidecar_rx,
+            peers.clone(),
+            peer_event_tx,
+            Arc::new(RwLock::new(HealthInfo::default())),
+            identity.clone(),
+            Arc::new(std::sync::RwLock::new(PeerAddr::default())),
+            Arc::new(std::sync::RwLock::new(None)),
+            Arc::new(RwLock::new(ProviderState::Starting)),
+            None,
+            app_id.to_string(),
+            login_allow,
+            proxy_error_tx,
+            Arc::new(AtomicU32::new(LOGIN_NAME_PROTOCOL_VERSION)),
+        );
+        Harness {
+            sidecar_tx,
+            events,
+            identity,
+            peers,
+        }
+    }
+
+    /// Collect the peer ids the processor reported as joined, settling first
+    /// so a row the gate dropped shows up as an absence rather than a race.
+    async fn joined_ids(events: &mut broadcast::Receiver<NetworkPeerEvent>) -> Vec<String> {
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        let mut ids = Vec::new();
+        while let Ok(ev) = events.try_recv() {
+            if let NetworkPeerEvent::Joined(p) = ev {
+                ids.push(p.id);
+            }
+        }
+        ids.sort();
+        ids
+    }
+
+    #[tokio::test]
+    async fn peers_received_reports_only_matching_logins() {
+        let mut h = harness("playground", vec!["alice@example.com".to_string()]);
+        h.sidecar_tx
+            .send(SidecarInternalEvent::PeersReceived(vec![
+                peer_row("n1", "truffle-playground-alice", Some("alice@example.com")),
+                peer_row("n2", "truffle-playground-bob", Some("bob@example.com")),
+                // No login at all: fails the gate closed (§3.2).
+                peer_row("n3", "truffle-playground-ghost", None),
+            ]))
+            .unwrap();
+
+        assert_eq!(joined_ids(&mut h.events).await, ["n1"]);
+        let cached = h.peers.read().await;
+        assert_eq!(cached.len(), 1);
+        assert_eq!(
+            cached["n1"].login_name.as_deref(),
+            Some("alice@example.com"),
+            "the admitted peer must carry the login it was admitted on"
+        );
+    }
+
+    #[tokio::test]
+    async fn ungated_peers_received_keeps_login_less_rows() {
+        let mut h = harness("playground", Vec::new());
+        h.sidecar_tx
+            .send(SidecarInternalEvent::PeersReceived(vec![
+                peer_row("n1", "truffle-playground-alice", Some("alice@example.com")),
+                peer_row("n3", "truffle-playground-ghost", None),
+            ]))
+            .unwrap();
+
+        assert_eq!(joined_ids(&mut h.events).await, ["n1", "n3"]);
+        assert_eq!(h.peers.read().await["n3"].login_name, None);
+    }
+
+    #[tokio::test]
+    async fn peer_changed_add_honours_the_gate() {
+        let mut h = harness("playground", vec!["*@example.com".to_string()]);
+        for (change, row) in [
+            (
+                "joined",
+                peer_row("n1", "truffle-playground-alice", Some("alice@example.com")),
+            ),
+            (
+                "joined",
+                peer_row("n2", "truffle-playground-eve", Some("eve@stranger.test")),
+            ),
+            ("joined", peer_row("n3", "truffle-playground-ghost", None)),
+        ] {
+            h.sidecar_tx
+                .send(SidecarInternalEvent::PeerChanged(PeerChangedEventData {
+                    change_type: change.to_string(),
+                    peer_id: row.id.clone(),
+                    peer: Some(row),
+                }))
+                .unwrap();
+        }
+
+        assert_eq!(joined_ids(&mut h.events).await, ["n1"]);
+        let cached = h.peers.read().await;
+        assert!(cached.contains_key("n1"));
+        assert!(
+            !cached.contains_key("n2"),
+            "a foreign login must not be cached as a peer"
+        );
+        assert!(
+            !cached.contains_key("n3"),
+            "a login-less row must not be cached under a gate"
+        );
+    }
+
+    #[tokio::test]
+    async fn started_fills_the_nodes_own_login() {
+        let h = harness("playground", Vec::new());
+        h.sidecar_tx
+            .send(SidecarInternalEvent::Started {
+                hostname: "truffle-playground-dev".into(),
+                dns_name: "truffle-playground-dev.tailnet.ts.net".into(),
+                tailscale_ip: "100.64.0.1".into(),
+                node_id: "nodeSELF".into(),
+                login_name: Some("alice@example.com".into()),
+                protocol_version: Some(LOGIN_NAME_PROTOCOL_VERSION),
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert_eq!(
+            h.identity.read().unwrap().login_name.as_deref(),
+            Some("alice@example.com")
+        );
+
+        // A legacy sidecar reports none — the identity stays honest.
+        let h = harness("playground", Vec::new());
+        h.sidecar_tx
+            .send(SidecarInternalEvent::Started {
+                hostname: "truffle-playground-dev".into(),
+                dns_name: "truffle-playground-dev.tailnet.ts.net".into(),
+                tailscale_ip: "100.64.0.1".into(),
+                node_id: "nodeSELF".into(),
+                login_name: None,
+                protocol_version: Some(4),
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert_eq!(h.identity.read().unwrap().login_name, None);
+    }
+
+    /// RFC 025 D3: the start-time decision, as a table.
+    #[test]
+    fn login_gate_requires_protocol_five() {
+        let gate = vec!["alice@example.com".to_string()];
+        // Ungated: every version qualifies, including an unknown (v1) one.
+        for v in [0, 1, 4, 5, 6] {
+            assert!(login_gate_supported(&[], v).is_ok(), "ungated at v{v}");
+        }
+        // Gated: below 5 refuses, at or above 5 passes.
+        for v in [0, 1, 2, 3, 4] {
+            let Err(err) = login_gate_supported(&gate, v) else {
+                panic!("a gated node must refuse sidecar protocol {v}");
+            };
+            let msg = err.to_string();
+            assert!(
+                matches!(err, NetworkError::StartFailed(_)),
+                "the refusal must be a StartFailed, not a silent degrade: {msg}"
+            );
+            assert!(
+                msg.contains("login_allow requires sidecar protocol 5"),
+                "unexpected message: {msg}"
+            );
+            assert!(
+                msg.contains(&format!("speaks {v}")),
+                "unexpected message: {msg}"
+            );
+        }
+        for v in [5, 6, 99] {
+            assert!(login_gate_supported(&gate, v).is_ok(), "gated at v{v}");
+        }
+    }
+
+    /// RFC 025 §3.3: an empty `loginName` on the wire is the same fact as an
+    /// absent one — `NetworkPeer.login_name` is `None`, never `Some("")`.
+    #[test]
+    fn network_peer_login_is_absent_never_empty() {
+        let np = TailscaleProvider::sidecar_peer_to_network_peer(&peer_row(
+            "n1",
+            "truffle-playground-blank",
+            Some(""),
+        ));
+        assert_eq!(np.login_name, None);
+
+        let np = TailscaleProvider::sidecar_peer_to_network_peer(&peer_row(
+            "n2",
+            "truffle-playground-alice",
+            Some("alice@example.com"),
+        ));
+        assert_eq!(np.login_name.as_deref(), Some("alice@example.com"));
+
+        let np = TailscaleProvider::sidecar_peer_to_network_peer(&peer_row(
+            "n3",
+            "truffle-playground-x",
+            None,
+        ));
+        assert_eq!(np.login_name, None);
     }
 }
