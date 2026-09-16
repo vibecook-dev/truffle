@@ -1773,6 +1773,27 @@ impl NodeBuilder {
         self
     }
 
+    /// Restrict the mesh to nodes whose tailnet login matches one of these
+    /// globs (RFC 025 §3.1).
+    ///
+    /// Empty or never called = the whole tailnet, which is the behaviour
+    /// before RFC 025. Non-empty and the node is **gated**: Layer 3 reports
+    /// only peers whose login matches, and a node whose login cannot be known
+    /// is not a peer at all (the gate fails closed, §3.2). The list is fixed
+    /// for the node's lifetime — to change it, restart the node.
+    ///
+    /// The grammar is Go's `path.Match`, applied case-insensitively:
+    /// `alice@example.com`, `*@example.com`, `?lice@example.com`,
+    /// `[ab]lice@example.com`. A malformed glob never matches and never panics.
+    ///
+    /// A gated node requires sidecar protocol 5 — the first that reports
+    /// `loginName` — and `build()` fails loudly against an older one rather
+    /// than run silently peerless.
+    pub fn login_allow(mut self, globs: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.login_allow = globs.into_iter().map(Into::into).collect();
+        self
+    }
+
     /// Resolve RFC 017 identity values and the Tailscale config.
     ///
     /// Shared between [`build()`](Self::build) and
@@ -3221,6 +3242,49 @@ mod tests {
         assert!(NodeBuilder::default().hostname(too_long).is_err());
     }
 
+    /// RFC 025 §3.1: the builder's allow-list must reach the provider config
+    /// — a door that does not carry the gate is worse than no door.
+    #[test]
+    fn test_builder_login_allow_reaches_the_provider_config() {
+        let base = || {
+            NodeBuilder::default()
+                .app_id("demo")
+                .unwrap()
+                .sidecar_path("/opt/sidecar")
+                .device_name("dev")
+                .state_dir("/tmp/truffle-login-allow-test")
+        };
+
+        // Never called: the whole tailnet, exactly as before RFC 025.
+        let ungated = base().prepare_config().unwrap();
+        assert!(ungated.login_allow.is_empty());
+
+        // Called: the globs arrive verbatim, in order, unmodified — the
+        // lowercasing belongs to the gate, not to the door.
+        let gated = base()
+            .login_allow(["Alice@Example.com", "*@corp.com"])
+            .prepare_config()
+            .unwrap();
+        assert_eq!(gated.login_allow, ["Alice@Example.com", "*@corp.com"]);
+
+        // It accepts owned strings as readily as literals, and an empty list
+        // means no gate.
+        let owned = base()
+            .login_allow(vec!["ops@corp.com".to_string()])
+            .prepare_config()
+            .unwrap();
+        assert_eq!(owned.login_allow, ["ops@corp.com"]);
+        let cleared = base()
+            .login_allow(Vec::<String>::new())
+            .prepare_config()
+            .unwrap();
+        assert!(cleared.login_allow.is_empty());
+
+        // The gate is not a credential: unlike auth_key it stays readable.
+        let dbg = format!("{:?}", base().login_allow(["ops@corp.com"]));
+        assert!(dbg.contains("ops@corp.com"));
+    }
+
     #[tokio::test]
     async fn test_bind_udp_falls_back_to_direct_socket() {
         // The mock provider has no UDP support, so bind_udp exercises the
@@ -3369,7 +3433,7 @@ mod tests {
             last_seen: None,
             identity: None,
             identity_suppressed: false,
-            login_name: None,
+            login_name: Some("alice@example.com".into()),
         };
         let p = Peer::from(pre);
         assert!(p.device_id.is_none());
@@ -3401,7 +3465,7 @@ mod tests {
                 tailscale_id: "ts-abc".into(),
             }),
             identity_suppressed: false,
-            login_name: None,
+            login_name: Some("alice@example.com".into()),
         };
         let p = Peer::from(post);
         assert_eq!(p.device_id.as_deref(), Some("01J4K9M2Z8AB3RNYQPW6H5TC0X"));
@@ -3433,6 +3497,10 @@ mod tests {
         assert!(
             p.device_id.is_none(),
             "suppressed claim must project null device_id"
+        );
+        assert_eq!(
+            p.login_name, None,
+            "RFC 025 §3.6: an absent Layer 3 login projects as None, never fabricated"
         );
     }
 }
