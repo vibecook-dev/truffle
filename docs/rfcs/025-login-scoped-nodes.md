@@ -252,6 +252,9 @@ labels a peer self/guest by comparing logins.
   `IncomingConnection` consumers).
 - Tags, groups and posture: the tailnet ACL layer's job (RFC 023 §9.7's cap stands).
 - A per-store *narrowing* list (a subset of the node's) if a consumer ever needs one.
+- Parking a peer that refused our hello (4001/4004 as `HelloRefused`) until its Layer 3 row
+  changes: today the reconnect backoff bounds the re-dial to once per 30 s per peer, and the
+  refusal is surfaced but not remembered (review 2026-09-16, LOW).
 
 ## 8. Decisions
 
