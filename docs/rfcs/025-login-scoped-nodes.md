@@ -99,8 +99,22 @@ test table (`TestAllowedLogin` in `main_test.go` is the reference):
   row without a login on a gated node is **not a peer**. A gated node whose sidecar speaks
   a protocol older than 5 cannot know logins and **refuses to start** (`NetworkError::StartFailed`,
   loud) rather than run peerless or, worse, ungated.
-- Swift mirrors it: `BackendPeer.loginName` (from `status.User[String(peer.UserID)]`),
-  `BackendStatus.loginName` (self), and `MeshNode.upsertFromLayer3` applies the same predicate.
+- Swift mirrors it: `BackendPeer.loginName` and `BackendStatus.loginName` (self), and
+  `MeshNode.upsertFromLayer3` applies the same predicate.
+  > **Corrected 2026-09-16 (the Apple lane, at the source).** This section first said the
+  > Swift side reads `status.User[String(peer.UserID)]`. It cannot: the pinned TailscaleKit
+  > decodes `IpnState.PeerStatus` WITHOUT `UserID` (verified against the vendored source
+  > `.vendor/libtailscale-59d4bb82…/swift/TailscaleKit/LocalAPI/Types.swift:230-249`, the
+  > shipped `arm64-apple-ios.swiftinterface`, and the repo's own libtailscale patches), and
+  > `Status.SelfStatus` is a `PeerStatus` too — `Status.User` exists and is keyed by the
+  > stringified user id, but nothing in the decoded status can key it. tsnet's JSON does carry
+  > `UserID`; TailscaleKit drops it at decode. So `TailscaleKitBackend.refreshStatus` also GETs
+  > `/localapi/v0/status` through the same authenticated loopback the WhoIs path uses, decodes
+  > only `Self.UserID`, `Peer[].{ID,UserID}` and `User{}`, and overlays the logins onto the
+  > mapped `BackendStatus` — one extra loopback GET per refresh. A failed overlay leaves every
+  > login absent (never fabricated), so a gated node admits nobody, with a one-shot health
+  > notice so the empty mesh is not silent. When TailscaleKit's `PeerStatus` grows `UserID`,
+  > the overlay collapses into the decoder. The mechanism is RFC 024 §8.1.2's.
 
 ### 3.4 Layer 4/5 — the hello gate
 
