@@ -15,6 +15,12 @@ public enum MeshError: Error, Sendable, Equatable {
     /// node's `loginAllow` list (RFC 025 §3.4, D4). Close code 4004. This is
     /// the SERVER-role error — the side that ran the gate.
     case loginRefused(login: String?)
+    /// A GATED node declined to open a NEW connection to a kept peer whose
+    /// current Layer 3 row cannot name its owner (RFC 025 §3.3). The peer is
+    /// still listed — its `loginName` reads `nil` — and any EXISTING session
+    /// to it still works; only opening a new one is refused. An ungated node
+    /// never raises this.
+    case loginUnknown(peer: String)
     /// The remote closed with an application code (4000–4999) before sending
     /// its hello: 4001 app mismatch, 4002 hello protocol, 4003 identity,
     /// 4004 login refused. This is the DIALING side's view of a refusal, and
