@@ -30,7 +30,7 @@ construction. Read at 0.7.13:
 3. **The store trusts the payload's author.** `apply_remote_slice` (`synced_store/sync.rs:219`)
    keys a slice on the payload's `device_id` and rejects only our own; `Clear { device_id }`
    (`:202`) removes any device's slice on the sender's say-so (TF-2). A departed peer's
-   slice is never removed at all: `handle_peer_left` (`:326`) removes by the **Tailscale**
+   slice is never removed at all: `handle_peer_left` (`:335`) removes by the **Tailscale**
    id while `remotes` is keyed by the **device** ULID — the unit test passes only because
    its mock peer violates RFC 022 I1 (`id == device_id`).
 4. **The Apple plane surfaces no login.** `AuthenticatedPeer` carries `tailscaleId` and
@@ -117,11 +117,20 @@ test table (`TestAllowedLogin` in `main_test.go` is the reference):
   (a present, matching login — fail closed); an already-admitted peer is KEPT on Allowed or
   LoginUnknown and EVICTED on LoginRefused or NotOurApp. A row that cannot name an owner (the
   sidecar could not resolve the user, or the Apple status overlay failed) does not un-own the
-  node: the peer stays, and its last-known login is carried forward rather than blanked — never
-  invented, `None` if there never was one — so a transient omission cannot empty a gated mesh
-  and a gated node never holds a peer whose login it cannot state. The same rule on both
-  planes, on the snapshot path and the delta path alike. This is why the dial side needs no
-  hello check (§3.4): a gated node never holds a peer its gate refuses.
+  node: the peer stays, so a transient omission cannot empty a gated mesh. *Refined 2026-09-16
+  after review:* while the owner is unresolved the peer's login is reported **absent** — the row
+  names no owner, so neither do we (RFC 022: absent, never fabricated; the earlier wording
+  carried the last-known login forward, which stated as current what was only observed
+  earlier) — and a gated node opens **no new connection** to a peer whose current login it
+  cannot state (the eager identity dial and app sends refuse with `SessionError::LoginUnknown`;
+  the Apple plane's dial refuses likewise), while an existing session stands. The inbound gate
+  already refuses such a peer's fresh hello (a WhoIs answer with no login → 4004), so both
+  directions agree. The same rule on both planes, on the snapshot path and the delta path
+  alike. So: a gated node never holds a peer its gate **refused**, and holds one whose login it
+  cannot state only for as long as the owner is unresolved, without opening new sessions to it
+  — which is why the dial side needs no hello-time login check (§3.4). A node shared INTO the
+  tailnet is gated by its **owner's** login (the netmap's `UserID`; WhoIs resolves the same),
+  never its sharer's.
 - Swift mirrors it: `BackendPeer.loginName` and `BackendStatus.loginName` (self), and
   `MeshNode.upsertFromLayer3` applies the same predicate.
   > **Corrected 2026-09-16 (the Apple lane, at the source).** This section first said the
@@ -153,8 +162,9 @@ never learns our identity block):
 | `nodeId` ok, `loginName` matches                    | accept                   | accept                                  |
 
 The Swift `Handshake.server` already has the `.failClosed` policy for the first row; it
-gains the login rows. The dialing side needs no new check: a gated node only dials peers
-its Layer 3 reported, and Layer 3 filtered them (3.3).
+gains the login rows. The dialing side needs no hello-time check: a gated node only dials
+peers its Layer 3 reported and admitted (3.3), and refuses to open a new connection to one
+whose current login is unresolved (3.3's refinement).
 
 The hostname-prefix half of the Layer 3 predicate is **not** enforced at the hello. A
 custom-hostname node (RFC 023 §6.4) has no prefix and legitimately joins by hello; the
@@ -214,15 +224,21 @@ Every login field is `Option`/optional — absent, never fabricated (RFC 022's h
   `PeersReceived` rows with and without logins under a gate.
 - **Hello gate**: `transport/tests.rs` sets the mock bridge identity (`incoming_remote_identity`)
   with a login and drives every row of the 3.4 table, asserting the close code the client
-  sees; `session/tests.rs` asserts a refused caller is never installed.
+  sees and that the listener yields no stream for a refused caller (the transport is the
+  only path into the session's connection map, so "never installed" is witnessed there —
+  *corrected 2026-09-16: this row first named `session/tests.rs`, which has no such test*).
 - **Store**: `synced_store/tests.rs` — a spoofed `Update`, a spoofed `Clear`, a hello-less
   sender, and the corrected peer-left row.
 - **Swift**: `HandshakeTests` for the gate rows, `IdentityTests` for the glob table,
   `NodeLoopbackTests` for a gated loopback pair, `TailscaleEndpointTests`/backend mapping
   tests for the login fields.
-- **Real tailnet** (`TRUFFLE_TEST_AUTHKEY`): a pair on one login — the gated side lists a
-  foreign glob and the dial is refused with 4004 and the store never converges; the gated
-  side lists the real login and the pair converges as before.
+- **Real tailnet** (`TRUFFLE_TEST_AUTHKEY`): three ephemeral nodes on one login — an ungated
+  node sees both gated ones (the control), the node gated on the REAL login (read from its own
+  `local_info().login_name`, the live T4 witness) finds the ungated one, and the node gated on
+  a glob that cannot match holds at zero peers for a settle window of four times the twin's
+  measured discovery latency. *Corrected 2026-09-16:* this row first described a 4004 refusal
+  and a non-converging store; on a gated node the dial never happens because Layer 3 filtered
+  the peer, so the witness is the empty peer list, and the 4004 rows are the loopback ones above.
 
 ## 6. Consumers
 
