@@ -110,11 +110,16 @@ test table (`TestAllowedLogin` in `main_test.go` is the reference):
   review*). A device transfer or re-sign-in keeps the stable node ID, so a login change reaches
   a node as an UPDATE of an admitted peer. A row whose PRESENT login the gate refuses is a
   departure: Layer 3 emits `Left`, the entry is removed, and the session closes the peer's
-  connection — on both planes. A row with NO login on the update path is left as it was (a
-  transient omission by the sidecar or a failed status overlay must not empty a gated mesh);
-  refusal is for a login that is there and does not match. The reverse, a refused row that
-  later carries an allowed login, is a `Joined` with a new generation. This is why the dial
-  side needs no hello check (§3.4): a gated node never holds a peer its gate refuses.
+  connection — on both planes, on the snapshot path AND the delta path. The reverse, a
+  refused row that later carries an allowed login, is a `Joined` with a new generation. A row
+  with NO login differs by plane: on the Rust plane the login rides the row itself (the
+  sidecar resolves it from the same status the row came from), so a login-less row is not a
+  peer on every path and an admitted peer whose row loses its login is evicted; on the Apple
+  plane the login comes from a separate status read that can fail (§3.3's correction), so a
+  login-less row on the UPDATE path is left as it was rather than emptying a gated mesh on a
+  transient overlay failure — refusal there is for a login that is present and does not
+  match. This is why the dial side needs no hello check (§3.4): a gated node never holds a
+  peer its gate refuses.
 - Swift mirrors it: `BackendPeer.loginName` and `BackendStatus.loginName` (self), and
   `MeshNode.upsertFromLayer3` applies the same predicate.
   > **Corrected 2026-09-16 (the Apple lane, at the source).** This section first said the
