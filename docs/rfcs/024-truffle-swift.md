@@ -659,13 +659,18 @@ MeshConfiguration(appId: "field-tools", deviceName: "Alice's iPhone",
   the entry is evicted, its session closed, and `peerLeft` emitted, exactly as
   if the peer had left the tailnet. A later row that passes readmits it as a
   NEW generation, because a rejoin is never the same row (RFC 022 §7.7).
-  An **absent** login on an existing row is sticky instead of an eviction, so
-  a transient failure to read the logins cannot empty a gated mesh; a gated
-  node that sees a login-less app peer emits one `.health` notice, so a mesh
-  emptied by the gate is never silent. Provisional entries from a raced inbound
-  hello merge as before — that hello already passed the gate — and carry the
-  WhoIs login they passed it with, rather than waiting for the netmap; they are
-  evicted on a refused login like any other row.
+  A row that names **no owner** is neither an eviction nor a sticky keep
+  (RFC 025 §3.3 as refined): the entry **stays**, so a transient failure to
+  read the logins cannot empty a gated mesh, and its `loginName` is reported
+  **absent** — the last-known login does NOT persist, because the row names no
+  owner and so neither may we (RFC 022's absent-never-fabricated rule applies
+  to a login that can no longer be sourced as much as to one never had). A
+  gated node that sees a login-less app peer emits one `.health` notice, so a
+  mesh emptied by the gate is never silent. Provisional entries from a raced
+  inbound hello merge as before — that hello already passed the gate — and
+  carry the WhoIs login they passed it with; `confirm` restores a login WhoIs
+  authenticated even after Layer 3 has stopped naming one. Provisional rows are
+  evicted on a refused login like any other.
 - **The hello** — `Handshake.server(..., loginAllow:)` implements RFC 025
   §3.4's table in order: validate hello → absent authenticated identity →
   **4003** (on a gated node under EITHER `IdentityPolicy`; a gate is never
@@ -675,6 +680,17 @@ MeshConfiguration(appId: "field-tools", deviceName: "Alice's iPhone",
   `MeshError.loginRefused(login:)`. All of it happens **before** our hello is
   sent, so a refused caller never learns our identity block. The dialing side
   needs no new check: a gated node only dials peers Layer 3 reported.
+- **The dialing side of an unattributable peer** — a gated node opens no NEW
+  connection to a kept peer whose current row cannot name its owner
+  (RFC 025 §3.3): `send`, `sendBytes`, `sendJSON`, `confirmIdentity` and the
+  raw `dial(to:port:)` all throw `MeshError.loginUnknown(peer:)` instead of
+  dialing, because we would be opening a connection to someone we cannot
+  attribute — and the inbound gate already refuses that peer's own fresh hello
+  (WhoIs with no login → 4004), so both directions agree. It is a rule about
+  OPENING, never about tearing down: an **existing session stands**, so a
+  momentary gap in the logins cannot flap a live connection, and a dial already
+  in flight under a known login is joined rather than re-judged. An ungated node
+  ignores the field entirely.
 - **The dialing side** distinguishes a refusal from a broken pipe. Any
   application close (4000–4999) received before the hello surfaces as
   `MeshError.helloRefused(code:reason:)`, carrying the code the remote sent —
