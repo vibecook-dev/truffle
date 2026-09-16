@@ -85,6 +85,13 @@ test table (`TestAllowedLogin` in `main_test.go` is the reference):
   one non-`/` character; `[abc]`, `[a-z]`, `[^abc]` character classes; `\x` escapes `x`;
 - a malformed pattern (unterminated class, trailing `\`) never matches and never panics;
 - an empty list means no gate; a non-empty list with an empty or absent login **fails closed**.
+- *Recorded 2026-09-16 (review):* Rust's `str::to_lowercase` and Swift's `String.lowercased()`
+  apply full Unicode case mapping; Go's `strings.ToLower` maps rune by rune. The three agree on
+  every ASCII login and on 1.7 million generated pattern/name pairs; they diverge only on
+  special-casing letters such as Turkish `İ` (`İ@corp.com` vs `i@corp.com`), where Go admits
+  and Rust/Swift refuse. Every divergence is on the deny side, so the gate stays fail-closed;
+  the Go plane's `allow` is a served-route gate, never a session-plane one, so no node is
+  admitted by one plane and refused by another.
 
 ### 3.3 Layer 3 — the login is a peer fact
 
@@ -99,6 +106,15 @@ test table (`TestAllowedLogin` in `main_test.go` is the reference):
   row without a login on a gated node is **not a peer**. A gated node whose sidecar speaks
   a protocol older than 5 cannot know logins and **refuses to start** (`NetworkError::StartFailed`,
   loud) rather than run peerless or, worse, ungated.
+- **The predicate runs on every row, not only at entry creation** (*added 2026-09-16 after
+  review*). A device transfer or re-sign-in keeps the stable node ID, so a login change reaches
+  a node as an UPDATE of an admitted peer. A row whose PRESENT login the gate refuses is a
+  departure: Layer 3 emits `Left`, the entry is removed, and the session closes the peer's
+  connection — on both planes. A row with NO login on the update path is left as it was (a
+  transient omission by the sidecar or a failed status overlay must not empty a gated mesh);
+  refusal is for a login that is there and does not match. The reverse, a refused row that
+  later carries an allowed login, is a `Joined` with a new generation. This is why the dial
+  side needs no hello check (§3.4): a gated node never holds a peer its gate refuses.
 - Swift mirrors it: `BackendPeer.loginName` and `BackendStatus.loginName` (self), and
   `MeshNode.upsertFromLayer3` applies the same predicate.
   > **Corrected 2026-09-16 (the Apple lane, at the source).** This section first said the
@@ -165,7 +181,10 @@ Every login field is `Option`/optional — absent, never fabricated (RFC 022's h
 - The hello envelope stays at version 2. The login is never self-declared; WhoIs is the authority.
 - The QUIC plane (ALPN app check) and raw `listen` (the app reads `IncomingConnection.remote_identity`)
   keep their own admission; the reverse proxy keeps `allow` (RFC 023 §9.7). Gating those
-  planes by the node's list is future work (§7).
+  planes by the node's list is future work (§7). *Corrected 2026-09-16 (review):* on the Apple
+  plane a raw `MeshAcceptedConnection` carries only the remote endpoint, so an app gates an
+  accepted raw connection with `MeshNode.whoIs(remoteEndpoint:)` (added for this) — the raw
+  plane is NOT gated by `loginAllow` on either plane, and RFC 024 §8.1.2 says so.
 
 ## 4. Wire changes
 
@@ -174,6 +193,10 @@ Every login field is `Option`/optional — absent, never fabricated (RFC 022's h
 - `sidecarProtocolVersion`: 4 → 5.
 - WebSocket close code **4004** "login refused" (RFC 017 §8 table: 4001 app mismatch,
   4002 hello protocol, 4003 identity mismatch / unavailable, 4004 login refused).
+- The DIALING side surfaces any application close (4000–4999) received before the hello as a
+  typed refusal — Rust `TransportError::HelloRefused { code, reason }`, Swift
+  `MeshError.helloRefused(code:reason:)` — so a consumer can tell "not my app" from "not my
+  login"; it never answers a refusal with a close of its own.
 
 ## 5. Testing
 
