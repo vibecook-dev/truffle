@@ -23,6 +23,9 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
 )
 
 // testToken returns a deterministic 32-byte token matching Rust's test_token()
@@ -458,20 +461,20 @@ func TestShouldWrapTLS(t *testing.T) {
 // protocolVersion so the core gates capabilities by sidecar version instead of
 // treating this sidecar as v1. The core reads it off the "running" status/started
 // event (protocol.rs StatusEventData.protocol_version, camelCase, integer).
-// The pin is deliberate: v4 = requestId echoed on every RPC-style terminal
-// event; bumping the constant means updating this test AND the version gates
-// in provider.rs.
+// The pin is deliberate: v5 = loginName on peers and status (RFC 025 §3.3);
+// bumping the constant means updating this test AND the version gates in
+// provider.rs — a login-gated core REFUSES TO START on a sidecar below 5.
 func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
-	if sidecarProtocolVersion != 4 {
-		t.Fatalf("sidecarProtocolVersion = %d, want 4 (requestId echo on RPC events)", sidecarProtocolVersion)
+	if sidecarProtocolVersion != 5 {
+		t.Fatalf("sidecarProtocolVersion = %d, want 5 (loginName on peers and status)", sidecarProtocolVersion)
 	}
 
 	var buf bytes.Buffer
 	s := &shim{writer: json.NewEncoder(&buf)}
-	s.sendStatus("running", "host", "host.tail.ts.net", "100.64.0.1", "")
+	s.sendStatus("running", "host", "host.tail.ts.net", "100.64.0.1", "", "")
 
 	// The core matches the camelCase key exactly, as a JSON integer.
-	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":4`)) {
+	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":5`)) {
 		t.Errorf("status payload missing protocolVersion on the wire: %s", strings.TrimSpace(buf.String()))
 	}
 
@@ -1829,4 +1832,117 @@ func TestBuildReverseProxy(t *testing.T) {
 			t.Errorf("502 body leaked internal detail: %q", body)
 		}
 	})
+}
+
+// ===== RFC 025 §3.3: the login is a Layer 3 fact =====
+
+// TestLoginNameForUser pins the user-map lookup every peer row and the self
+// status go through: a known id resolves, a tagged node's pseudo-user passes
+// through verbatim, an unknown id and a nil map yield "" (the field then
+// marshals away — absent, never fabricated).
+func TestLoginNameForUser(t *testing.T) {
+	users := map[tailcfg.UserID]tailcfg.UserProfile{
+		1: {ID: 1, LoginName: "alice@example.com", DisplayName: "Alice"},
+		2: {ID: 2, LoginName: "tagged-devices", DisplayName: "Tagged Devices"},
+	}
+	cases := []struct {
+		name string
+		id   tailcfg.UserID
+		want string
+	}{
+		{"known user", 1, "alice@example.com"},
+		{"tagged node pseudo-user passes through", 2, "tagged-devices"},
+		{"unknown id yields empty", 99, ""},
+		{"zero id yields empty", 0, ""},
+	}
+	for _, tc := range cases {
+		if got := loginNameForUser(users, tc.id); got != tc.want {
+			t.Errorf("%s: loginNameForUser(_, %d) = %q, want %q", tc.name, tc.id, got, tc.want)
+		}
+	}
+	if got := loginNameForUser(nil, 1); got != "" {
+		t.Errorf("nil map: loginNameForUser = %q, want empty", got)
+	}
+}
+
+// TestStatusPeerToInfoCarriesLoginName drives the converter both callers use
+// (handleGetPeers and the watch diff) and pins the wire key: a peer whose
+// owner is in the map carries loginName; one whose owner is absent omits it.
+func TestStatusPeerToInfoCarriesLoginName(t *testing.T) {
+	users := map[tailcfg.UserID]tailcfg.UserProfile{
+		7: {ID: 7, LoginName: "Alice@Example.com"},
+	}
+	known := statusPeerToInfo(&ipnstate.PeerStatus{
+		ID: "peer-known", HostName: "truffle-app-alice", UserID: 7, Online: true,
+	}, users)
+	if known.LoginName != "Alice@Example.com" {
+		t.Errorf("known owner: loginName = %q, want the profile value verbatim", known.LoginName)
+	}
+	// The sidecar never lowercases: the gate on both planes lowercases at
+	// comparison time (RFC 025 §3.2), so the row reports what control said.
+	unknown := statusPeerToInfo(&ipnstate.PeerStatus{
+		ID: "peer-unknown", HostName: "truffle-app-bob", UserID: 8,
+	}, users)
+	if unknown.LoginName != "" {
+		t.Errorf("unknown owner: loginName = %q, want empty", unknown.LoginName)
+	}
+	raw, err := json.Marshal(unknown)
+	if err != nil {
+		t.Fatalf("marshal peer: %v", err)
+	}
+	if bytes.Contains(raw, []byte("loginName")) {
+		t.Errorf("an unknown owner must omit the key entirely: %s", raw)
+	}
+	raw, err = json.Marshal(known)
+	if err != nil {
+		t.Fatalf("marshal peer: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"loginName":"Alice@Example.com"`)) {
+		t.Errorf("peer row missing the camelCase loginName the core parses: %s", raw)
+	}
+}
+
+// TestWatchPeerChangedOnLogin pins that a re-owned node reaches the core: the
+// watch diff reports an "updated" event when only the login moved.
+func TestWatchPeerChangedOnLogin(t *testing.T) {
+	old := peerInfo{ID: "p", Hostname: "h", Online: true, LoginName: "alice@example.com"}
+	moved := old
+	moved.LoginName = "bob@example.com"
+	if !watchPeerChanged(old, moved) {
+		t.Error("a login change must count as an observable peer change")
+	}
+	if watchPeerChanged(old, old) {
+		t.Error("an unchanged row must not be reported")
+	}
+}
+
+// TestSelfStatusCarriesLoginName drives the resolution waitForRunning performs
+// on the "running" status and pins the wire shape the core's StatusEventData
+// parses. StatusWithoutPeers still carries the self profile upstream
+// (tailscale/tailscale#19894), which is why this is not empty on a real node.
+func TestSelfStatusCarriesLoginName(t *testing.T) {
+	status := &ipnstate.Status{
+		BackendState: "Running",
+		Self:         &ipnstate.PeerStatus{ID: "self-1", UserID: 3, DNSName: "host.tail.ts.net."},
+		User: map[tailcfg.UserID]tailcfg.UserProfile{
+			3: {ID: 3, LoginName: "alice@example.com"},
+		},
+	}
+	login := loginNameForUser(status.User, status.Self.UserID)
+	if login != "alice@example.com" {
+		t.Fatalf("self login = %q, want alice@example.com", login)
+	}
+
+	var buf bytes.Buffer
+	s := &shim{writer: json.NewEncoder(&buf)}
+	s.sendStatus("running", "host", "host.tail.ts.net", "100.64.0.1", "", login)
+	if !bytes.Contains(buf.Bytes(), []byte(`"loginName":"alice@example.com"`)) {
+		t.Errorf("status payload missing loginName: %s", strings.TrimSpace(buf.String()))
+	}
+
+	buf.Reset()
+	s.sendStatus("starting", "host", "", "", "", "")
+	if bytes.Contains(buf.Bytes(), []byte("loginName")) {
+		t.Errorf("a status with no login must omit the key: %s", strings.TrimSpace(buf.String()))
+	}
 }
