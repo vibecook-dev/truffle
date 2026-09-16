@@ -111,15 +111,17 @@ test table (`TestAllowedLogin` in `main_test.go` is the reference):
   a node as an UPDATE of an admitted peer. A row whose PRESENT login the gate refuses is a
   departure: Layer 3 emits `Left`, the entry is removed, and the session closes the peer's
   connection — on both planes, on the snapshot path AND the delta path. The reverse, a
-  refused row that later carries an allowed login, is a `Joined` with a new generation. A row
-  with NO login differs by plane: on the Rust plane the login rides the row itself (the
-  sidecar resolves it from the same status the row came from), so a login-less row is not a
-  peer on every path and an admitted peer whose row loses its login is evicted; on the Apple
-  plane the login comes from a separate status read that can fail (§3.3's correction), so a
-  login-less row on the UPDATE path is left as it was rather than emptying a gated mesh on a
-  transient overlay failure — refusal there is for a login that is present and does not
-  match. This is why the dial side needs no hello check (§3.4): a gated node never holds a
-  peer its gate refuses.
+  refused row that later carries an allowed login, is a `Joined` with a new generation.
+  **Admission and continued membership are different questions** (*ruled 2026-09-16*): a row
+  is classified Allowed / LoginRefused / LoginUnknown / NotOurApp; admission needs Allowed
+  (a present, matching login — fail closed); an already-admitted peer is KEPT on Allowed or
+  LoginUnknown and EVICTED on LoginRefused or NotOurApp. A row that cannot name an owner (the
+  sidecar could not resolve the user, or the Apple status overlay failed) does not un-own the
+  node: the peer stays, and its last-known login is carried forward rather than blanked — never
+  invented, `None` if there never was one — so a transient omission cannot empty a gated mesh
+  and a gated node never holds a peer whose login it cannot state. The same rule on both
+  planes, on the snapshot path and the delta path alike. This is why the dial side needs no
+  hello check (§3.4): a gated node never holds a peer its gate refuses.
 - Swift mirrors it: `BackendPeer.loginName` and `BackendStatus.loginName` (self), and
   `MeshNode.upsertFromLayer3` applies the same predicate.
   > **Corrected 2026-09-16 (the Apple lane, at the source).** This section first said the
