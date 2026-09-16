@@ -73,6 +73,14 @@ public enum Handshake {
                     throw MeshError.protocolViolation("too many control frames before hello")
                 }
             case .close(let code, let reason):
+                // An application close before the hello is the remote's
+                // REFUSAL, not a broken pipe — 4001 app mismatch, 4002 hello
+                // protocol, 4003 identity, 4004 login (RFC 025 §3.4). Carry
+                // the code so the dialing side can tell them apart; the Rust
+                // core surfaces the same distinction.
+                if (4000...4999).contains(code) {
+                    throw MeshError.helloRefused(code: code, reason: reason)
+                }
                 throw MeshError.protocolViolation(
                     "peer closed connection before hello (code \(code): \(reason))")
             }
@@ -100,9 +108,13 @@ public enum Handshake {
             }
         } catch {
             // Malformed / missing hello → 4002, mirroring desktop. Without
-            // this close the remote side would wait out its own timeout.
-            await frames.close(
-                code: SessionCloseCode.helloProtocol, reason: "hello not received")
+            // this close the remote side would wait out its own timeout. A
+            // REFUSAL is different: the remote already closed with its own
+            // code, so echoing 4002 at a dead socket only hides the reason.
+            if !isRefusal(error) {
+                await frames.close(
+                    code: SessionCloseCode.helloProtocol, reason: "hello not received")
+            }
             throw error
         }
 
@@ -165,10 +177,12 @@ public enum Handshake {
                 try await receiveHello(frames)
             }
         } catch {
-            // Malformed / missing hello → 4002, mirroring desktop. Without
-            // this close the remote side would wait out its own timeout.
-            await frames.close(
-                code: SessionCloseCode.helloProtocol, reason: "hello not received")
+            // As in the client role: a remote that already closed with its own
+            // application code gets no 4002 echoed back at it.
+            if !isRefusal(error) {
+                await frames.close(
+                    code: SessionCloseCode.helloProtocol, reason: "hello not received")
+            }
             throw error
         }
 
@@ -223,6 +237,13 @@ public enum Handshake {
     }
 
     // MARK: helpers
+
+    /// True for the error `receiveHello` raises when the remote closed with
+    /// an application code instead of sending a hello.
+    static func isRefusal(_ error: any Error) -> Bool {
+        guard let error = error as? MeshError, case .helloRefused = error else { return false }
+        return true
+    }
 
     static func map(_ error: HelloValidationError) -> MeshError {
         switch error {
