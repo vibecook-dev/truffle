@@ -11,6 +11,9 @@ public enum MeshError: Error, Sendable, Equatable {
     case peerGone(String)
     case identityUnavailable(String)
     case identityMismatch(claimed: String, authenticated: String)
+    /// The caller's WhoIs login is absent from, or matches no glob in, this
+    /// node's `loginAllow` list (RFC 025 §3.4, D4). Close code 4004.
+    case loginRefused(login: String?)
     case invalidPayload(String)
     case payloadTooLarge(actual: Int, limit: Int)
     case protocolViolation(String)
