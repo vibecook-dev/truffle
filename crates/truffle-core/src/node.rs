@@ -1746,7 +1746,10 @@ impl NodeBuilder {
     /// authenticated identity to (close code 4003) instead of admitting it
     /// unverified. Every subsystem on the session plane (the synced store,
     /// request/reply, file transfer, chat) is thereby scoped to those
-    /// logins by construction. The list is fixed for the node's lifetime;
+    /// logins by construction. NOT gated by this list: raw `listen`/`dial`
+    /// (the app reads the accepted connection's identity), the QUIC plane
+    /// (its ALPN app check), and served routes (their own `allow`, RFC 023
+    /// §9.7) — RFC 025 §3.7. The list is fixed for the node's lifetime;
     /// build a new node to change it. Requires a sidecar speaking protocol
     /// 5 (`loginName` on peer rows): `build()` fails otherwise.
     pub fn login_allow<I, S>(mut self, globs: I) -> Self
