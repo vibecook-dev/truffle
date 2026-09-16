@@ -219,4 +219,88 @@ private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         #expect(overlay.selfLogin == nil)
         #expect(overlay.byStableNodeId["nBOB"] == nil)
     }
+
+    /// A `UserID` the status's `User{}` does not describe resolves to NOTHING
+    /// — absent, never fabricated, and never the empty string. `nORPHAN`
+    /// names user 55555, which the map has no profile for.
+    @Test func unresolvableUserIdYieldsNoLoginRatherThanEmptyString() throws {
+        let merged = try overlay().applied(
+            to: BackendStatus(
+                tailscaleId: "nSELF",
+                peers: [
+                    BackendPeer(tailscaleId: "nORPHAN", hostname: "truffle-demo-orphan"),
+                    BackendPeer(tailscaleId: "nBOB", hostname: "truffle-demo-bob"),
+                ]))
+        #expect(merged.peers[0].loginName == nil)
+        #expect(merged.peers[0].loginName != "")
+        #expect(merged.peers[1].loginName == "alice@corp.com")
+    }
+
+    /// …and a gated node therefore DROPS that row. This asserts the exact
+    /// predicate `MeshNode.upsertFromLayer3` applies, at the seam where the
+    /// overlay and the gate meet: an unresolvable owner is not an owner, so
+    /// the peer is not a peer.
+    @Test func aGatedNodeDropsAnUnresolvableOwnersRow() throws {
+        let gate = ["*@corp.com"]
+        let merged = try overlay().applied(
+            to: BackendStatus(
+                tailscaleId: "nSELF",
+                peers: [
+                    BackendPeer(tailscaleId: "nORPHAN", hostname: "truffle-demo-orphan"),
+                    BackendPeer(tailscaleId: "nNOUSER", hostname: "truffle-demo-nouser"),
+                    BackendPeer(tailscaleId: "nBOB", hostname: "truffle-demo-bob"),
+                    BackendPeer(tailscaleId: "nMALLORY", hostname: "truffle-demo-mallory"),
+                ]))
+        let admitted = merged.peers
+            .filter { LoginGlob.allowed(gate, login: $0.loginName) }
+            .map(\.tailscaleId)
+        // nORPHAN: UserID with no profile. nNOUSER: no UserID at all.
+        // nMALLORY: a real login on the wrong domain. Only nBOB survives.
+        #expect(admitted == ["nBOB"])
+    }
+
+    /// The node's OWN login gets the same treatment: a self `UserID` the map
+    /// does not describe leaves `BackendStatus.loginName` — and so
+    /// `MeshNode.loginName` — nil, not "".
+    @Test func unresolvableSelfUserIdLeavesTheSelfLoginNil() throws {
+        let overlay = LoginOverlay(
+            try decode(
+                LocalAPIStatusLogins.self,
+                """
+                {
+                  "BackendState": "Running",
+                  "Self": {"ID": "nSELF", "UserID": 999},
+                  "Peer": {"k": {"ID": "nBOB", "UserID": 12345}},
+                  "User": {"12345": {"ID": 12345, "LoginName": "alice@corp.com"}}
+                }
+                """))
+        #expect(overlay.selfLogin == nil)
+        #expect(overlay.selfLogin != "")
+        // The peer whose owner IS described still resolves, so the nil above
+        // is the missing profile and not a wholesale decode failure.
+        #expect(overlay.byStableNodeId["nBOB"] == "alice@corp.com")
+
+        let merged = overlay.applied(to: BackendStatus(tailscaleId: "nSELF"))
+        #expect(merged.loginName == nil)
+    }
+
+    /// The overlay reads the FULL status, but record the upstream fact that
+    /// makes a lighter read possible: on tailscale 1.102.3 `status?peers=false`
+    /// still carries the SELF user's profile in `User{}` (tailscale/tailscale
+    /// #19894), so a peer-less status resolves the self login. An empty
+    /// `Peer{}` therefore means "no peers asked for", never "unknown owner".
+    @Test func aPeerlessStatusStillResolvesTheSelfLogin() throws {
+        let overlay = LoginOverlay(
+            try decode(
+                LocalAPIStatusLogins.self,
+                """
+                {
+                  "BackendState": "Running",
+                  "Self": {"ID": "nSELF", "UserID": 12345},
+                  "User": {"12345": {"ID": 12345, "LoginName": "alice@corp.com"}}
+                }
+                """))
+        #expect(overlay.selfLogin == "alice@corp.com")
+        #expect(overlay.byStableNodeId.isEmpty)
+    }
 }
