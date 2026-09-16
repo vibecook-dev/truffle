@@ -320,24 +320,6 @@ impl TailscaleProvider {
         )
     }
 
-    /// Build the `NetworkPeer` for a row, given what we already held for it.
-    ///
-    /// RFC 025 §3.3: a row the sidecar could not name an owner for does not
-    /// un-own the node, so the last login we WERE told is carried forward.
-    /// Without this a gated node would hold peers whose login it cannot
-    /// state, which is precisely the ambiguity the gate exists to remove.
-    /// Nothing is invented: with no previous login the field stays `None`.
-    fn network_peer_from_row(
-        peer: &super::protocol::SidecarPeer,
-        previous: Option<&NetworkPeer>,
-    ) -> NetworkPeer {
-        let mut np = Self::sidecar_peer_to_network_peer(peer);
-        if np.login_name.is_none() {
-            np.login_name = previous.and_then(|prev| prev.login_name.clone());
-        }
-        np
-    }
-
     /// Apply one `peerChanged` row to the map and emit the event RFC 025
     /// §3.3 requires.
     ///
@@ -363,7 +345,11 @@ impl TailscaleProvider {
         };
 
         if keeps {
-            let np = Self::network_peer_from_row(peer, peer_map.get(&peer.id));
+            // RFC 022 honesty: the row names no owner, so neither do we. The
+            // ENTRY survives an unknown login (below); the FIELD does not lie
+            // about one. Layer 5 refuses to open a new connection to a peer
+            // whose login it cannot state on a gated node.
+            let np = Self::sidecar_peer_to_network_peer(peer);
             peer_map.insert(np.id.clone(), np.clone());
             let _ = peer_event_tx.send(if already_held {
                 NetworkPeerEvent::Updated(np)
@@ -374,11 +360,15 @@ impl TailscaleProvider {
         }
 
         if peer_map.remove(&peer.id).is_some() {
-            tracing::debug!(
+            // Operator-visible: a peer leaving the mesh because its owner
+            // changed is a fact someone will look for in a log. Peer id and
+            // hostname only — the login is a tailnet identity and never
+            // reaches our logs.
+            tracing::info!(
                 peer_id = %peer.id,
                 hostname = %peer.hostname,
                 ?verdict,
-                "admitted peer evicted by the login gate (RFC 025 §3.3)"
+                "peer evicted — no longer admitted (RFC 025 §3.3)"
             );
             let _ = peer_event_tx.send(NetworkPeerEvent::Left(peer.id.clone()));
         } else {
@@ -538,8 +528,9 @@ impl TailscaleProvider {
                                         }
                                     })
                                     .map(|p| {
-                                        let np =
-                                            Self::network_peer_from_row(p, peer_map.get(&p.id));
+                                        // Absent, never fabricated — see
+                                        // `apply_peer_row`.
+                                        let np = Self::sidecar_peer_to_network_peer(p);
                                         (np.id.clone(), np)
                                     })
                                     .collect();
@@ -2058,14 +2049,15 @@ mod login_gate_tests {
             "an omitted login must update the peer, never evict it and never \
              be silently swallowed"
         );
+        // ... and the peer is still a peer, reported with no login.
         {
             let cached = h.peers.read().await;
             assert!(cached.contains_key("n1"));
             assert!(!cached["n1"].online, "the rest of the row must still land");
             assert_eq!(
-                cached["n1"].login_name.as_deref(),
-                Some("alice@example.com"),
-                "the last known login is carried forward, not blanked"
+                cached["n1"].login_name, None,
+                "the ENTRY survives an unknown login; the FIELD does not lie \
+                 about one. Layer 5 is what stops a new dial to such a peer."
             );
         }
 
@@ -2114,10 +2106,38 @@ mod login_gate_tests {
         let cached = h.peers.read().await;
         assert!(!cached.contains_key("n1"));
         assert_eq!(
-            cached["n2"].login_name.as_deref(),
-            Some("bob@example.com"),
-            "the kept peer keeps the login it was admitted on"
+            cached["n2"].login_name, None,
+            "the kept peer reports the login the row carried — none"
         );
+    }
+
+    /// An UNGATED node is untouched by any of this: a `peerChanged updated`
+    /// row updates the peer whatever its login says, or does not say.
+    #[tokio::test]
+    async fn ungated_peer_changed_updated_always_updates() {
+        let mut h = harness("playground", Vec::new());
+
+        send_change(
+            &h,
+            "joined",
+            peer_row("n1", "truffle-playground-alice", Some("alice@example.com")),
+        );
+        assert_eq!(drain(&mut h.events).await, [("joined", "n1".to_string())]);
+
+        // A login no gate would ever admit, an absent one, and an empty one:
+        // ungated, all three are ordinary updates and none evicts.
+        for login in [Some("eve@stranger.test"), None, Some("")] {
+            let mut row = peer_row("n1", "truffle-playground-alice", login);
+            row.online = false;
+            send_change(&h, "updated", row);
+            assert_eq!(
+                drain(&mut h.events).await,
+                [("updated", "n1".to_string())],
+                "ungated, a {login:?} login must update, never evict"
+            );
+            assert!(h.peers.read().await.contains_key("n1"));
+        }
+        assert!(!h.peers.read().await["n1"].online);
     }
 
     /// The verdict table itself, so the three-way distinction is pinned

@@ -221,6 +221,18 @@ pub enum SessionError {
         retry_after: Duration,
     },
 
+    /// RFC 025 §3.3: this node is login-gated and Layer 3 cannot currently
+    /// state the peer's owner, so a NEW connection is refused.
+    ///
+    /// The peer keeps its place in the registry — a status that could not
+    /// name an owner must not empty a gated mesh — and an EXISTING
+    /// connection stands. Only opening a new one is refused, so our hello is
+    /// never revealed to a node whose login we cannot check. The inbound
+    /// direction already agrees: a caller whose WhoIs carries no login is
+    /// refused at the hello with 4004.
+    #[error("login unknown for peer: {0}")]
+    LoginUnknown(String),
+
     /// A transport layer error.
     #[error("transport error: {0}")]
     Transport(#[from] crate::transport::TransportError),
@@ -344,6 +356,9 @@ pub struct PeerRegistry<N: NetworkProvider + 'static> {
     /// Per-peer jitter window (ms) applied before an eager dial (RFC 022 §8.1).
     eager_identity_jitter_ms: u64,
 
+    /// RFC 025 §3.3: refuse a NEW dial to a peer whose login is unresolved.
+    login_gated: bool,
+
     /// Peer ids with an in-flight ensure_identity task (dedupe).
     identity_inflight: Arc<AsyncMutex<HashSet<String>>>,
 }
@@ -364,6 +379,13 @@ pub struct PeerRegistryOptions {
     /// eager path is delayed; app `send` / `ensure_ws_connected` never wait.
     /// Default: 250.
     pub eager_identity_jitter_ms: u64,
+    /// RFC 025 §3.3: is this node login-gated (a non-empty `login_allow`)?
+    ///
+    /// When true, the registry refuses to open a NEW connection to a peer
+    /// whose `login_name` Layer 3 cannot state, with
+    /// [`SessionError::LoginUnknown`]. Existing connections stand. Default
+    /// `false` — an ungated node behaves exactly as before RFC 025.
+    pub login_gated: bool,
 }
 
 impl Default for PeerRegistryOptions {
@@ -372,6 +394,7 @@ impl Default for PeerRegistryOptions {
             eager_identity: true,
             eager_identity_concurrency: 4,
             eager_identity_jitter_ms: 250,
+            login_gated: false,
         }
     }
 }
@@ -411,6 +434,7 @@ impl<N: NetworkProvider + 'static> PeerRegistry<N> {
             event_tx,
             incoming_tx,
             background_tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
+            login_gated: options.login_gated,
             eager_identity: options.eager_identity,
             eager_identity_sem: Arc::new(Semaphore::new(concurrency)),
             eager_identity_jitter_ms: options.eager_identity_jitter_ms,
@@ -448,6 +472,7 @@ impl<N: NetworkProvider + 'static> PeerRegistry<N> {
         // Clones for scheduling eager identity from the event loop.
         let schedule_ctx = EagerScheduleCtx {
             eager_identity: self.eager_identity,
+            login_gated: self.login_gated,
             peers: self.peers.clone(),
             by_device: self.by_device.clone(),
             ws_connections: self.ws_connections.clone(),
@@ -842,6 +867,14 @@ impl<N: NetworkProvider + 'static> PeerRegistry<N> {
                 .ok_or_else(|| SessionError::UnknownPeer(peer_id.to_string()))?;
             if !state.online {
                 return Err(SessionError::PeerOffline(peer_id.to_string()));
+            }
+            // RFC 025 §3.3: a gated node never opens a NEW connection to a
+            // peer whose owner Layer 3 cannot state. The entry survives an
+            // unknown login so the mesh is not emptied by a transient
+            // omission, but our hello is not revealed to it and its slices
+            // are not invited. An ALREADY-OPEN connection returned above.
+            if self.login_gated && state.login_name.is_none() {
+                return Err(SessionError::LoginUnknown(peer_id.to_string()));
             }
             PeerAddr {
                 ip: Some(state.ip),
@@ -1403,6 +1436,8 @@ fn eager_jitter_delay(peer_id: &str, window_ms: u64) -> Duration {
 /// Arcs needed to dial for identity without holding `&PeerRegistry`.
 struct EagerScheduleCtx<N: NetworkProvider + 'static> {
     eager_identity: bool,
+    /// RFC 025 §3.3: mirrors `PeerRegistry::login_gated`.
+    login_gated: bool,
     peers: Arc<RwLock<HashMap<String, PeerState>>>,
     by_device: Arc<RwLock<HashMap<String, String>>>,
     ws_connections: Arc<RwLock<HashMap<String, WsConnectionHandle>>>,
@@ -1446,6 +1481,7 @@ impl<N: NetworkProvider + 'static> EagerScheduleCtx<N> {
             incoming_tx,
             ws_transport,
             network,
+            login_gated: self.login_gated,
         };
 
         let handle = tokio::spawn(async move {
@@ -1538,6 +1574,8 @@ struct EagerConnectCtx<N: NetworkProvider + 'static> {
     incoming_tx: broadcast::Sender<IncomingMessage>,
     ws_transport: Arc<WebSocketTransport<N>>,
     network: Arc<N>,
+    /// RFC 025 §3.3: mirrors `PeerRegistry::login_gated`.
+    login_gated: bool,
 }
 
 /// Connection path shared by eager identity (no send payload).
@@ -1562,6 +1600,11 @@ async fn eager_connect_ws<N: NetworkProvider + 'static>(
         }
         if state.published_device_id().is_some() {
             return Ok(());
+        }
+        // RFC 025 §3.3: the eager dial inherits the gate — an unresolved
+        // login is exactly the case where we must not volunteer a hello.
+        if ctx.login_gated && state.login_name.is_none() {
+            return Err(SessionError::LoginUnknown(peer_id.to_string()));
         }
         PeerAddr {
             ip: Some(state.ip),

@@ -1924,6 +1924,10 @@ impl NodeBuilder {
             ws_transport,
             crate::session::PeerRegistryOptions {
                 eager_identity,
+                // RFC 025 §3.3: a node with a non-empty allow-list is gated,
+                // so Layer 5 refuses to open a NEW connection to a peer whose
+                // login Layer 3 cannot state.
+                login_gated: !self.login_allow.is_empty(),
                 ..Default::default()
             },
         ));
@@ -2003,6 +2007,10 @@ impl NodeBuilder {
             ws_transport,
             crate::session::PeerRegistryOptions {
                 eager_identity,
+                // RFC 025 §3.3: a node with a non-empty allow-list is gated,
+                // so Layer 5 refuses to open a NEW connection to a peer whose
+                // login Layer 3 cannot state.
+                login_gated: !self.login_allow.is_empty(),
                 ..Default::default()
             },
         ));

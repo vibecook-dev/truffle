@@ -237,6 +237,57 @@ fn make_loopback_peer(id: &str) -> NetworkPeer {
     }
 }
 
+/// A loopback peer carrying (or withholding) a Layer 3 login — RFC 025 §3.3.
+fn make_loopback_peer_with_login(id: &str, login: Option<&str>) -> NetworkPeer {
+    NetworkPeer {
+        login_name: login.map(str::to_string),
+        ..make_loopback_peer(id)
+    }
+}
+
+/// A registry that is login-gated (a node built with a non-empty allow-list).
+fn build_gated_registry(
+    id: &str,
+    port: u16,
+) -> (
+    PeerRegistry<MockNetworkProvider>,
+    broadcast::Sender<NetworkPeerEvent>,
+) {
+    build_registry_with_options(
+        "test",
+        id,
+        port,
+        PeerRegistryOptions {
+            login_gated: true,
+            eager_identity: false,
+            eager_identity_jitter_ms: 0,
+            ..Default::default()
+        },
+    )
+}
+
+/// A login-gated registry with EAGER identity on, to witness that the
+/// background dial inherits the gate (RFC 025 §3.3).
+fn build_gated_eager_registry(
+    id: &str,
+    port: u16,
+) -> (
+    PeerRegistry<MockNetworkProvider>,
+    broadcast::Sender<NetworkPeerEvent>,
+) {
+    build_registry_with_options(
+        "test",
+        id,
+        port,
+        PeerRegistryOptions {
+            login_gated: true,
+            eager_identity: true,
+            eager_identity_jitter_ms: 0,
+            ..Default::default()
+        },
+    )
+}
+
 /// Build a PeerRegistry. Returns (registry, event_sender).
 /// The registry uses the given port for its WS transport.
 fn build_registry(
@@ -1591,4 +1642,237 @@ proptest! {
         let formatted = super::format_peer_ref(&id, generation);
         prop_assert_eq!(super::parse_peer_ref(&formatted), Some((id.as_str(), generation)));
     }
+}
+
+// ---------------------------------------------------------------------------
+// RFC 025 §3.3 — a gated node does not dial a peer whose owner it cannot state
+// ---------------------------------------------------------------------------
+
+/// A gated registry refuses to OPEN a connection to a peer Layer 3 kept but
+/// could not name an owner for. The peer stays in the registry (a transient
+/// omission must not empty a gated mesh) but our hello is never volunteered
+/// to it, so the dial side now agrees with the inbound gate, which refuses
+/// such a caller's hello with 4004.
+#[tokio::test]
+async fn test_gated_registry_refuses_to_dial_a_peer_with_no_login() {
+    let port = random_port().await;
+    let (registry, es) = build_gated_registry("client", port);
+    registry.start().await;
+
+    es.send(NetworkPeerEvent::Joined(make_loopback_peer_with_login(
+        "server", None,
+    )))
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Precondition: the peer IS in the registry and online. Without this the
+    // refusal below could just be an unknown or offline peer.
+    let peers = registry.peers().await;
+    let peer = peers
+        .iter()
+        .find(|p| p.id == "server")
+        .expect("a login-less row must still be a peer on a gated node");
+    assert!(peer.online);
+    assert!(!peer.ws_connected);
+
+    let err = registry
+        .ensure_ws_connected("server")
+        .await
+        .expect_err("a gated node must not dial a peer whose login is unknown");
+    assert!(
+        matches!(&err, SessionError::LoginUnknown(id) if id == "server"),
+        "expected LoginUnknown, got {err:?}"
+    );
+
+    // No connection was opened.
+    assert!(
+        !registry
+            .peers()
+            .await
+            .iter()
+            .any(|p| p.id == "server" && p.ws_connected),
+        "the refusal must leave the connection map untouched"
+    );
+}
+
+/// The same gated registry dials normally once Layer 3 can state the login:
+/// the gate is about ignorance, not about being gated. A real loopback hello
+/// so this proves a CONNECTION, not merely a different error.
+#[tokio::test]
+async fn test_gated_registry_dials_a_peer_whose_login_is_known() {
+    let server_port = random_port().await;
+
+    let (server_registry, _server_es) = build_registry("server", server_port);
+    server_registry.start().await;
+
+    let (client_registry, client_es) = build_gated_registry("client", server_port);
+    client_registry.start().await;
+
+    client_es
+        .send(NetworkPeerEvent::Joined(make_loopback_peer_with_login(
+            "server",
+            Some("alice@example.com"),
+        )))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    client_registry
+        .ensure_ws_connected("server")
+        .await
+        .expect("a known login must dial exactly as before RFC 025");
+
+    let peers = client_registry.peers().await;
+    let peer = peers.iter().find(|p| p.id == "server").expect("server");
+    assert!(
+        peer.ws_connected,
+        "the connection must actually be up, not merely un-refused"
+    );
+}
+
+/// An UNGATED registry ignores the field entirely — this is the control that
+/// keeps the change invisible to every node that has not opted in.
+#[tokio::test]
+async fn test_ungated_registry_ignores_an_unknown_login() {
+    let server_port = random_port().await;
+
+    let (server_registry, _server_es) = build_registry("server", server_port);
+    server_registry.start().await;
+
+    let (client_registry, client_es) = build_registry("client", server_port);
+    client_registry.start().await;
+
+    client_es
+        .send(NetworkPeerEvent::Joined(make_loopback_peer_with_login(
+            "server", None,
+        )))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    client_registry
+        .ensure_ws_connected("server")
+        .await
+        .expect("an ungated node must dial a login-less peer as it always did");
+
+    let peers = client_registry.peers().await;
+    assert!(
+        peers
+            .iter()
+            .find(|p| p.id == "server")
+            .expect("server")
+            .ws_connected
+    );
+}
+
+/// An EXISTING connection is left standing when the login later goes unknown:
+/// the gate refuses to OPEN one, it does not tear one down. Tearing down on a
+/// transient omission is exactly the mesh-emptying the keep rule forbids.
+#[tokio::test]
+async fn test_gated_registry_leaves_an_existing_connection_standing() {
+    let server_port = random_port().await;
+
+    let (server_registry, _server_es) = build_registry("server", server_port);
+    server_registry.start().await;
+
+    let (client_registry, client_es) = build_gated_registry("client", server_port);
+    client_registry.start().await;
+
+    client_es
+        .send(NetworkPeerEvent::Joined(make_loopback_peer_with_login(
+            "server",
+            Some("alice@example.com"),
+        )))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client_registry.ensure_ws_connected("server").await.unwrap();
+
+    // Layer 3 now reports the same peer with no owner named.
+    client_es
+        .send(NetworkPeerEvent::Updated(make_loopback_peer_with_login(
+            "server", None,
+        )))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    client_registry
+        .ensure_ws_connected("server")
+        .await
+        .expect("an already-open connection must be returned, not refused");
+    let peers = client_registry.peers().await;
+    assert!(
+        peers
+            .iter()
+            .find(|p| p.id == "server")
+            .expect("server")
+            .ws_connected,
+        "the standing connection must survive the login going unknown"
+    );
+}
+
+/// The EAGER dial inherits the gate. This is the path that volunteers a hello
+/// with no application traffic at all, so it is the one that would quietly
+/// reveal us to a node whose owner we cannot state.
+///
+/// A/B in one test: the same gated registry, the same loopback server, the
+/// same wait — only the row's login differs. Without the control, "it did not
+/// connect" would just mean eager identity never ran.
+#[tokio::test]
+async fn test_gated_eager_dial_skips_a_peer_with_no_login() {
+    async fn learned_identity_within(
+        registry: &PeerRegistry<MockNetworkProvider>,
+        peer: &str,
+        window: Duration,
+    ) -> bool {
+        let deadline = tokio::time::Instant::now() + window;
+        while tokio::time::Instant::now() < deadline {
+            if registry
+                .peers()
+                .await
+                .iter()
+                .any(|p| p.id == peer && p.published_device_id().is_some())
+            {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        false
+    }
+
+    let server_port = random_port().await;
+    let (server_registry, _server_es) = build_registry("server", server_port);
+    server_registry.start().await;
+
+    // Control: a row WITH a login is dialed eagerly, so the mechanism works
+    // and the window below is long enough.
+    let (allowed, allowed_es) = build_gated_eager_registry("allowed", server_port);
+    allowed.start().await;
+    allowed_es
+        .send(NetworkPeerEvent::Joined(make_loopback_peer_with_login(
+            "server",
+            Some("alice@example.com"),
+        )))
+        .unwrap();
+    assert!(
+        learned_identity_within(&allowed, "server", Duration::from_secs(3)).await,
+        "the control must dial eagerly, or the negative below proves nothing"
+    );
+
+    // The assertion: a row with NO login is never dialed.
+    let (blocked, blocked_es) = build_gated_eager_registry("blocked", server_port);
+    blocked.start().await;
+    blocked_es
+        .send(NetworkPeerEvent::Joined(make_loopback_peer_with_login(
+            "server", None,
+        )))
+        .unwrap();
+    assert!(
+        !learned_identity_within(&blocked, "server", Duration::from_secs(3)).await,
+        "a gated node must not volunteer an eager hello to a peer whose owner \
+         Layer 3 cannot state"
+    );
+
+    // ... and the peer is still a peer. The gate refuses the DIAL, not the row.
+    assert!(
+        blocked.peers().await.iter().any(|p| p.id == "server"),
+        "the login-less peer must keep its place in the registry"
+    );
 }
