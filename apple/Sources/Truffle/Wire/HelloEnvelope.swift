@@ -80,6 +80,14 @@ public struct HelloEnvelope: Codable, Sendable, Equatable {
 // MARK: - Validation (port of websocket.rs::validate_hello)
 
 /// Classified hello failures. Each maps to an RFC 017 close code.
+///
+/// Validation covers only what the hello itself can be wrong about: 4001 and
+/// 4002. The refusals that depend on evidence OUTSIDE the hello are decided
+/// afterwards by `Handshake.server`, which closes with
+/// `SessionCloseCode.identityMismatch` (4003) for a contradicted or absent
+/// WhoIs identity and `SessionCloseCode.loginRefused` (4004) for a login the
+/// node's `loginAllow` does not admit (RFC 025 §3.4). The login is never
+/// declared in the hello — WhoIs is its only authority (RFC 025 §3.7, D8).
 public enum HelloValidationError: Error, Sendable, Equatable {
     /// Malformed / invalid hello → close code 4002.
     case malformed(String)

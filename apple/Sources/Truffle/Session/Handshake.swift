@@ -135,11 +135,29 @@ public enum Handshake {
     /// a missing or empty stable node ID rejects with 4003; under
     /// `.allowUnverified` (tests only) the claim is accepted unverified —
     /// mirroring, explicitly, what desktop currently does implicitly.
+    ///
+    /// `loginAllow` is the node's login gate (RFC 025 §3.4, D4). Empty is
+    /// today's behaviour exactly. Non-empty applies the §3.4 table, in this
+    /// order, all of it BEFORE our own hello is sent so an impostor never
+    /// learns our identity block:
+    ///
+    /// | bridge identity                      | ungated            | gated      |
+    /// |--------------------------------------|--------------------|------------|
+    /// | absent / no `tailscaleId`            | policy decides     | **4003**   |
+    /// | `tailscaleId` ≠ claimed              | 4003               | 4003       |
+    /// | ok, `loginName` absent               | accept             | **4004**   |
+    /// | ok, `loginName` matches no glob      | accept             | **4004**   |
+    /// | ok, `loginName` matches              | accept             | accept     |
+    ///
+    /// A gate is never bypassed by `.allowUnverified`: on a gated node an
+    /// absent identity is refused under EITHER policy, because the login the
+    /// gate needs can only come from an authenticated WhoIs answer.
     public static func server(
         frames: any SessionFrames,
         localHello: HelloEnvelope,
         authenticated: AuthenticatedPeer?,
-        policy: IdentityPolicy
+        policy: IdentityPolicy,
+        loginAllow: [String] = []
     ) async throws -> PeerIdentity {
         let remote: HelloEnvelope
         do {
@@ -162,16 +180,23 @@ public enum Handshake {
             throw map(error)
         }
 
+        let gated = !loginAllow.isEmpty
         let authenticatedId = authenticated?.tailscaleId ?? ""
         if authenticatedId.isEmpty {
+            let refuse: Bool
             switch policy {
             case .failClosed:
+                refuse = true
+            case .allowUnverified:
+                // A gate is never bypassed by the test policy: without an
+                // authenticated identity there is no login to gate on.
+                refuse = gated
+            }
+            if refuse {
                 await frames.close(
                     code: SessionCloseCode.identityMismatch, reason: "identity unavailable")
                 throw MeshError.identityUnavailable(
                     "no authenticated identity for incoming connection")
-            case .allowUnverified:
-                break
             }
         } else if authenticatedId != identity.tailscaleId {
             await frames.close(
@@ -179,6 +204,17 @@ public enum Handshake {
                 reason: "claimed tailscale_id contradicts authenticated identity")
             throw MeshError.identityMismatch(
                 claimed: identity.tailscaleId, authenticated: authenticatedId)
+        }
+
+        if gated {
+            // WhoIs is the only authority for the login — the hello never
+            // declares one (RFC 025 §3.7, D8).
+            let login = authenticated?.loginName
+            guard LoginGlob.allowed(loginAllow, login: login) else {
+                await frames.close(
+                    code: SessionCloseCode.loginRefused, reason: "login refused")
+                throw MeshError.loginRefused(login: login)
+            }
         }
 
         let payload = String(decoding: try localHello.encoded(), as: UTF8.self)

@@ -35,6 +35,9 @@ public actor MeshNode {
         var hostname: String
         var tailnetIPs: [String]
         var online: Bool
+        /// The owner's tailnet login as Layer 3 reported it (RFC 025 §3.3);
+        /// `nil` for a provisional entry whose netmap row has not arrived.
+        var loginName: String?
         /// Confirmed identity after a completed hello; nil for candidates.
         var identity: PeerIdentity?
         /// Created from an inbound hello that raced ahead of the netmap
@@ -86,6 +89,10 @@ public actor MeshNode {
     private var localTailscaleId = ""
     private var localDnsName: String?
     private var localIPs: [String] = []
+    private var localLoginName: String?
+    /// Set once a gated node has seen a Layer 3 snapshot with no self login,
+    /// so the health notice is emitted once rather than per refresh.
+    private var warnedAboutMissingLogins = false
 
     // MARK: - Lifecycle
 
@@ -270,6 +277,14 @@ public actor MeshNode {
     public var dnsName: String? { localDnsName }
     public var tailnetIPs: [String] { localIPs }
 
+    /// The tailnet login this node is signed in as (RFC 025 §3.6, D7), from
+    /// the last Layer 3 status. `nil` until known — never fabricated.
+    public var loginName: String? { localLoginName }
+
+    /// The login allow-list this node was started with (RFC 025 §3.1).
+    /// Empty means ungated. Fixed for the node's lifetime.
+    public var loginAllow: [String] { config.loginAllow }
+
     public var localPeer: Peer {
         Peer(
             ref: PeerRef(tailscaleId: localTailscaleId, generation: 0),
@@ -281,7 +296,8 @@ public actor MeshNode {
             tailnetIPs: localIPs,
             online: phaseValue == .running,
             appId: appId.value,
-            isLocal: true)
+            isLocal: true,
+            loginName: localLoginName)
     }
 
     /// Each access mints a NEW independently-buffered stream (RFC 024 §6.2):
@@ -413,7 +429,8 @@ public actor MeshNode {
             tailnetIPs: entry.tailnetIPs,
             online: entry.online,
             appId: entry.identity != nil ? appId.value : nil,
-            isLocal: false)
+            isLocal: false,
+            loginName: entry.loginName)
     }
 
     /// Generation-checked live lookup for peer-taking calls (RFC 024 §6.3).
@@ -543,6 +560,7 @@ public actor MeshNode {
         localTailscaleId = status.tailscaleId
         localDnsName = status.dnsName
         localIPs = status.tailnetIPs
+        localLoginName = status.loginName
 
         if status.running {
             setPhase(.running)
@@ -567,6 +585,22 @@ public actor MeshNode {
             seen.insert(peer.tailscaleId)
             upsertFromLayer3(peer)
         }
+        // RFC 025 §3.3: a gated node cannot admit a peer whose login Layer 3
+        // never reported. Say so — once — rather than presenting an
+        // unexplained empty mesh (the Rust provider refuses to start; a Swift
+        // node has no sidecar to interrogate, so it reports honestly).
+        if !config.loginAllow.isEmpty, !warnedAboutMissingLogins,
+            status.peers.contains(where: {
+                $0.loginName == nil
+                    && Hostname.isAppPeer(hostname: $0.hostname, appId: appId.value)
+            })
+        {
+            warnedAboutMissingLogins = true
+            emit(
+                .health(
+                    "login gate active but Layer 3 reported an app peer with no login; "
+                        + "peers without a login are not admitted"))
+        }
         // Entries absent from a full snapshot have left Layer 3 — EXCEPT
         // provisional entries, whose netmap event hasn't arrived yet
         // (RFC 024 §7.2: preserve, then merge).
@@ -576,21 +610,30 @@ public actor MeshNode {
         }
     }
 
-    /// Candidate filtering (RFC 024 §7.2): only hostnames matching
-    /// `truffle-{appId}-{slug}` enter the registry — except provisional
-    /// entries created by a raced inbound hello, which merge Layer 3
-    /// metadata into the same generation.
+    /// Candidate filtering (RFC 024 §7.2, RFC 025 §3.3): a hostname matching
+    /// `truffle-{appId}-{slug}` AND — on a login-gated node — a login on the
+    /// allow-list. A gated node treats a row WITHOUT a login as not a peer
+    /// (fail closed).
+    ///
+    /// Provisional entries created by a raced inbound hello merge Layer 3
+    /// metadata into the same generation as before: that hello already passed
+    /// the gate in `Handshake.server`, so re-gating it here would drop a peer
+    /// the node has an authenticated session with.
     private func upsertFromLayer3(_ peer: BackendPeer) {
         if var existing = entries[peer.tailscaleId] {
             existing.hostname = peer.hostname
             existing.tailnetIPs = peer.tailnetIPs
             existing.online = peer.online
+            existing.loginName = peer.loginName ?? existing.loginName
             existing.provisional = false
             entries[peer.tailscaleId] = existing
             emit(.peerUpsert(makePeer(from: existing)))
             return
         }
         guard Hostname.isAppPeer(hostname: peer.hostname, appId: appId.value) else {
+            return
+        }
+        guard LoginGlob.allowed(config.loginAllow, login: peer.loginName) else {
             return
         }
         generationCounter += 1
@@ -600,6 +643,7 @@ public actor MeshNode {
             hostname: peer.hostname,
             tailnetIPs: peer.tailnetIPs,
             online: peer.online,
+            loginName: peer.loginName,
             identity: nil,
             provisional: false)
         entries[peer.tailscaleId] = entry
@@ -717,6 +761,7 @@ public actor MeshNode {
                 hostname: "",
                 tailnetIPs: [],
                 online: true,
+                loginName: nil,
                 identity: identity,
                 provisional: true)
             entries[tailscaleId] = entry
@@ -851,7 +896,7 @@ public actor MeshNode {
             // handshake deadline (RFC 024 §8.1 step 4), not just the hello.
             let identity = try await withDeadline(
                 tuning.handshakeTimeout, label: "inbound handshake"
-            ) { [transport, backend, localHello, identityPolicy] in
+            ) { [transport, backend, localHello, identityPolicy, loginAllow = config.loginAllow] in
                 let frames = try await transport.serverFrames(over: accepted.connection)
                 let authenticated = try? await backend.whoIs(
                     remoteEndpoint: accepted.remoteEndpoint)
@@ -859,7 +904,8 @@ public actor MeshNode {
                     frames: frames,
                     localHello: localHello,
                     authenticated: authenticated,
-                    policy: identityPolicy)
+                    policy: identityPolicy,
+                    loginAllow: loginAllow)
                 return InboundHandshake(frames: frames, identity: identity)
             }
             await adoptInbound(identity)
