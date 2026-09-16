@@ -31,13 +31,30 @@ public protocol MeshListener: Sendable {
 /// stable Tailscale node ID and the normalized remote addresses used for the
 /// comparison. An empty `tailscaleId` means WhoIs produced no concrete
 /// identity — the production inbound policy fails closed on that.
+///
+/// `loginName` / `displayName` carry the caller's tailnet user profile
+/// (RFC 025 §3.6, D7). Both are ABSENT, never fabricated: a WhoIs answer with
+/// no user profile — or with an empty string in one — leaves the field `nil`.
+/// A tagged node reports Tailscale's `tagged-devices` pseudo-login, which is
+/// passed through unchanged rather than special-cased.
 public struct AuthenticatedPeer: Sendable, Hashable {
     public let tailscaleId: String
     public let remoteAddresses: [String]
+    /// The caller's tailnet login (`UserProfile.LoginName`), e.g.
+    /// `alice@corp.com`. The login gate's only authority — never
+    /// self-declared (RFC 025 §3.7, D8).
+    public let loginName: String?
+    /// The caller's human-readable profile name (`UserProfile.DisplayName`).
+    public let displayName: String?
 
-    public init(tailscaleId: String, remoteAddresses: [String]) {
+    public init(
+        tailscaleId: String, remoteAddresses: [String], loginName: String? = nil,
+        displayName: String? = nil
+    ) {
         self.tailscaleId = tailscaleId
         self.remoteAddresses = remoteAddresses
+        self.loginName = loginName
+        self.displayName = displayName
     }
 }
 
@@ -48,16 +65,21 @@ public struct BackendPeer: Sendable, Equatable {
     public var dnsName: String?
     public var tailnetIPs: [String]
     public var online: Bool
+    /// The login of the tailnet user who owns this node (RFC 025 §3.3) —
+    /// a netmap fact, `nil` when the backend cannot report one. A gated node
+    /// treats a row without a login as NOT a peer (fail closed).
+    public var loginName: String?
 
     public init(
         tailscaleId: String, hostname: String, dnsName: String? = nil,
-        tailnetIPs: [String] = [], online: Bool = true
+        tailnetIPs: [String] = [], online: Bool = true, loginName: String? = nil
     ) {
         self.tailscaleId = tailscaleId
         self.hostname = hostname
         self.dnsName = dnsName
         self.tailnetIPs = tailnetIPs
         self.online = online
+        self.loginName = loginName
     }
 }
 
@@ -71,12 +93,15 @@ public struct BackendStatus: Sendable, Equatable {
     public var tailnetIPs: [String]
     /// Our own stable Tailscale node ID (empty until known).
     public var tailscaleId: String
+    /// The login this node is signed in as (RFC 025 §3.6, D7) — `nil` until
+    /// known, never fabricated. A tagged node reports `tagged-devices`.
+    public var loginName: String?
     public var peers: [BackendPeer]
 
     public init(
         running: Bool = false, needsLogin: Bool = false, needsMachineAuth: Bool = false,
         authURL: String? = nil, dnsName: String? = nil, tailnetIPs: [String] = [],
-        tailscaleId: String = "", peers: [BackendPeer] = []
+        tailscaleId: String = "", loginName: String? = nil, peers: [BackendPeer] = []
     ) {
         self.running = running
         self.needsLogin = needsLogin
@@ -85,6 +110,7 @@ public struct BackendStatus: Sendable, Equatable {
         self.dnsName = dnsName
         self.tailnetIPs = tailnetIPs
         self.tailscaleId = tailscaleId
+        self.loginName = loginName
         self.peers = peers
     }
 }

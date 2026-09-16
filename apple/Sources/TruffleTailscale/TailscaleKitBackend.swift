@@ -151,35 +151,14 @@
         }
 
         public func whoIs(remoteEndpoint: String) async throws -> AuthenticatedPeer {
-            guard let node else { throw MeshError.stopped }
+            guard node != nil else { throw MeshError.stopped }
             guard let endpoint = TailscaleEndpoint(remoteEndpoint) else {
                 throw MeshError.protocolViolation("invalid accepted Tailscale endpoint")
             }
-            let (sessionConfiguration, loopback) =
-                try await URLSessionConfiguration.tailscaleSession(node)
-            guard let ip = loopback.ip, let port = loopback.port else {
-                throw MeshError.transport("invalid Tailscale LocalAPI loopback address")
-            }
-            var components = URLComponents()
-            components.scheme = "http"
-            components.host = ip
-            components.port = port
-            components.path = "/localapi/v0/whois"
-            components.queryItems = [URLQueryItem(name: "addr", value: endpoint.whoIsAddress)]
-            guard let url = components.url else {
-                throw MeshError.transport("could not form LocalAPI WhoIs URL")
-            }
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 15
-            let credential = Data("tsnet:\(loopback.localAPIKey)".utf8).base64EncodedString()
-            request.setValue("Basic \(credential)", forHTTPHeaderField: "Authorization")
-            request.setValue("localapi", forHTTPHeaderField: "Sec-Tailscale")
-            let (data, response) = try await URLSession(configuration: sessionConfiguration)
-                .data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-                throw MeshError.transport("LocalAPI WhoIs failed with HTTP \(status)")
-            }
+            let data = try await localAPIGet(
+                path: "/localapi/v0/whois",
+                queryItems: [URLQueryItem(name: "addr", value: endpoint.whoIsAddress)],
+                label: "WhoIs")
             let decoded = try JSONDecoder().decode(WhoIsResponse.self, from: data)
             let stableID = decoded.Node.StableID.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !stableID.isEmpty else {
@@ -194,7 +173,54 @@
             }
             return AuthenticatedPeer(
                 tailscaleId: stableID,
-                remoteAddresses: addresses + [remoteEndpoint])
+                remoteAddresses: addresses + [remoteEndpoint],
+                loginName: decoded.loginName,
+                displayName: decoded.displayName)
+        }
+
+        /// The tailnet logins for the current netmap (RFC 025 §3.3), read
+        /// from the same status endpoint TailscaleKit reads — with a decoder
+        /// that keeps `UserID`, which its binding drops. See
+        /// `LocalAPIIdentity.swift` for why this cannot come from
+        /// `IpnState.Status`.
+        private func statusLogins() async throws -> LoginOverlay {
+            let data = try await localAPIGet(
+                path: "/localapi/v0/status", queryItems: nil, label: "status")
+            return LoginOverlay(
+                try JSONDecoder().decode(LocalAPIStatusLogins.self, from: data))
+        }
+
+        /// One authenticated GET against this node's LocalAPI loopback.
+        private func localAPIGet(
+            path: String, queryItems: [URLQueryItem]?, label: String
+        ) async throws -> Data {
+            guard let node else { throw MeshError.stopped }
+            let (sessionConfiguration, loopback) =
+                try await URLSessionConfiguration.tailscaleSession(node)
+            guard let ip = loopback.ip, let port = loopback.port else {
+                throw MeshError.transport("invalid Tailscale LocalAPI loopback address")
+            }
+            var components = URLComponents()
+            components.scheme = "http"
+            components.host = ip
+            components.port = port
+            components.path = path
+            components.queryItems = queryItems
+            guard let url = components.url else {
+                throw MeshError.transport("could not form LocalAPI \(label) URL")
+            }
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 15
+            let credential = Data("tsnet:\(loopback.localAPIKey)".utf8).base64EncodedString()
+            request.setValue("Basic \(credential)", forHTTPHeaderField: "Authorization")
+            request.setValue("localapi", forHTTPHeaderField: "Sec-Tailscale")
+            let (data, response) = try await URLSession(configuration: sessionConfiguration)
+                .data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                throw MeshError.transport("LocalAPI \(label) failed with HTTP \(status)")
+            }
+            return data
         }
 
         public func makeURLSession(
@@ -296,7 +322,13 @@
         private func refreshStatus(emitChange: Bool) async throws -> BackendStatus {
             guard let localAPI else { throw MeshError.stopped }
             let raw = try await localAPI.backendStatus()
-            let mapped = Self.map(raw)
+            var mapped = Self.map(raw)
+            // The logins TailscaleKit's status binding drops (RFC 025 §3.3).
+            // A failed read leaves them nil — absent, never fabricated; a
+            // gated node then admits nobody, which is the fail-closed answer.
+            if let overlay = try? await statusLogins() {
+                mapped = overlay.applied(to: mapped)
+            }
             if emitChange, mapped != latest { emit(.status(mapped)) }
             if let authURL = mapped.authURL.flatMap(URL.init(string:)) {
                 emit(.authRequired(authURL))
@@ -392,14 +424,6 @@
                 frameTransport: RFC6455FrameTransport(),
                 identityPolicy: .failClosed)
         }
-    }
-
-    private struct WhoIsResponse: Decodable {
-        struct NodeInfo: Decodable {
-            let StableID: String
-            let Addresses: [String]?
-        }
-        let Node: NodeInfo
     }
 
     private struct TailscaleLogAdapter: LogSink, @unchecked Sendable {

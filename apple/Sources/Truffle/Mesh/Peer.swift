@@ -44,6 +44,11 @@ public struct Peer: Identifiable, Hashable, Sendable {
     public let tailscaleId: String
     public let generation: UInt64
 
+    /// The login of the tailnet user who owns this node (RFC 025 §3.6, D7) —
+    /// `nil` when Layer 3 reported none. On a gated node every listed peer
+    /// matched the node's allow-list, so this is the login that passed it.
+    public let loginName: String?
+
     public let displayName: String
     public let hostname: String
     public let tailnetIPs: [String]
@@ -54,12 +59,13 @@ public struct Peer: Identifiable, Hashable, Sendable {
     init(
         ref: PeerRef, deviceId: String?, tailscaleId: String, generation: UInt64,
         displayName: String, hostname: String, tailnetIPs: [String], online: Bool,
-        appId: String?, isLocal: Bool
+        appId: String?, isLocal: Bool, loginName: String? = nil
     ) {
         self.ref = ref
         self.deviceId = deviceId
         self.tailscaleId = tailscaleId
         self.generation = generation
+        self.loginName = loginName
         self.displayName = displayName
         self.hostname = hostname
         self.tailnetIPs = tailnetIPs
@@ -81,6 +87,7 @@ public struct Peer: Identifiable, Hashable, Sendable {
             && lhs.tailnetIPs == rhs.tailnetIPs
             && lhs.online == rhs.online
             && lhs.appId == rhs.appId
+            && lhs.loginName == rhs.loginName
     }
 
     public func hash(into hasher: inout Hasher) {
