@@ -1876,3 +1876,184 @@ async fn test_gated_eager_dial_skips_a_peer_with_no_login() {
         "the login-less peer must keep its place in the registry"
     );
 }
+
+// ---------------------------------------------------------------------------
+// M1 — a hello-only peer's slices must still bind to their sender
+// ---------------------------------------------------------------------------
+
+/// A custom-hostname node (RFC 023 §6.4) fails the Layer 3 app-prefix
+/// heuristic, so the accepting side never gets a `Joined` for it and its
+/// registry entry is never created. Its hello identity waits in
+/// `pending_identities` forever, and without the fallback every synced-store
+/// slice it sends is dropped as "no published identity" — a regression
+/// against the pre-RFC-025 behaviour.
+///
+/// This mirrors `test_hello_exchange_populates_identity`'s real loopback WS,
+/// with the one difference that makes it the hello-only case: the SERVER is
+/// never told about the client at Layer 3.
+#[tokio::test]
+async fn test_hello_only_peer_publishes_its_device_id_while_connected() {
+    let server_port = random_port().await;
+
+    let (server_registry, _server_es) = build_registry("server", server_port);
+    let mut server_incoming = server_registry.subscribe();
+    server_registry.start().await;
+
+    let (client_registry, client_es) = build_registry("client", server_port);
+    client_registry.start().await;
+
+    // ONLY the client learns about the server. The server never gets a
+    // Joined for "client", so it has no registry entry for it.
+    client_es
+        .send(NetworkPeerEvent::Joined(make_loopback_peer("server")))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Pin the precondition BEFORE the assertion: with no entry and no
+    // connection, the answer must be None. Otherwise a later Some could be
+    // coming from a registry entry that quietly appeared.
+    assert_eq!(
+        server_registry.published_device_id("client").await,
+        None,
+        "nothing is published before the hello"
+    );
+
+    client_registry.send("server", b"hello").await.unwrap();
+    let _msg = tokio::time::timeout(Duration::from_millis(500), server_incoming.recv())
+        .await
+        .expect("server should receive the inbound frame")
+        .expect("broadcast channel should not error");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // The server still has NO registry entry for the client — this is what
+    // makes it the hello-only case rather than an ordinary peer.
+    assert!(
+        !server_registry
+            .peers()
+            .await
+            .iter()
+            .any(|p| p.id == "client"),
+        "a hello-only peer must have no Layer 3 entry, or this test is \
+         exercising the ordinary path"
+    );
+
+    // ... and yet its slices can be bound to it, because the transport
+    // verified that hello for the connection that is still standing.
+    assert_eq!(
+        server_registry
+            .published_device_id("client")
+            .await
+            .as_deref(),
+        Some("dev-client"),
+        "a hello-only peer's verified identity must bind its store slices"
+    );
+
+    // Condition 1: once the connection is gone, the identity speaks for
+    // nothing — even though `pending_identities` still holds it (only a
+    // Layer 3 `Left` sweeps it, and for this peer none will ever come).
+    server_registry.disconnect("client").await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        server_registry.published_device_id("client").await,
+        None,
+        "a departed connection must stop publishing the identity"
+    );
+}
+
+/// Condition 2, first-wins (RFC 022 §7.7): a hello-only claimant must never
+/// speak for a ULID a live published peer already owns, or it could overwrite
+/// that device's store slice.
+#[tokio::test]
+async fn test_hello_only_peer_never_steals_a_published_ulid() {
+    let server_port = random_port().await;
+
+    let (server_registry, server_es) = build_registry("server", server_port);
+    let mut server_incoming = server_registry.subscribe();
+    server_registry.start().await;
+
+    // A discovered peer publishes the ULID the client will also claim.
+    server_es
+        .send(NetworkPeerEvent::Joined(make_network_peer(
+            "holder",
+            "100.64.0.9",
+        )))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    assert!(
+        server_registry
+            .test_stamp_identity(
+                "holder",
+                PeerIdentity {
+                    app_id: "test".into(),
+                    device_id: "dev-client".into(),
+                    device_name: "Holder".into(),
+                    os: "linux".into(),
+                    tailscale_id: "holder".into(),
+                },
+            )
+            .await
+    );
+    assert_eq!(
+        server_registry
+            .test_by_device("dev-client")
+            .await
+            .as_deref(),
+        Some("holder"),
+        "the holder must own the ULID before the claimant connects"
+    );
+
+    // Now the hello-only client connects, claiming the same ULID.
+    let (client_registry, client_es) = build_registry("client", server_port);
+    client_registry.start().await;
+    client_es
+        .send(NetworkPeerEvent::Joined(make_loopback_peer("server")))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client_registry.send("server", b"hello").await.unwrap();
+    let _msg = tokio::time::timeout(Duration::from_millis(500), server_incoming.recv())
+        .await
+        .expect("server should receive the inbound frame")
+        .expect("broadcast channel should not error");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert_eq!(
+        server_registry.published_device_id("client").await,
+        None,
+        "a hello-only claimant must not speak for a ULID another live peer \
+         already published"
+    );
+    // The holder is untouched.
+    assert_eq!(
+        server_registry
+            .published_device_id("holder")
+            .await
+            .as_deref(),
+        Some("dev-client")
+    );
+}
+
+/// An entry that EXISTS answers definitively and never falls through to the
+/// pending map — a suppressed or hello-less peer must stay unpublished.
+#[tokio::test]
+async fn test_an_existing_entry_never_falls_back_to_pending() {
+    let port = random_port().await;
+    let (registry, es) = build_registry("me", port);
+    registry.start().await;
+
+    es.send(NetworkPeerEvent::Joined(make_network_peer(
+        "peer",
+        "100.64.0.4",
+    )))
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(40)).await;
+
+    assert!(
+        registry.peers().await.iter().any(|p| p.id == "peer"),
+        "the entry must exist for this test to mean anything"
+    );
+    assert_eq!(
+        registry.published_device_id("peer").await,
+        None,
+        "an entry with no hello stays unpublished"
+    );
+}
