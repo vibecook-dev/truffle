@@ -668,13 +668,44 @@ MeshConfiguration(appId: "field-tools", deviceName: "Alice's iPhone",
   `loginAllow` is today's behaviour exactly, including the existing fail-open
   under `.allowUnverified`.
 
-Where TailscaleKit's binding could not supply the login RFC 025 §3.3
-specifies, see that section's dated correction: `IpnState.PeerStatus` decodes
-without `UserID`, so `TailscaleKitBackend` reads `/localapi/v0/status` itself
-for the logins and overlays them onto the mapped `BackendStatus`
-(`Sources/TruffleTailscale/LocalAPIIdentity.swift`, covered by
-`LocalAPIIdentityTests` on the macOS host). When `PeerStatus` grows `UserID`,
-the overlay collapses into the decoder.
+##### Where the login comes from on this plane
+
+RFC 025 §3.3 is normative for the **rule** — the login is a Layer 3 fact, and a
+gated node treats a row without one as not a peer. It is not normative for the
+mechanism, which on the Apple plane could not be what it first described (that
+sentence now carries a dated correction there): the pinned TailscaleKit decodes
+`IpnState.PeerStatus` **without `UserID`**, and `Status.SelfStatus` is a
+`PeerStatus` too, so nothing in the decoded status can key `Status.User` — which
+does exist, and is keyed by the stringified user id, with nothing to key it.
+
+The mechanism is therefore:
+
+- `TailscaleKitBackend.refreshStatus` issues **one additional authenticated GET
+  of the full LocalAPI status, `/localapi/v0/status`**, over the same loopback
+  the WhoIs path uses, and decodes only `Self.UserID`, `Peer[].{ID,UserID}` and
+  `User{}`. `Peer` is keyed by node key, so each row's own `ID` is the stable
+  node ID `BackendPeer` uses, and its `UserID` resolves through `User{}`.
+- The result overlays the logins onto the mapped `BackendStatus`; TailscaleKit's
+  own decode stays the authority for every other field. Cost: one extra loopback
+  GET per status refresh, and a refresh runs on every IPN bus notify.
+- The **full** status is read deliberately, because the peers' logins need it.
+  The lighter `status?peers=false` would still resolve the SELF login — on
+  tailscale 1.102.3 `StatusWithoutPeers` keeps the self user's profile in
+  `User{}` (tailscale/tailscale#19894) — so an empty `Peer{}` means "no peers
+  were asked for", never "unknown owner". That distinction matters only if this
+  ever moves to the lighter endpoint.
+- A `UserID` the map does not describe, a row carrying no `UserID`, and a failed
+  overlay read all resolve identically: the login is **absent** — never
+  fabricated, never `""`. A gated node then admits nobody, which is the
+  fail-closed answer, with the one-shot `.health` notice above so the emptied
+  mesh is not silent.
+- **Future work:** when TailscaleKit's `PeerStatus` decodes `UserID`, the overlay
+  collapses into the decoder and this extra GET goes away.
+
+The decoders are `Sources/TruffleTailscale/LocalAPIIdentity.swift`, deliberately
+outside `TailscaleKitBackend.swift`'s `#if os(iOS) && canImport(TailscaleKit)`:
+that guard compiles to nothing on the macOS host, so decoding placed inside it
+would have no test anywhere. `LocalAPIIdentityTests` covers it there.
 
 ### 8.2 Hello envelope (hello v2 — `session/hello.rs`, RFC 017 §8)
 
