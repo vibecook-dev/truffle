@@ -1154,12 +1154,71 @@ impl<N: NetworkProvider + 'static> PeerRegistry<N> {
     /// §7.7). Subsystems that key state by device id (the synced store)
     /// bind an inbound message to its sender through this — never through
     /// a device id the payload names (RFC 025 §3.5).
+    ///
+    /// # Hello-only peers
+    ///
+    /// A registry entry is created by a Layer 3 `Joined`, which a node with a
+    /// custom hostname (RFC 023 §6.4) never gets: it fails the
+    /// `truffle-{appId}-` prefix heuristic, so it is not discovered, only
+    /// *accepted*. Its hello identity waits in `pending_identities` for a
+    /// `Joined` that will never arrive, and without a fallback every store
+    /// slice it sends is dropped as "no published identity" — a regression
+    /// against the pre-RFC-025 behaviour, which applied the slice under the
+    /// id the payload claimed.
+    ///
+    /// So when there is NO entry, the pending identity answers, under two
+    /// conditions that keep it as sound a binding as the registry path:
+    ///
+    /// 1. **A connection for that id must still be installed.** The identity
+    ///    is the hello THIS NODE'S TRANSPORT VERIFIED for that connection
+    ///    (`verify_authenticated_identity` against the bridge's WhoIs), and
+    ///    the accept loop only stashes it after `install_connection`
+    ///    succeeds. Once the connection is gone the identity speaks for
+    ///    nothing, and `pending_identities` is only swept on a Layer 3
+    ///    `Left` — which, for a peer that was never discovered, never comes.
+    /// 2. **`by_device` must not map that ULID to a DIFFERENT live peer.**
+    ///    First-wins (RFC 022 §7.7): a hello-only claimant must never be able
+    ///    to speak for — and so overwrite the store slice of — a ULID a
+    ///    published peer already owns.
+    ///
+    /// An entry that EXISTS answers definitively, `Some` or `None`. It never
+    /// falls through to `pending_identities`, because a `None` there means
+    /// "no hello yet" or "suppressed under first-wins", and both must stay
+    /// `None`.
     pub async fn published_device_id(&self, tailscale_id: &str) -> Option<String> {
-        self.peers
+        {
+            let map = self.peers.read().await;
+            if let Some(state) = map.get(tailscale_id) {
+                return state.published_device_id().map(str::to_string);
+            }
+        }
+
+        // No entry: the hello-only path. Condition 1 — a live connection.
+        if !self.ws_connections.read().await.contains_key(tailscale_id) {
+            return None;
+        }
+
+        let device_id = self
+            .pending_identities
             .read()
             .await
             .get(tailscale_id)
-            .and_then(|state| state.published_device_id().map(str::to_string))
+            .map(|identity| identity.device_id.clone())?;
+
+        // Condition 2 — first-wins.
+        match self.by_device.read().await.get(&device_id) {
+            Some(owner) if owner != tailscale_id => {
+                tracing::warn!(
+                    peer_id = %tailscale_id,
+                    device = device_id.as_str(),
+                    owner = owner.as_str(),
+                    "session: hello-only peer claims a ULID another live peer \
+                     published; not binding it (RFC 022 §7.7)"
+                );
+                None
+            }
+            _ => Some(device_id),
+        }
     }
 
     /// Disconnect a specific peer's WebSocket connection.
