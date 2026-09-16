@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"tailscale.com/client/local"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
 )
@@ -1944,5 +1946,107 @@ func TestSelfStatusCarriesLoginName(t *testing.T) {
 	s.sendStatus("starting", "host", "", "", "", "")
 	if bytes.Contains(buf.Bytes(), []byte("loginName")) {
 		t.Errorf("a status with no login must omit the key: %s", strings.TrimSpace(buf.String()))
+	}
+}
+
+// TestWaitForRunningResolvesSelfLoginFromLocalAPI drives the REAL status loop
+// (`pollUntilRunning`, which `waitForRunning` is a two-line wrapper around)
+// against a fake LocalAPI, the way peer_watch_test drives the real streaming
+// client.
+//
+// This is the row that pins the DEPENDENCY. `TestSelfStatusCarriesLoginName`
+// builds its own `ipnstate.Status` and calls `loginNameForUser` directly, so
+// it stays green even if the loop stopped resolving the login at all. Here the
+// only source of `loginName` is the status this loop polls — and the status is
+// shaped like `StatusWithoutPeers`' answer: no `Peer` map, a `User` map
+// carrying only the self profile (tailscale/tailscale#19894).
+func TestWaitForRunningResolvesSelfLoginFromLocalAPI(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	status := ipnstate.Status{
+		BackendState: "Running",
+		TailscaleIPs: []netip.Addr{netip.MustParseAddr("100.64.0.7")},
+		Self: &ipnstate.PeerStatus{
+			ID:      "nodeSELF",
+			UserID:  42,
+			DNSName: "myhost.tailnet.ts.net.",
+		},
+		// StatusWithoutPeers omits peers but still carries the self profile.
+		User: map[tailcfg.UserID]tailcfg.UserProfile{
+			42: {ID: 42, LoginName: "alice@example.com"},
+		},
+	}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/localapi/v0/status" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewEncoder(w).Encode(status); err != nil {
+			t.Errorf("write status: %v", err)
+		}
+	}))
+	defer api.Close()
+
+	lc := &local.Client{Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, api.Listener.Addr().String())
+	}}
+
+	events := make(peerWatchEvents, 16)
+	s := newTestShim()
+	defer s.cancel()
+	s.ctx = ctx
+	s.writer = json.NewEncoder(events)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.pollUntilRunning(ctx, lc, "myhost")
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pollUntilRunning did not reach the running state")
+	}
+
+	// Collect the two status-shaped events the loop emits on Running.
+	seen := map[string]statusData{}
+	for len(seen) < 2 {
+		select {
+		case raw := <-events:
+			var ev struct {
+				Event string     `json:"event"`
+				Data  statusData `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &ev); err != nil {
+				t.Fatalf("decode event: %v", err)
+			}
+			if ev.Event == "tsnet:status" || ev.Event == "tsnet:started" {
+				seen[ev.Event] = ev.Data
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("only saw %v; want both tsnet:status and tsnet:started", seen)
+		}
+	}
+
+	for _, name := range []string{"tsnet:status", "tsnet:started"} {
+		got := seen[name]
+		if got.State != "running" {
+			t.Errorf("%s: state = %q, want running", name, got.State)
+		}
+		if got.LoginName != "alice@example.com" {
+			t.Errorf(
+				"%s: loginName = %q — the loop must resolve it from the status User map",
+				name, got.LoginName,
+			)
+		}
+		if got.ProtocolVersion != sidecarProtocolVersion {
+			t.Errorf("%s: protocolVersion = %d, want %d", name, got.ProtocolVersion, sidecarProtocolVersion)
+		}
+	}
+	// The started event additionally carries what the status one does not.
+	if started := seen["tsnet:started"]; started.NodeID != "nodeSELF" ||
+		started.DNSName != "myhost.tailnet.ts.net" {
+		t.Errorf("tsnet:started lost its node fields: %+v", started)
 	}
 }

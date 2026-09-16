@@ -998,6 +998,14 @@ func (s *shim) waitForRunning(ctx context.Context, hostname string) {
 		return
 	}
 
+	s.pollUntilRunning(ctx, lc, hostname)
+}
+
+// pollUntilRunning is waitForRunning's loop with the LocalAPI client passed
+// in, so a test can drive the real status path against a fake LocalAPI the
+// way startPeerWatch is driven (RFC 025 L6: the self login must be proven to
+// come from the status this loop actually polls, not from one a test built).
+func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname string) {
 	authURLSent := false
 	needsApprovalSent := false
 	for {
