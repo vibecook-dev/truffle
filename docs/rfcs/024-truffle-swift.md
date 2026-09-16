@@ -649,11 +649,23 @@ MeshConfiguration(appId: "field-tools", deviceName: "Alice's iPhone",
   `tagged-devices` pseudo-login is passed through, not special-cased.
 - **Layer 3** — `MeshNode.upsertFromLayer3` admits a row only if
   `Hostname.isAppPeer(...) && LoginGlob.allowed(loginAllow, login:)`. On a
-  gated node a row with no login is **not a peer**. Provisional entries from a
-  raced inbound hello keep merging as before: that hello already passed the
-  gate, so re-gating it would drop a peer the node has a live session with.
-  A gated node that sees a login-less app peer emits one `.health` notice, so
-  a mesh emptied by the gate is never silent.
+  gated node a row with no login is **not a peer**.
+  The predicate runs on entry **creation AND on every later row for an entry
+  that already exists** — not only at creation. A stable node ID survives a
+  device transfer, so the netmap reports a re-signed node as an UPDATE to the
+  existing row; a gate that ran only at creation would let a peer admitted as
+  `bob@corp.com` keep its place, its session and its frames after re-signing
+  as a foreign login. A row whose login the gate **refuses is a departure**:
+  the entry is evicted, its session closed, and `peerLeft` emitted, exactly as
+  if the peer had left the tailnet. A later row that passes readmits it as a
+  NEW generation, because a rejoin is never the same row (RFC 022 §7.7).
+  An **absent** login on an existing row is sticky instead of an eviction, so
+  a transient failure to read the logins cannot empty a gated mesh; a gated
+  node that sees a login-less app peer emits one `.health` notice, so a mesh
+  emptied by the gate is never silent. Provisional entries from a raced inbound
+  hello merge as before — that hello already passed the gate — and carry the
+  WhoIs login they passed it with, rather than waiting for the netmap; they are
+  evicted on a refused login like any other row.
 - **The hello** — `Handshake.server(..., loginAllow:)` implements RFC 025
   §3.4's table in order: validate hello → absent authenticated identity →
   **4003** (on a gated node under EITHER `IdentityPolicy`; a gate is never
@@ -663,6 +675,21 @@ MeshConfiguration(appId: "field-tools", deviceName: "Alice's iPhone",
   `MeshError.loginRefused(login:)`. All of it happens **before** our hello is
   sent, so a refused caller never learns our identity block. The dialing side
   needs no new check: a gated node only dials peers Layer 3 reported.
+- **The dialing side** distinguishes a refusal from a broken pipe. Any
+  application close (4000–4999) received before the hello surfaces as
+  `MeshError.helloRefused(code:reason:)`, carrying the code the remote sent —
+  4001 app mismatch, 4002 hello protocol, 4003 identity, 4004 login. Neither
+  role echoes a 4002 back at a refusal, because the socket is already closed
+  from the far end and the echo would only bury the reason.
+  `MeshError.loginRefused(login:)` remains the SERVER-role error, raised by the
+  side that ran the gate.
+- **The raw plane is NOT gated** by `loginAllow` (RFC 025 §3.7, D9): the list
+  admits Layer 3 peers and session-plane hellos, and an app that opens its own
+  port with `listen(port:)` owns admission there. `MeshNode.whoIs(remoteEndpoint:)`
+  is how it does so — resolve `MeshAcceptedConnection.remoteEndpoint`, then
+  decide on the returned `loginName`, with `LoginGlob.allowed` if the app wants
+  the same grammar the node uses. An empty `tailscaleId` in the answer means
+  WhoIs produced no concrete identity and must be treated as untrusted.
 - **Unchanged**: the hello envelope stays at version 2 and never carries a
   login — WhoIs is the only authority (RFC 025 §3.7, D8). An empty
   `loginAllow` is today's behaviour exactly, including the existing fail-open
