@@ -467,8 +467,8 @@ func TestShouldWrapTLS(t *testing.T) {
 // bumping the constant means updating this test AND the version gates in
 // provider.rs — a login-gated core REFUSES TO START on a sidecar below 5.
 func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
-	if sidecarProtocolVersion != 5 {
-		t.Fatalf("sidecarProtocolVersion = %d, want 5 (loginName on peers and status)", sidecarProtocolVersion)
+	if sidecarProtocolVersion != 6 {
+		t.Fatalf("sidecarProtocolVersion = %d, want 6 (RFC 026 egress commands)", sidecarProtocolVersion)
 	}
 
 	var buf bytes.Buffer
@@ -476,7 +476,7 @@ func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
 	s.sendStatus("running", "host", "host.tail.ts.net", "100.64.0.1", "", "")
 
 	// The core matches the camelCase key exactly, as a JSON integer.
-	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":5`)) {
+	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":6`)) {
 		t.Errorf("status payload missing protocolVersion on the wire: %s", strings.TrimSpace(buf.String()))
 	}
 
