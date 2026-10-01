@@ -613,6 +613,81 @@ impl<N: NetworkProvider + 'static> Node<N> {
         crate::proxy::Proxy::new(self)
     }
 
+    // ── Egress (RFC 026) ─────────────────────────────────────────────────
+    //
+    // The mirror of `proxy()`: where a proxy serves a loopback service IN to
+    // the tailnet, egress lets the host's other processes reach OUT through
+    // this node. Every listener is 127.0.0.1; all of it needs sidecar
+    // protocol 6 and is refused locally (`NetworkError::Unsupported`) on an
+    // older sidecar. See [`crate::egress`].
+
+    /// The node's loopback SOCKS5 proxy onto the tailnet (RFC 026 E1).
+    ///
+    /// Username [`LOOPBACK_SOCKS5_USERNAME`](crate::egress::LOOPBACK_SOCKS5_USERNAME),
+    /// password [`LoopbackConfig::proxy_credential`](crate::egress::LoopbackConfig::proxy_credential).
+    /// With the credential it dials anything the node can — tailnet peers by
+    /// MagicDNS name or IP, and (through the host's own network) everything
+    /// else — so hand the credential only to what may act as this node.
+    /// Started on first call, closed with the node; the LocalAPI credential
+    /// is not included (see [`loopback_with_local_api`](Self::loopback_with_local_api)).
+    pub async fn loopback(&self) -> Result<crate::egress::LoopbackConfig, NodeError> {
+        self.ensure_not_stopped()?;
+        Ok(self.network.loopback(false).await?)
+    }
+
+    /// As [`loopback`](Self::loopback), with the LocalAPI credential. That
+    /// LocalAPI is read-write (preferences, logout): ask for it only when a
+    /// caller needs it.
+    pub async fn loopback_with_local_api(
+        &self,
+    ) -> Result<crate::egress::LoopbackConfig, NodeError> {
+        self.ensure_not_stopped()?;
+        Ok(self.network.loopback(true).await?)
+    }
+
+    /// Bind a loopback egress route to a fixed tailnet target (RFC 026 E2).
+    ///
+    /// Every connection to [`BoundEgress::listen`](crate::egress::BoundEgress::listen)
+    /// is admitted afresh — the target must still be a node of this netmap
+    /// whose owner passes the node's `login_allow` gate and the route's own
+    /// `login` glob — then dialled through the node and spliced raw, so any
+    /// protocol (a WebSocket upgrade included) passes byte-for-byte. A
+    /// target that is not an admitted node is refused here with
+    /// [`NetworkError::EgressError`](crate::network::NetworkError::EgressError)
+    /// (`TARGET_NOT_PEER`, `LOGIN_REFUSED`, `LOGIN_UNKNOWN`, …).
+    pub async fn egress_add(
+        &self,
+        route: crate::egress::EgressRoute,
+    ) -> Result<crate::egress::BoundEgress, NodeError> {
+        self.ensure_not_stopped()?;
+        Ok(self.network.egress_add(route).await?)
+    }
+
+    /// Remove an egress route: its listener closes, and every connection it
+    /// carries is closed with it.
+    pub async fn egress_remove(&self, id: &str) -> Result<(), NodeError> {
+        self.ensure_not_stopped()?;
+        Ok(self.network.egress_remove(id).await?)
+    }
+
+    /// The live egress routes, sorted by id.
+    pub async fn egress_list(&self) -> Result<Vec<crate::egress::EgressRouteInfo>, NodeError> {
+        self.ensure_not_stopped()?;
+        Ok(self.network.egress_list().await?)
+    }
+
+    /// The node's loopback HTTP CONNECT proxy (RFC 026 E3) — the rung for
+    /// clients that cannot speak SOCKS5, a browser above all.
+    ///
+    /// CONNECT only, to nodes of this tailnet that the node's gate admits;
+    /// `Proxy-Authorization: Basic` with any username and
+    /// [`HttpProxyConfig::credential`](crate::egress::HttpProxyConfig::credential)
+    /// as the password. Started on first call, closed with the node.
+    pub async fn egress_http_proxy(&self) -> Result<crate::egress::HttpProxyConfig, NodeError> {
+        self.ensure_not_stopped()?;
+        Ok(self.network.egress_http_proxy().await?)
+    }
+
     /// Create a synchronized store for device-owned state.
     ///
     /// Returns an `Arc<SyncedStore<T>>` that syncs data across the mesh on
@@ -2323,6 +2398,46 @@ mod tests {
         }
 
         node.stop().await;
+    }
+
+    /// RFC 026 on a provider without egress: every verb surfaces the
+    /// provider's `Unsupported` (never a fabricated proxy or route), and a
+    /// stopped node refuses before reaching the provider at all.
+    #[tokio::test]
+    async fn egress_unsupported_provider_and_stopped_node() {
+        let ws_port = random_port().await;
+        let (node, _event_tx, _network) = make_test_node("egress-node", ws_port).await;
+        let route = || crate::egress::EgressRoute {
+            id: "cell".into(),
+            target: "100.64.0.2:9417".into(),
+            login: None,
+        };
+
+        let unsupported = |what: &str, err: Option<NodeError>| match err {
+            Some(NodeError::Network(NetworkError::Unsupported(_))) => {}
+            other => panic!("{what}: expected Unsupported on the mock provider, got {other:?}"),
+        };
+        unsupported("loopback", node.loopback().await.err());
+        unsupported(
+            "loopback_with_local_api",
+            node.loopback_with_local_api().await.err(),
+        );
+        unsupported("egress_add", node.egress_add(route()).await.err());
+        unsupported("egress_remove", node.egress_remove("cell").await.err());
+        unsupported("egress_list", node.egress_list().await.err());
+        unsupported("egress_http_proxy", node.egress_http_proxy().await.err());
+
+        node.stop().await;
+        let stopped = |what: &str, err: Option<NodeError>| {
+            assert!(
+                matches!(err, Some(NodeError::Stopped)),
+                "{what} after stop: {err:?}"
+            )
+        };
+        stopped("loopback", node.loopback().await.err());
+        stopped("egress_add", node.egress_add(route()).await.err());
+        stopped("egress_list", node.egress_list().await.err());
+        stopped("egress_http_proxy", node.egress_http_proxy().await.err());
     }
 
     // ── Exhaustion tests (review: resource-exhaustion section) ────────

@@ -56,6 +56,7 @@
 //! The [`Node`] struct is the single public entry point. It exposes ~12 methods
 //! covering discovery, messaging, raw streams, and diagnostics.
 
+pub mod egress;
 pub mod envelope;
 pub mod file_transfer;
 pub mod identity;
@@ -68,6 +69,10 @@ pub mod synced_store;
 pub mod transport;
 
 // Re-export the main public types for convenience.
+pub use egress::{
+    BoundEgress, EgressRoute, EgressRouteInfo, HttpProxyConfig, LoopbackConfig,
+    LOOPBACK_SOCKS5_USERNAME,
+};
 pub use envelope::Envelope;
 pub use file_transfer::{
     FileOffer, FileTransfer, FileTransferEvent, FtMessage, OfferDecision, OfferResponder,

@@ -125,6 +125,25 @@ pub(crate) enum SidecarInternalEvent {
         code: String,
         message: String,
     },
+    /// The node's loopback proxy (RFC 026 E1). Its data's `Debug` redacts
+    /// both credentials.
+    Loopback(LoopbackEventData),
+    /// An egress route was bound (RFC 026 E2).
+    EgressAdded { id: String, listen: String },
+    /// An egress route was removed (RFC 026 E2).
+    EgressRemoved { id: String },
+    /// The live egress routes (RFC 026 E2).
+    EgressList { routes: Vec<EgressRouteEventData> },
+    /// The node's CONNECT proxy (RFC 026 E3). Its data's `Debug` redacts
+    /// the credential.
+    EgressProxy(EgressProxyEventData),
+    /// An egress command failed, or (with an id and no `requestId` on the
+    /// wire) a route refused or could not dial an accepted connection.
+    EgressError {
+        id: String,
+        code: String,
+        message: String,
+    },
     /// Sidecar process exited unexpectedly.
     ProcessExited { exit_code: Option<i32> },
 }
@@ -582,6 +601,37 @@ impl GoSidecar {
                     code: d.code,
                     message: d.message,
                 }),
+            event_type::LOOPBACK_RESULT => serde_json::from_value::<LoopbackEventData>(event.data)
+                .ok()
+                .map(SidecarInternalEvent::Loopback),
+            event_type::EGRESS_ADDED => serde_json::from_value::<EgressAddedEventData>(event.data)
+                .ok()
+                .map(|d| SidecarInternalEvent::EgressAdded {
+                    id: d.id,
+                    listen: d.listen,
+                }),
+            event_type::EGRESS_REMOVED => {
+                serde_json::from_value::<EgressRemovedEventData>(event.data)
+                    .ok()
+                    .map(|d| SidecarInternalEvent::EgressRemoved { id: d.id })
+            }
+            event_type::EGRESS_LIST_RESULT => {
+                serde_json::from_value::<EgressListEventData>(event.data)
+                    .ok()
+                    .map(|d| SidecarInternalEvent::EgressList { routes: d.routes })
+            }
+            event_type::EGRESS_PROXY_RESULT => {
+                serde_json::from_value::<EgressProxyEventData>(event.data)
+                    .ok()
+                    .map(SidecarInternalEvent::EgressProxy)
+            }
+            event_type::EGRESS_ERROR => serde_json::from_value::<EgressErrorEventData>(event.data)
+                .ok()
+                .map(|d| SidecarInternalEvent::EgressError {
+                    id: d.id,
+                    code: d.code,
+                    message: d.message,
+                }),
             other => {
                 tracing::debug!("unhandled sidecar event type: {other}");
                 None
@@ -785,6 +835,21 @@ impl GoSidecar {
         self.send_command(SidecarCommand {
             command: command_type::PROXY_LIST,
             data,
+        })
+        .await
+    }
+
+    /// Send one RFC 026 egress command (`tsnet:loopback`, `egress:*`). Every
+    /// payload carries its `requestId`; the caller registers the reply slot
+    /// first.
+    pub async fn send_egress<T: serde::Serialize>(
+        &self,
+        command: &'static str,
+        data: &T,
+    ) -> Result<(), NetworkError> {
+        self.send_command(SidecarCommand {
+            command,
+            data: Some(serde_json::to_value(data)?),
         })
         .await
     }

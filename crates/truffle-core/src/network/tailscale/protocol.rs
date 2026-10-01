@@ -194,6 +194,69 @@ pub(crate) struct ProxyListCommandData {
     pub request_id: Option<String>,
 }
 
+// RFC 026 egress commands (sidecar protocol 6). Every one carries a
+// `requestId` the sidecar echoes on its answer, so replies route through the
+// broker; the provider never sends one to an older sidecar.
+
+/// Data payload for `tsnet:loopback` (RFC 026 E1).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LoopbackCommandData {
+    /// Ask for the LocalAPI credential as well; it crosses the bridge only
+    /// on request. The sidecar's key is `localAPI`, not camelCase's
+    /// `localApi`.
+    #[serde(rename = "localAPI", skip_serializing_if = "std::ops::Not::not")]
+    pub local_api: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+}
+
+/// Data payload for `egress:add` (RFC 026 E2).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EgressAddCommandData {
+    pub id: String,
+    /// `<peer-fqdn-or-tailnet-ip>:<port>`.
+    pub target: String,
+    /// The route's own owner-login glob.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
+    /// The node's RFC 025 `login_allow`. The gate lives in the core; the
+    /// sidecar learns it here to re-check every connection.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub node_login_allow: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+}
+
+/// Data payload for `egress:remove` (RFC 026 E2).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EgressRemoveCommandData {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+}
+
+/// Data payload for `egress:list` (RFC 026 E2).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EgressListCommandData {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+}
+
+/// Data payload for `egress:proxy` (RFC 026 E3).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EgressProxyCommandData {
+    /// The node's RFC 025 `login_allow`, as on `egress:add`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub node_login_allow: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Well-known command type strings
 // ---------------------------------------------------------------------------
@@ -212,6 +275,11 @@ pub(crate) mod command_type {
     pub const PROXY_ADD: &str = "proxy:add";
     pub const PROXY_REMOVE: &str = "proxy:remove";
     pub const PROXY_LIST: &str = "proxy:list";
+    pub const LOOPBACK: &str = "tsnet:loopback";
+    pub const EGRESS_ADD: &str = "egress:add";
+    pub const EGRESS_REMOVE: &str = "egress:remove";
+    pub const EGRESS_LIST: &str = "egress:list";
+    pub const EGRESS_PROXY: &str = "egress:proxy";
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +320,12 @@ pub(crate) mod event_type {
     pub const PROXY_REMOVED: &str = "proxy:removed";
     pub const PROXY_LIST_RESULT: &str = "proxy:list";
     pub const PROXY_ERROR: &str = "proxy:error";
+    pub const LOOPBACK_RESULT: &str = "tsnet:loopbackResult";
+    pub const EGRESS_ADDED: &str = "egress:added";
+    pub const EGRESS_REMOVED: &str = "egress:removed";
+    pub const EGRESS_LIST_RESULT: &str = "egress:list";
+    pub const EGRESS_PROXY_RESULT: &str = "egress:proxyResult";
+    pub const EGRESS_ERROR: &str = "egress:error";
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +566,97 @@ pub(crate) struct ProxyInfoEventData {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProxyErrorEventData {
+    pub id: String,
+    pub code: String,
+    pub message: String,
+}
+
+/// Data from `tsnet:loopbackResult` (RFC 026 E1).
+///
+/// No derived `Debug`: both credentials are secrets, and this struct rides
+/// the internal event broadcast, where an unexpected-reply error formats
+/// events with `{:?}`.
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LoopbackEventData {
+    pub address: String,
+    pub proxy_credential: String,
+    #[serde(rename = "localAPICredential", default)]
+    pub local_api_credential: Option<String>,
+}
+
+impl std::fmt::Debug for LoopbackEventData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoopbackEventData")
+            .field("address", &self.address)
+            .field("proxy_credential", &"[REDACTED]")
+            .field(
+                "local_api_credential",
+                &self.local_api_credential.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
+}
+
+/// Data from `egress:added` (RFC 026 E2).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EgressAddedEventData {
+    pub id: String,
+    pub listen: String,
+}
+
+/// Data from `egress:removed` (RFC 026 E2).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EgressRemovedEventData {
+    pub id: String,
+}
+
+/// One route of an `egress:list` event (RFC 026 E2).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EgressRouteEventData {
+    pub id: String,
+    pub target: String,
+    pub listen: String,
+    #[serde(default)]
+    pub login: Option<String>,
+}
+
+/// Data from `egress:list` (RFC 026 E2).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EgressListEventData {
+    #[serde(default)]
+    pub routes: Vec<EgressRouteEventData>,
+}
+
+/// Data from `egress:proxyResult` (RFC 026 E3). No derived `Debug`: the
+/// credential is a secret.
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EgressProxyEventData {
+    pub address: String,
+    pub credential: String,
+}
+
+impl std::fmt::Debug for EgressProxyEventData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EgressProxyEventData")
+            .field("address", &self.address)
+            .field("credential", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Data from `egress:error` (RFC 026): the failure terminal of
+/// `egress:add` / `egress:remove` / `egress:proxy`, or — with an id and no
+/// `requestId` — a route refusing or failing to dial an accepted connection.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EgressErrorEventData {
+    #[serde(default)]
     pub id: String,
     pub code: String,
     pub message: String,
@@ -977,5 +1142,178 @@ mod tests {
         assert_eq!(data.proxies.len(), 1);
         assert_eq!(data.proxies[0].id, "dev-server");
         assert_eq!(data.proxies[0].listen_port, 3001);
+    }
+
+    // ── RFC 026 egress wire. The event literals below are the shapes the Go
+    // sidecar's TestEgressWireShapes pins, so both planes parse one wire.
+
+    fn command_json<T: Serialize>(command: &'static str, data: &T) -> serde_json::Value {
+        let cmd = SidecarCommand {
+            command,
+            data: Some(serde_json::to_value(data).unwrap()),
+        };
+        serde_json::to_value(&cmd).unwrap()
+    }
+
+    #[test]
+    fn serialize_loopback_command() {
+        let asked = command_json(
+            command_type::LOOPBACK,
+            &LoopbackCommandData {
+                local_api: true,
+                request_id: Some("r1".into()),
+            },
+        );
+        assert_eq!(
+            asked,
+            serde_json::json!({"command": "tsnet:loopback", "data": {"localAPI": true, "requestId": "r1"}})
+        );
+        // Not asked: the key is absent, not false.
+        let plain = command_json(
+            command_type::LOOPBACK,
+            &LoopbackCommandData {
+                local_api: false,
+                request_id: Some("r2".into()),
+            },
+        );
+        assert_eq!(plain["data"], serde_json::json!({"requestId": "r2"}));
+    }
+
+    #[test]
+    fn serialize_egress_commands() {
+        let gated = command_json(
+            command_type::EGRESS_ADD,
+            &EgressAddCommandData {
+                id: "cell".into(),
+                target: "beta.tail-scale.ts.net:9417".into(),
+                login: Some("bob@*".into()),
+                node_login_allow: vec!["*@example.com".into()],
+                request_id: Some("r1".into()),
+            },
+        );
+        assert_eq!(
+            gated,
+            serde_json::json!({"command": "egress:add", "data": {
+                "id": "cell", "target": "beta.tail-scale.ts.net:9417", "login": "bob@*",
+                "nodeLoginAllow": ["*@example.com"], "requestId": "r1"
+            }})
+        );
+        let ungated = command_json(
+            command_type::EGRESS_ADD,
+            &EgressAddCommandData {
+                id: "cell".into(),
+                target: "100.64.0.2:9417".into(),
+                login: None,
+                node_login_allow: Vec::new(),
+                request_id: None,
+            },
+        );
+        assert_eq!(
+            ungated["data"],
+            serde_json::json!({"id": "cell", "target": "100.64.0.2:9417"})
+        );
+
+        assert_eq!(
+            command_json(
+                command_type::EGRESS_REMOVE,
+                &EgressRemoveCommandData {
+                    id: "cell".into(),
+                    request_id: Some("r2".into()),
+                },
+            ),
+            serde_json::json!({"command": "egress:remove", "data": {"id": "cell", "requestId": "r2"}})
+        );
+        assert_eq!(
+            command_json(
+                command_type::EGRESS_LIST,
+                &EgressListCommandData {
+                    request_id: Some("r3".into()),
+                },
+            ),
+            serde_json::json!({"command": "egress:list", "data": {"requestId": "r3"}})
+        );
+        assert_eq!(
+            command_json(
+                command_type::EGRESS_PROXY,
+                &EgressProxyCommandData {
+                    node_login_allow: vec!["*@example.com".into()],
+                    request_id: Some("r4".into()),
+                },
+            ),
+            serde_json::json!({"command": "egress:proxy", "data": {"nodeLoginAllow": ["*@example.com"], "requestId": "r4"}})
+        );
+    }
+
+    #[test]
+    fn deserialize_egress_events() {
+        let event: SidecarEvent = serde_json::from_str(
+            r#"{"event":"tsnet:loopbackResult","data":{"address":"127.0.0.1:1","proxyCredential":"p","requestId":"r"}}"#,
+        )
+        .unwrap();
+        assert_eq!(event.event, event_type::LOOPBACK_RESULT);
+        let plain: LoopbackEventData = serde_json::from_value(event.data).unwrap();
+        assert_eq!(plain.address, "127.0.0.1:1");
+        assert_eq!(plain.proxy_credential, "p");
+        assert_eq!(plain.local_api_credential, None);
+        let asked: LoopbackEventData = serde_json::from_str(
+            r#"{"address":"127.0.0.1:1","proxyCredential":"p","localAPICredential":"l"}"#,
+        )
+        .unwrap();
+        assert_eq!(asked.local_api_credential.as_deref(), Some("l"));
+
+        let added: EgressAddedEventData =
+            serde_json::from_str(r#"{"id":"a","listen":"127.0.0.1:2","requestId":"r"}"#).unwrap();
+        assert_eq!(
+            (added.id.as_str(), added.listen.as_str()),
+            ("a", "127.0.0.1:2")
+        );
+
+        let empty: EgressListEventData = serde_json::from_str(r#"{"routes":[]}"#).unwrap();
+        assert!(empty.routes.is_empty());
+        let list: EgressListEventData = serde_json::from_str(
+            r#"{"routes":[{"id":"a","target":"t:1","listen":"127.0.0.1:2"},{"id":"b","target":"u:2","listen":"127.0.0.1:3","login":"bob@*"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(list.routes.len(), 2);
+        assert_eq!(list.routes[0].login, None);
+        assert_eq!(list.routes[1].login.as_deref(), Some("bob@*"));
+
+        let proxy: EgressProxyEventData =
+            serde_json::from_str(r#"{"address":"127.0.0.1:3","credential":"c","requestId":"r"}"#)
+                .unwrap();
+        assert_eq!(
+            (proxy.address.as_str(), proxy.credential.as_str()),
+            ("127.0.0.1:3", "c")
+        );
+
+        let runtime: EgressErrorEventData =
+            serde_json::from_str(r#"{"id":"a","code":"LOGIN_REFUSED","message":"m"}"#).unwrap();
+        assert_eq!(
+            (runtime.id.as_str(), runtime.code.as_str()),
+            ("a", "LOGIN_REFUSED")
+        );
+        let terminal: EgressErrorEventData = serde_json::from_str(
+            r#"{"code":"NOT_RUNNING","message":"node not running","requestId":"e"}"#,
+        )
+        .unwrap();
+        assert_eq!(terminal.id, "");
+    }
+
+    #[test]
+    fn debug_redacts_egress_credentials() {
+        let loopback = LoopbackEventData {
+            address: "127.0.0.1:1".into(),
+            proxy_credential: "PROXY-SECRET".into(),
+            local_api_credential: Some("LOCALAPI-SECRET".into()),
+        };
+        let proxy = EgressProxyEventData {
+            address: "127.0.0.1:2".into(),
+            credential: "CONNECT-SECRET".into(),
+        };
+        let dbg = format!("{loopback:?} {proxy:?}");
+        for secret in ["PROXY-SECRET", "LOCALAPI-SECRET", "CONNECT-SECRET"] {
+            assert!(!dbg.contains(secret), "{secret} leaked: {dbg}");
+        }
+        assert!(dbg.contains("127.0.0.1:1") && dbg.contains("127.0.0.1:2"));
     }
 }
