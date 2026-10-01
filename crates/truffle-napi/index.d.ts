@@ -262,6 +262,37 @@ export declare class NapiNode {
   /** Get a `NapiProxy` handle for reverse proxy operations. */
   proxy(): NapiProxy
   /**
+   * The node's loopback SOCKS5 proxy onto the tailnet (RFC 026 E1):
+   * `proxyUsername` / `proxyCredential` authenticate. With the credential
+   * it dials anything the node can, so hand it only to what may act as
+   * this node. The LocalAPI credential is not included.
+   */
+  loopback(): Promise<NapiLoopbackConfig>
+  /**
+   * As `loopback()`, with the LocalAPI credential. That LocalAPI is
+   * read-write (preferences, logout): ask only when a caller needs it.
+   */
+  loopbackWithLocalApi(): Promise<NapiLoopbackConfig>
+  /**
+   * Bind a loopback egress route to a fixed tailnet target (RFC 026 E2).
+   * Connect to the answer's `listen`; every connection is re-admitted
+   * (the target must still be an admitted node) and spliced raw, so a
+   * WebSocket upgrade passes intact. A target that is not a node of this
+   * tailnet, or whose owner the gates refuse, rejects with the sidecar's
+   * code in the message (`TARGET_NOT_PEER`, `LOGIN_REFUSED`, …).
+   */
+  egressAdd(route: NapiEgressRoute): Promise<NapiBoundEgress>
+  /** Remove an egress route; its live connections close with it. */
+  egressRemove(id: string): Promise<void>
+  /** The live egress routes, sorted by id. */
+  egressList(): Promise<Array<NapiEgressRouteInfo>>
+  /**
+   * The node's loopback HTTP CONNECT proxy (RFC 026 E3), for clients that
+   * cannot speak SOCKS5 (a browser answers its Basic challenge): CONNECT
+   * only, to nodes of this tailnet only.
+   */
+  egressHttpProxy(): Promise<NapiHttpProxyConfig>
+  /**
    * Get a `NapiSyncedStore` handle for synchronized state operations.
    *
    * Each call creates a new store instance with the given `store_id`.
@@ -610,6 +641,13 @@ export declare class Peer {
   ping(): Promise<NapiPingResult>
 }
 
+/** A bound egress route: connect to `listen` to reach the route's target. */
+export interface NapiBoundEgress {
+  id: string
+  /** `127.0.0.1:<port>`. */
+  listen: string
+}
+
 /**
  * Outcome of a `broadcastJson` / `broadcastBytes` call.
  *
@@ -632,6 +670,29 @@ export interface NapiDatagram {
   address: string
   /** Sender's source port. */
   port: number
+}
+
+/** An egress route to bind (RFC 026 E2). */
+export interface NapiEgressRoute {
+  /** Caller-chosen id, unique among the node's routes. */
+  id: string
+  /**
+   * `<peer-fqdn-or-tailnet-ip>:<port>`, fixed for the route. The host
+   * must name a node of this node's tailnet; a bare `.ts.net` suffix is
+   * not enough.
+   */
+  target: string
+  /** Optional owner-login glob narrowing the node's own `loginAllow` gate. */
+  login?: string
+}
+
+/** One live egress route, as `egressList()` reports it. */
+export interface NapiEgressRouteInfo {
+  id: string
+  target: string
+  /** `127.0.0.1:<port>`. */
+  listen: string
+  login?: string
 }
 
 /** An incoming file offer from a remote peer. */
@@ -697,6 +758,36 @@ export interface NapiHealthInfo {
   warnings: Array<string>
   /** Whether the network is fully operational. */
   healthy: boolean
+}
+
+/**
+ * The node's HTTP CONNECT proxy (RFC 026 E3): CONNECT only, to nodes of
+ * this tailnet only, `Proxy-Authorization: Basic` with any username and
+ * `credential` as the password.
+ */
+export interface NapiHttpProxyConfig {
+  /** `127.0.0.1:<port>`. */
+  address: string
+  /** The Basic password. */
+  credential: string
+}
+
+/**
+ * The node's loopback proxy (RFC 026 E1): SOCKS5 onto the tailnet, and
+ * tsnet's LocalAPI, on one listener.
+ */
+export interface NapiLoopbackConfig {
+  /** `127.0.0.1:<port>`. */
+  address: string
+  /** The SOCKS5 username — always `"tsnet"` (tsnet's own constant). */
+  proxyUsername: string
+  /** The SOCKS5 password. */
+  proxyCredential: string
+  /**
+   * The LocalAPI Basic password; present only from
+   * `loopbackWithLocalApi()` (that LocalAPI is read-write).
+   */
+  localApiCredential?: string
 }
 
 /** A message received on a specific namespace. */
