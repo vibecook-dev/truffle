@@ -202,6 +202,58 @@ func serveEcho(ln net.Listener) {
 	}
 }
 
+// echoRecording echoes like serveEcho and reports each accepted
+// connection's remote address — the address the far side's WhoIs resolves.
+func echoRecording(ln net.Listener) <-chan string {
+	seen := make(chan string, 16)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			select {
+			case seen <- c.RemoteAddr().String():
+			default:
+			}
+			go func() {
+				defer c.Close()
+				_, _ = io.Copy(c, c)
+			}()
+		}
+	}()
+	return seen
+}
+
+// expectFrom asserts the far side's tailnet attributes the next accepted
+// connection to want: its WhoIs names the egressing node, not the host's
+// other identities. That attribution is what a far door trusts.
+func expectFrom(t *testing.T, ctx context.Context, far *tsnet.Server, remoteAddr string, want nodeFacts, what string) {
+	t.Helper()
+	lc, err := far.LocalClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	who, err := lc.WhoIs(ctx, remoteAddr)
+	if err != nil {
+		t.Fatalf("%s: the far side's WhoIs %s: %v", what, remoteAddr, err)
+	}
+	if got := normalizeDNSName(who.Node.Name); got != want.dnsName {
+		t.Errorf("%s: the far side's WhoIs names %q, want the egressing node %q", what, got, want.dnsName)
+	}
+}
+
+func nextRemote(t *testing.T, seen <-chan string, what string) string {
+	t.Helper()
+	select {
+	case addr := <-seen:
+		return addr
+	case <-time.After(15 * time.Second):
+		t.Fatalf("%s: no connection reached the far side", what)
+		return ""
+	}
+}
+
 func echoRoundTrip(t *testing.T, r io.Reader, conn net.Conn, msg string) {
 	t.Helper()
 	_ = conn.SetDeadline(time.Now().Add(20 * time.Second))
@@ -352,6 +404,7 @@ func TestEgressE1LoopbackSOCKS5(t *testing.T) {
 	tn := newTestTailnet(t)
 	alpha := tn.node(t, ctx, "alpha")
 	beta := tn.node(t, ctx, "beta")
+	alphaFacts := factsOf(t, ctx, alpha)
 	betaFacts := factsOf(t, ctx, beta)
 
 	// The peer's listener, as tsnet:listen opens one (srv.Listen).
@@ -360,7 +413,7 @@ func TestEgressE1LoopbackSOCKS5(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	go serveEcho(ln)
+	seen := echoRecording(ln)
 
 	s, tap := newEgressShim(t, alpha)
 	s.handleLoopback(json.RawMessage(`{"requestId":"lb-1"}`))
@@ -384,6 +437,7 @@ func TestEgressE1LoopbackSOCKS5(t *testing.T) {
 	}
 	defer c.Close()
 	echoRoundTrip(t, c, c, "through alpha, as alpha")
+	expectFrom(t, ctx, beta, nextRemote(t, seen, "E1"), alphaFacts, "E1 SOCKS5")
 
 	byName := net.JoinHostPort(betaFacts.dnsName, "8081")
 	c2, err := socks5Connect(lb.Address, "tsnet", lb.ProxyCredential, byName)
@@ -460,18 +514,19 @@ func TestEgressE2RouteCarriesAWebSocketIntact(t *testing.T) {
 	tn := newTestTailnet(t)
 	alpha := tn.node(t, ctx, "alpha")
 	beta := tn.node(t, ctx, "beta")
+	alphaFacts := factsOf(t, ctx, alpha)
 	betaFacts := factsOf(t, ctx, beta)
 
 	// The far door: records the request line it was sent, answers 101, then
 	// echoes the upgraded stream.
-	type seenRequest struct{ uri, host string }
+	type seenRequest struct{ uri, host, remote string }
 	seen := make(chan seenRequest, 4)
 	ln, err := beta.Listen("tcp", ":8082")
 	if err != nil {
 		t.Fatal(err)
 	}
 	door := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen <- seenRequest{r.RequestURI, r.Host}
+		seen <- seenRequest{r.RequestURI, r.Host, r.RemoteAddr}
 		conn, rw, err := w.(http.Hijacker).Hijack()
 		if err != nil {
 			return
@@ -522,6 +577,7 @@ func TestEgressE2RouteCarriesAWebSocketIntact(t *testing.T) {
 		if got.host != added.Listen {
 			t.Errorf("the far door saw Host %q, want the client's own %q", got.host, added.Listen)
 		}
+		expectFrom(t, ctx, beta, got.remote, alphaFacts, "E2 route")
 	case <-time.After(10 * time.Second):
 		t.Fatal("the far door never saw the upgrade")
 	}
@@ -761,7 +817,7 @@ func TestEgressE3ConnectProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	go serveEcho(ln)
+	seen := echoRecording(ln)
 
 	s, tap := newEgressShim(t, alpha)
 	s.handleEgressProxy(json.RawMessage(`{"requestId":"px-1"}`))
@@ -794,6 +850,7 @@ func TestEgressE3ConnectProxy(t *testing.T) {
 		t.Fatalf("pipelined bytes came back as %q, %v", got, err)
 	}
 	echoRoundTrip(t, br, c, "through the tunnel")
+	expectFrom(t, ctx, beta, nextRemote(t, seen, "E3"), alphaFacts, "E3 CONNECT")
 
 	byIP := net.JoinHostPort(betaFacts.ip.String(), "443")
 	res, c, br = connectThrough(t, px.Address, byIP, auth, "")
