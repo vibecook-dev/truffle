@@ -20,7 +20,7 @@ const udpRegistered = "TRUFFLE_UDP_READY"
 // it from their private bridge session key and the unique request ID.
 func udpRelayToken(session []byte, id string) []byte {
 	mac := hmac.New(sha256.New, session)
-	mac.Write([]byte("truffle-udp-v5\x00"))
+	mac.Write([]byte("truffle-udp-v6\x00"))
 	mac.Write([]byte(id))
 	return mac.Sum(nil)
 }
@@ -69,8 +69,8 @@ func (s *shim) handleListenPacket(data json.RawMessage) {
 		s.sendError("LISTEN_PACKET_ERROR", fmt.Sprintf("invalid listenPacket data: %v", err))
 		return
 	}
-	if d.RelayVersion != 5 || d.RequestID == "" {
-		s.sendErrorFor("LISTEN_PACKET_ERROR", "UDP requires authenticated relay protocol v5", d.RequestID)
+	if d.RelayVersion != 6 || d.RequestID == "" {
+		s.sendErrorFor("LISTEN_PACKET_ERROR", "UDP requires authenticated relay protocol v6", d.RequestID)
 		return
 	}
 	srv := s.getServer()

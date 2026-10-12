@@ -85,6 +85,13 @@ export type MeshNode = Omit<
    */
   readonly dnsName: string | null;
 
+  /**
+   * This node's own tailnet login (RFC 025 §3.6), e.g. `alice@example.com`.
+   * Null before the tailnet reports one (or after stop), and on a sidecar
+   * older than protocol 5 — absent, never fabricated.
+   */
+  readonly loginName: string | null;
+
   /** Interned Peer handles (`===` stable per peerRef). */
   getPeers(): Promise<Peer[]>;
 
@@ -186,6 +193,18 @@ export interface CreateMeshNodeOptions {
    * durable `deviceId` is learned without application `send` (RFC 022 §8).
    */
   eagerIdentity?: boolean;
+  /**
+   * Restrict the mesh to nodes whose tailnet login matches one of these
+   * globs (RFC 025 §3.1), e.g. `['*@corp.com']`. Absent or empty = the whole
+   * tailnet, which is the behaviour before RFC 025.
+   *
+   * With a list the node is **gated** for its lifetime: only peers whose
+   * login matches are discovered, and a peer whose login cannot be known is
+   * not a peer at all. The grammar is Go's `path.Match`, case-insensitive.
+   * A gated node needs sidecar protocol 5 and `createMeshNode` rejects
+   * against an older one rather than come up silently peerless.
+   */
+  loginAllow?: string[];
   autoAuth?: boolean;
   openUrl?: (url: string) => void;
   onAuthRequired?: (url: string) => void;
@@ -263,6 +282,7 @@ export async function createMeshNode(options: CreateMeshNodeOptions): Promise<Me
     ephemeral,
     wsPort,
     eagerIdentity,
+    loginAllow,
   } = options;
 
   if (!/^[a-z][a-z0-9-]{1,31}$/.test(appId)) {
@@ -293,6 +313,7 @@ export async function createMeshNode(options: CreateMeshNodeOptions): Promise<Me
     ephemeral,
     wsPort,
     eagerIdentity,
+    loginAllow,
   };
 
   try {
@@ -316,6 +337,19 @@ export async function createMeshNode(options: CreateMeshNodeOptions): Promise<Me
     get: (): string | null => {
       try {
         return node.getLocalInfo().dnsName ?? null;
+      } catch {
+        return null;
+      }
+    },
+  });
+
+  // Same shape for the node's own login (RFC 025 §3.6): learned when the
+  // sidecar reports the running status, gone when the node stops.
+  Object.defineProperty(mesh, 'loginName', {
+    configurable: true,
+    get: (): string | null => {
+      try {
+        return node.getLocalInfo().loginName ?? null;
       } catch {
         return null;
       }

@@ -15,6 +15,10 @@ public actor LoopbackNetwork {
         var hostname: String
         var ip: String
         var online: Bool
+        /// The node owner's tailnet login (RFC 025 §3.3). `nil` models a
+        /// backend that cannot report one — the gate's fail-closed row.
+        var loginName: String?
+        var displayName: String?
         /// Hidden nodes can dial and are WhoIs-resolvable but never appear
         /// in snapshots or join announcements — simulates an inbound hello
         /// racing ahead of the netmap (RFC 024 §7.2).
@@ -29,6 +33,9 @@ public actor LoopbackNetwork {
     /// When true, `whoIs` reports no concrete identity (exercises the
     /// fail-closed path).
     private var withholdWhoIs = false
+    /// When true, `whoIs` still reports a concrete node ID but no login —
+    /// the RFC 025 §3.4 row "`nodeId` ok, `loginName` absent".
+    private var withholdWhoIsLogin = false
 
     public init() {}
 
@@ -36,17 +43,28 @@ public actor LoopbackNetwork {
         withholdWhoIs = value
     }
 
+    public func setWithholdWhoIsLogin(_ value: Bool) {
+        withholdWhoIsLogin = value
+    }
+
+    /// Change a registered node's login after `join` (a profile switch).
+    public func setLogin(tailscaleId: String, loginName: String?) {
+        nodes[tailscaleId]?.loginName = loginName
+    }
+
     /// Register a node and return its backend. `hostname` should follow the
     /// `truffle-{appId}-{slug}` scheme for discovery (RFC 024 §7.2).
     /// `hidden` nodes stay out of snapshots/announcements (raced-netmap
     /// simulation) until `reveal(tailscaleId:)`.
     public func join(
-        tailscaleId: String, hostname: String, hidden: Bool = false
+        tailscaleId: String, hostname: String, hidden: Bool = false,
+        loginName: String? = nil, displayName: String? = nil
     ) -> LoopbackBackend {
         let ip = "100.64.0.\(nextIP)"
         nextIP += 1
         let node = Node(
-            tailscaleId: tailscaleId, hostname: hostname, ip: ip, online: true, hidden: hidden)
+            tailscaleId: tailscaleId, hostname: hostname, ip: ip, online: true,
+            loginName: loginName, displayName: displayName, hidden: hidden)
         nodes[tailscaleId] = node
         let backend = LoopbackBackend(network: self, tailscaleId: tailscaleId, ip: ip)
         nodes[tailscaleId]?.backend = backend
@@ -90,7 +108,8 @@ public actor LoopbackNetwork {
             hostname: node.hostname,
             dnsName: "\(node.hostname).loopback.ts.net",
             tailnetIPs: [node.ip],
-            online: node.online)
+            online: node.online,
+            loginName: node.loginName)
     }
 
     func snapshot(for selfId: String) -> BackendStatus {
@@ -105,6 +124,7 @@ public actor LoopbackNetwork {
             dnsName: "\(me.hostname).loopback.ts.net",
             tailnetIPs: [me.ip],
             tailscaleId: me.tailscaleId,
+            loginName: me.loginName,
             peers: peers)
     }
 
@@ -159,7 +179,10 @@ public actor LoopbackNetwork {
         let ip = remoteEndpoint.split(separator: ":").first.map(String.init) ?? ""
         let match = nodes.values.first { $0.ip == ip }
         return AuthenticatedPeer(
-            tailscaleId: match?.tailscaleId ?? "", remoteAddresses: [remoteEndpoint])
+            tailscaleId: match?.tailscaleId ?? "",
+            remoteAddresses: [remoteEndpoint],
+            loginName: withholdWhoIsLogin ? nil : match?.loginName,
+            displayName: withholdWhoIsLogin ? nil : match?.displayName)
     }
 }
 

@@ -4309,9 +4309,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.38"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69f9466fb2c14ea04357e91413efb882e2a6d4a406e625449bc0a5d360d53a21"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "log",
  "once_cell",
@@ -4373,9 +4373,9 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -5895,7 +5895,7 @@ dependencies = [
 
 [[package]]
 name = "truffle"
-version = "0.7.13"
+version = "0.7.14"
 dependencies = [
  "serde_json",
  "truffle-core",
@@ -5923,7 +5923,7 @@ dependencies = [
 
 [[package]]
 name = "truffle-cli"
-version = "0.7.13"
+version = "0.7.14"
 dependencies = [
  "chrono",
  "clap",
@@ -5958,7 +5958,7 @@ dependencies = [
 
 [[package]]
 name = "truffle-core"
-version = "0.7.13"
+version = "0.7.14"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -5993,7 +5993,7 @@ dependencies = [
 
 [[package]]
 name = "truffle-napi"
-version = "0.7.13"
+version = "0.7.14"
 dependencies = [
  "napi",
  "napi-build",
@@ -6007,7 +6007,7 @@ dependencies = [
 
 [[package]]
 name = "truffle-sidecar"
-version = "0.7.13"
+version = "0.7.14"
 dependencies = [
  "serde_json",
  "sha2 0.11.0",

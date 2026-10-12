@@ -524,6 +524,8 @@ async fn handle_status(
             "tailscale_id": info.tailscale_id,
             "ip": ip_str,
             "dns_name": info.dns_name.unwrap_or_default(),
+            // RFC 025 §3.6: this node's own tailnet login; null when unknown.
+            "login_name": info.login_name,
             "status": status,
             "uptime_secs": uptime_secs,
             "peer_count": peers.len(),
@@ -561,6 +563,10 @@ async fn handle_peers(id: u64, node: &Arc<Node<TailscaleProvider>>) -> DaemonRes
                 "connection_type": p.connection_type,
                 "os": p.os,
                 "last_seen": p.last_seen,
+                // RFC 025 §3.6: the peer owner's tailnet login. null when
+                // Layer 3 cannot know it (sidecar below protocol 5, or no
+                // profile for the owner) — absent, never fabricated.
+                "login_name": p.login_name,
             })
         })
         .collect();

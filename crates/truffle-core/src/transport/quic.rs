@@ -1065,6 +1065,7 @@ mod security_regressions {
             ephemeral: Some(true),
             tags: None,
             idle_timeout_secs: None,
+            login_allow: Vec::new(),
         }))
     }
     #[tokio::test]

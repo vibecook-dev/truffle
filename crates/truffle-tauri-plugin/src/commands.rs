@@ -71,6 +71,9 @@ pub async fn start<R: Runtime>(
     if config.ephemeral {
         builder = builder.ephemeral(true);
     }
+    if let Some(ref globs) = config.login_allow {
+        builder = builder.login_allow(globs.clone());
+    }
     if let Some(port) = config.ws_port {
         builder = builder.ws_port(port);
     }

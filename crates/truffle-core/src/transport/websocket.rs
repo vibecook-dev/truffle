@@ -52,10 +52,11 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
-use crate::network::{NetworkProvider, PeerAddr};
+use crate::network::login_allow::login_allowed;
+use crate::network::{NetworkProvider, PeerAddr, TailscalePeerIdentity};
 use crate::session::hello::{
     HelloEnvelope, HelloKind, PeerIdentity, CLOSE_APP_MISMATCH, CLOSE_HELLO_PROTOCOL,
-    CLOSE_IDENTITY_MISMATCH, HELLO_TIMEOUT,
+    CLOSE_IDENTITY_MISMATCH, CLOSE_LOGIN_REFUSED, HELLO_TIMEOUT,
 };
 
 use super::{
@@ -177,7 +178,20 @@ async fn receive_hello(
                     }
                     continue;
                 }
-                Some(Ok(Message::Close(_))) => {
+                Some(Ok(Message::Close(frame))) => {
+                    // An application close code (4000–4999) before the hello
+                    // is the remote REFUSING us (RFC 017 §8 / RFC 025 §4);
+                    // surface the code so the dialer can tell "not my app"
+                    // from "not my login". Anything else is a plain drop.
+                    if let Some(frame) = frame {
+                        let code = u16::from(frame.code);
+                        if (4000..=4999).contains(&code) {
+                            return Err(TransportError::HelloRefused {
+                                code,
+                                reason: frame.reason.to_string(),
+                            });
+                        }
+                    }
                     return Err(TransportError::HelloMalformed(
                         "peer closed connection before hello".to_string(),
                     ));
@@ -264,41 +278,52 @@ fn validate_hello(
     Ok(remote.identity)
 }
 
-/// Subset of the sidecar's WhoIs-derived peer identity JSON
-/// (`peerIdentityData` in sidecar-slim) carried in the bridge header.
-#[derive(Debug, Default, serde::Deserialize)]
-struct AuthenticatedIdentity {
-    #[serde(default, rename = "nodeId")]
-    node_id: String,
-}
-
 /// Verify the hello's self-declared `tailscale_id` against the
 /// Tailscale-authenticated identity (WhoIs) the sidecar attached to the
-/// incoming connection (RFC 017 §8, close code 4003).
+/// incoming connection (RFC 017 §8, close code 4003), and — when this node
+/// admits only listed logins — the caller's authenticated login against
+/// `login_allow` (RFC 025 §3.4, close code 4004).
 ///
-/// `authenticated` is the raw `remote_identity` string from the bridge header.
-/// Missing or malformed WhoIs proof fails closed; a DNS name is not proof
-/// of the stable node ID claimed by a hello.
+/// Missing or malformed WhoIs proof always fails closed. A DNS name or a
+/// hello claim cannot prove a stable node ID. When `login_allow` is set, the
+/// authenticated login must also satisfy that gate. Explicit loopback test
+/// opt-out is handled by the caller and never bypasses a login gate.
 fn verify_authenticated_identity(
     claimed: &PeerIdentity,
     authenticated: &str,
-) -> Result<(), TransportError> {
-    let parsed = serde_json::from_str::<AuthenticatedIdentity>(authenticated).map_err(|_| {
-        TransportError::HandshakeFailed("missing or malformed Tailscale identity proof".into())
-    })?;
-    if parsed.node_id.trim().is_empty() {
-        return Err(TransportError::HandshakeFailed(
-            "Tailscale identity proof has no node ID".into(),
-        ));
-    }
-    if parsed.node_id == claimed.tailscale_id {
-        Ok(())
+    login_allow: &[String],
+) -> Result<Option<TailscalePeerIdentity>, TransportError> {
+    let gated = !login_allow.is_empty();
+
+    let parsed: Option<TailscalePeerIdentity> = if authenticated.trim().is_empty() {
+        None
     } else {
-        Err(TransportError::IdentityMismatch {
+        serde_json::from_str::<TailscalePeerIdentity>(authenticated)
+            .ok()
+            .map(TailscalePeerIdentity::normalized)
+    };
+
+    let Some(node_id) = parsed.as_ref().and_then(|p| p.node_id.clone()) else {
+        return Err(TransportError::IdentityUnavailable);
+    };
+
+    if node_id != claimed.tailscale_id {
+        return Err(TransportError::IdentityMismatch {
             claimed: claimed.tailscale_id.clone(),
-            authenticated: parsed.node_id,
-        })
+            authenticated: node_id,
+        });
     }
+
+    if gated {
+        let login = parsed.as_ref().and_then(|p| p.login_name.as_deref());
+        if !login_allowed(login_allow, login) {
+            return Err(TransportError::LoginRefused {
+                login: login.map(str::to_string),
+            });
+        }
+    }
+
+    Ok(parsed)
 }
 
 /// Serialise and send a [`HelloEnvelope`] as a text frame.
@@ -374,6 +399,7 @@ async fn server_hello_exchange(
     local_hello: &HelloEnvelope,
     authenticated_identity: &str,
     allow_unverified_loopback: bool,
+    login_allow: &[String],
 ) -> Result<PeerIdentity, TransportError> {
     // Step 1: read remote hello (timed).
     let remote = match receive_hello(ws).await {
@@ -410,16 +436,30 @@ async fn server_hello_exchange(
     };
 
     // Step 2.5: verify the claimed tailscale_id against the Tailscale-
-    // authenticated identity BEFORE we reveal our own hello. Doing this
-    // before send_hello means an impersonator never receives our identity
-    // block and the stream is never yielded to the session layer.
-    let verified = if allow_unverified_loopback && authenticated_identity.is_empty() {
-        Ok(())
-    } else {
-        verify_authenticated_identity(&identity, authenticated_identity)
-    };
+    // authenticated identity — and, on a login-gated node, the caller's
+    // login against the allow-list — BEFORE we reveal our own hello. Doing
+    // this before send_hello means an impostor or a stranger never receives
+    // our identity block and the stream is never yielded to the session
+    // layer (RFC 025 §3.4).
+    let verified =
+        if allow_unverified_loopback && authenticated_identity.is_empty() && login_allow.is_empty()
+        {
+            Ok(None)
+        } else {
+            verify_authenticated_identity(&identity, authenticated_identity, login_allow)
+        };
     if let Err(e) = verified {
-        close_ws_with_code(ws, CLOSE_IDENTITY_MISMATCH, "identity mismatch").await;
+        match &e {
+            TransportError::LoginRefused { .. } => {
+                close_ws_with_code(ws, CLOSE_LOGIN_REFUSED, "login refused").await;
+            }
+            TransportError::IdentityUnavailable => {
+                close_ws_with_code(ws, CLOSE_IDENTITY_MISMATCH, "identity unavailable").await;
+            }
+            _ => {
+                close_ws_with_code(ws, CLOSE_IDENTITY_MISMATCH, "identity mismatch").await;
+            }
+        }
         return Err(e);
     }
 
@@ -519,6 +559,14 @@ impl<N: NetworkProvider + 'static> StreamTransport for WebSocketTransport<N> {
         let handshake_permits = Arc::new(tokio::sync::Semaphore::new(
             self.config.max_pending_handshakes,
         ));
+        let login_allow: Arc<[String]> = Arc::from(self.config.login_allow.clone());
+        if !login_allow.is_empty() {
+            tracing::info!(
+                port,
+                globs = login_allow.len(),
+                "ws: listener admits only listed logins (RFC 025)"
+            );
+        }
 
         tokio::spawn(async move {
             loop {
@@ -553,6 +601,7 @@ impl<N: NetworkProvider + 'static> StreamTransport for WebSocketTransport<N> {
                                 .parse::<std::net::SocketAddr>()
                                 .is_ok_and(|addr| addr.ip().is_loopback());
                         let ws_config = ws_config;
+                        let login_allow = login_allow.clone();
 
                         tokio::spawn(async move {
                             // Run the WS upgrade + hello exchange under a single
@@ -573,6 +622,7 @@ impl<N: NetworkProvider + 'static> StreamTransport for WebSocketTransport<N> {
                                     &local_hello,
                                     &authenticated_identity,
                                     allow_unverified_loopback,
+                                    &login_allow,
                                 )
                                 .await?;
                                 Ok::<(WebSocketStream<TcpStream>, PeerIdentity), TransportError>((
@@ -619,6 +669,19 @@ impl<N: NetworkProvider + 'static> StreamTransport for WebSocketTransport<N> {
                                                 claimed = %claimed,
                                                 authenticated = %authenticated,
                                                 "ws: closing incoming connection — hello identity does not match authenticated Tailscale identity"
+                                            );
+                                        }
+                                        TransportError::IdentityUnavailable => {
+                                            tracing::warn!(
+                                                remote_addr = %remote_addr,
+                                                "ws: closing incoming connection — this node admits only listed logins and the bridge attached no authenticated identity"
+                                            );
+                                        }
+                                        TransportError::LoginRefused { login } => {
+                                            tracing::info!(
+                                                remote_addr = %remote_addr,
+                                                login = login.as_deref().unwrap_or("<none>"),
+                                                "ws: closing incoming connection — login is not on this node's allow-list"
                                             );
                                         }
                                         TransportError::HandshakeFailed(msg) => {
@@ -1116,7 +1179,7 @@ mod unit_tests {
         // authenticated WhoIs identity says a different node — reject.
         let identity = valid_identity();
         let authenticated = r#"{"dnsName":"mallory.ts.net","nodeId":"real-node-id"}"#;
-        match verify_authenticated_identity(&identity, authenticated) {
+        match verify_authenticated_identity(&identity, authenticated, &[]) {
             Err(TransportError::IdentityMismatch {
                 claimed,
                 authenticated,
@@ -1133,7 +1196,7 @@ mod unit_tests {
         let identity = valid_identity();
         let authenticated = r#"{"dnsName":"alice.ts.net","nodeId":"n1234567890.ts-node"}"#;
         assert!(
-            verify_authenticated_identity(&identity, authenticated).is_ok(),
+            verify_authenticated_identity(&identity, authenticated, &[]).is_ok(),
             "matching nodeId must be accepted"
         );
     }
@@ -1143,7 +1206,7 @@ mod unit_tests {
         // WhoIs failure is not authenticated identity.
         let identity = valid_identity();
         assert!(
-            verify_authenticated_identity(&identity, "").is_err(),
+            verify_authenticated_identity(&identity, "", &[]).is_err(),
             "missing WhoIs proof must fail closed"
         );
     }
@@ -1153,7 +1216,7 @@ mod unit_tests {
         // Legacy DNS names cannot prove a claimed stable node ID.
         let identity = valid_identity();
         assert!(
-            verify_authenticated_identity(&identity, "peer.tailnet.ts.net").is_err(),
+            verify_authenticated_identity(&identity, "peer.tailnet.ts.net", &[]).is_err(),
             "unverifiable legacy identity must fail closed"
         );
     }
@@ -1164,7 +1227,7 @@ mod unit_tests {
         let identity = valid_identity();
         let authenticated = r#"{"dnsName":"peer.ts.net"}"#;
         assert!(
-            verify_authenticated_identity(&identity, authenticated).is_err(),
+            verify_authenticated_identity(&identity, authenticated, &[]).is_err(),
             "missing nodeId must fail closed"
         );
     }
@@ -1177,7 +1240,7 @@ mod unit_tests {
         let mut identity = valid_identity();
         identity.tailscale_id = String::new();
         let authenticated = r#"{"nodeId":"real-node-id"}"#;
-        match verify_authenticated_identity(&identity, authenticated) {
+        match verify_authenticated_identity(&identity, authenticated, &[]) {
             Err(TransportError::IdentityMismatch {
                 claimed,
                 authenticated,
@@ -1187,5 +1250,100 @@ mod unit_tests {
             }
             other => panic!("expected IdentityMismatch, got {other:?}"),
         }
+    }
+
+    // ── RFC 025 §3.4: the login gate ─────────────────────────────────
+
+    fn gate(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn gated_verify_admits_a_listed_login_case_insensitively() {
+        let identity = valid_identity();
+        let authenticated = r#"{"dnsName":"alice.ts.net","nodeId":"n1234567890.ts-node","loginName":"Alice@Corp.com"}"#;
+        let parsed =
+            verify_authenticated_identity(&identity, authenticated, &gate(&["*@corp.com"]))
+                .expect("a listed login must be admitted")
+                .expect("the parsed identity is returned");
+        assert_eq!(parsed.login_name.as_deref(), Some("Alice@Corp.com"));
+        assert_eq!(parsed.node_id.as_deref(), Some("n1234567890.ts-node"));
+    }
+
+    #[test]
+    fn gated_verify_refuses_an_unlisted_login_with_the_login_it_saw() {
+        let identity = valid_identity();
+        let authenticated = r#"{"nodeId":"n1234567890.ts-node","loginName":"bob@evil.com"}"#;
+        match verify_authenticated_identity(&identity, authenticated, &gate(&["*@corp.com"])) {
+            Err(TransportError::LoginRefused { login }) => {
+                assert_eq!(login.as_deref(), Some("bob@evil.com"));
+            }
+            other => panic!("expected LoginRefused, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gated_verify_refuses_a_missing_login() {
+        // A tagged node or a sidecar that omits the field: nodeId present,
+        // no loginName. Under a gate that is a refusal, not a pass.
+        let identity = valid_identity();
+        let authenticated = r#"{"dnsName":"tagged.ts.net","nodeId":"n1234567890.ts-node"}"#;
+        match verify_authenticated_identity(&identity, authenticated, &gate(&["*@corp.com"])) {
+            Err(TransportError::LoginRefused { login }) => assert!(login.is_none()),
+            other => panic!("expected LoginRefused, got {other:?}"),
+        }
+        // An empty string is normalised to absent, not matched as "".
+        let authenticated = r#"{"nodeId":"n1234567890.ts-node","loginName":""}"#;
+        assert!(matches!(
+            verify_authenticated_identity(&identity, authenticated, &gate(&["*@corp.com"])),
+            Err(TransportError::LoginRefused { login: None })
+        ));
+    }
+
+    #[test]
+    fn gated_verify_never_falls_open() {
+        // Every row that falls open UNGATED refuses GATED: empty header,
+        // legacy plain DNS name, JSON without a nodeId.
+        let identity = valid_identity();
+        for authenticated in [
+            "",
+            "   ",
+            "peer.tailnet.ts.net",
+            r#"{"dnsName":"peer.ts.net"}"#,
+        ] {
+            assert!(
+                matches!(
+                    verify_authenticated_identity(&identity, authenticated, &gate(&["*@corp.com"])),
+                    Err(TransportError::IdentityUnavailable)
+                ),
+                "{authenticated:?} must be IdentityUnavailable under a gate"
+            );
+        }
+    }
+
+    #[test]
+    fn gated_verify_checks_the_node_id_before_the_login() {
+        // A listed login on a connection whose nodeId contradicts the claim
+        // is an impersonation first: 4003, not 4004.
+        let identity = valid_identity();
+        let authenticated = r#"{"nodeId":"real-node-id","loginName":"alice@corp.com"}"#;
+        assert!(matches!(
+            verify_authenticated_identity(&identity, authenticated, &gate(&["alice@corp.com"])),
+            Err(TransportError::IdentityMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn ungated_verify_returns_the_parsed_identity_and_ignores_the_login() {
+        let identity = valid_identity();
+        let authenticated =
+            r#"{"nodeId":"n1234567890.ts-node","loginName":"anyone@anywhere.example"}"#;
+        let parsed = verify_authenticated_identity(&identity, authenticated, &[])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            parsed.login_name.as_deref(),
+            Some("anyone@anywhere.example")
+        );
     }
 }

@@ -121,8 +121,15 @@ pnpm run test
 cargo fmt --all -- --check
 TRUFFLE_SIDECAR_SKIP_DOWNLOAD=1 cargo clippy --locked --workspace --all-targets \
   --exclude truffle-tauri-plugin --exclude truffle-napi -- -D warnings
-cargo test --locked --workspace
+TRUFFLE_SIDECAR_SKIP_DOWNLOAD=1 cargo test --locked --workspace
 ```
+
+The `TRUFFLE_SIDECAR_SKIP_DOWNLOAD=1` on the last two lines is not optional on a
+release branch: `truffle-sidecar`'s build script refuses to download a binary
+whose checksum is not pinned, and the checksum for the version under release
+cannot exist before its tag — so without the escape hatch `cargo test` panics at
+the build script ("SECURITY: no pinned checksum for <version>"), which is the
+fail-closed contract working, not a defect. CI sets the same variable.
 
 The real-tailnet workflow and the Linux ignored transport suite must also be
 green. See [TESTING.md](TESTING.md) for credentials and local commands.

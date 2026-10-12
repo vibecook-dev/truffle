@@ -16,6 +16,9 @@ import Truffle
 public final class MeshModel {
     public private(set) var phase: MeshPhase = .stopped
     public private(set) var peers: [Peer] = []
+    /// The tailnet login this node is signed in as (RFC 025 §3.6, D7), as of
+    /// the last Layer 3 status. `nil` until known — never fabricated.
+    public private(set) var loginName: String?
     public private(set) var authURL: URL?
     public private(set) var lastError: String?
 
@@ -83,10 +86,12 @@ public final class MeshModel {
                 authURL = nil
             }
             peers = await node.peers()
+            loginName = await node.loginName
         case .authRequired(let url):
             authURL = url
         case .peerUpsert, .peerLeft:
             peers = await node.peers()
+            loginName = await node.loginName
         case .message:
             break  // chat-level concerns live in the host app
         case .health(let message):

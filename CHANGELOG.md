@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.7.14](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.13...truffle-v0.7.14) (2026-09-16)
+
+
+### Features
+
+* **apple:** the login gate — the tailnet login as the mesh boundary ([3c561cf](https://github.com/vibecook-dev/truffle/commit/3c561cfd4b3f1b5e30c42ab2622b77cfd8278bd9))
+* **apple:** the tailnet login on every public identity surface ([668e4f8](https://github.com/vibecook-dev/truffle/commit/668e4f8f7b33150833b5b70cd80d83634d68c1f0))
+* **cli:** the peer list and status show the tailnet login ([37bb71b](https://github.com/vibecook-dev/truffle/commit/37bb71b80c1b85895e3f67d9c9d4c23c436d41aa))
+* **core,napi,tauri:** the gate gets a door and the login gets a public surface ([9b3ffaf](https://github.com/vibecook-dev/truffle/commit/9b3ffaf6e65d80db798324d0bd45ad8f986ca0cd))
+* **core:** Layer 3 filters by login, and a gated node refuses a sidecar that cannot report one ([d45984a](https://github.com/vibecook-dev/truffle/commit/d45984aabc9eae04a105f1f1177471083cfb2ace))
+* **core:** RFC 025 — the login becomes a peer fact, and a node can declare which logins may join ([e729922](https://github.com/vibecook-dev/truffle/commit/e729922c9cec19f11cbe7fe557cbbd2d1296a344))
+* **core:** RFC 025 — the login gate at the hello, and a store slice bound to its sender ([feb685d](https://github.com/vibecook-dev/truffle/commit/feb685db38b5a9cef43b47e88e37366ae267d8f8))
+* **sidecar:** the login rides every peer row and the node's own status — protocol 5 ([eec5799](https://github.com/vibecook-dev/truffle/commit/eec5799defed8d12de0bcd33a84bf9b8310b4c64))
+
+
+### Bug Fixes
+
+* **apple:** a login the gate refuses is a departure, not an update ([8e41d2e](https://github.com/vibecook-dev/truffle/commit/8e41d2e0306a1ccee9526ee759dba64763f22fd7))
+* **apple:** a peer we cannot attribute reports no login, and is not dialed ([27ac01f](https://github.com/vibecook-dev/truffle/commit/27ac01f9900b57fb576da1c65803c6ccd3d7e910))
+* **apple:** preserve peer identity and recover Tailscale watches ([9d77cf9](https://github.com/vibecook-dev/truffle/commit/9d77cf97d026518099d05691b91e968ce327034b))
+* **core:** a gated node will not dial a peer whose owner it cannot state (M2) ([5894d62](https://github.com/vibecook-dev/truffle/commit/5894d62629900c571b1fb6a2d898410eb8c57624))
+* **core:** a hello-only peer's store slices bind to their sender again (M1) ([e8b65a8](https://github.com/vibecook-dev/truffle/commit/e8b65a83661d3748dd17a4fbdb5f8d7484365930))
+* **core:** a peer whose login turns foreign is EVICTED, not silently kept ([404f4b1](https://github.com/vibecook-dev/truffle/commit/404f4b1a2b56c7554326dad47124c21550b382e4))
+* **core:** one login_allow builder method after the Layer 3 merge ([b81a662](https://github.com/vibecook-dev/truffle/commit/b81a6628356ac43900cf0793e02ac0897cd954fd))
+* **deps:** rustls 0.23.45 — RUSTSEC-2026-0285 (TLS 1.3 handshake messages across encryption levels) ([ff1bbd6](https://github.com/vibecook-dev/truffle/commit/ff1bbd617e1f2da45073dcc82d1390cd74db40a2))
+
 ## [0.7.13](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.12...truffle-v0.7.13) (2026-09-06)
 
 

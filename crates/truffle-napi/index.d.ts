@@ -763,6 +763,15 @@ export interface NapiNodeConfig {
    * durable deviceId is learned without app send. Defaults to true.
    */
   eagerIdentity?: boolean
+  /**
+   * RFC 025 §3.1: `loginName` globs of the tailnet users whose nodes may
+   * be peers, e.g. `["*@corp.com"]`. Empty or absent = the whole tailnet
+   * (the behaviour before RFC 025). Non-empty and the node is gated: only
+   * peers whose login matches are discovered, a peer whose login cannot be
+   * known is not a peer at all, and starting against a sidecar older than
+   * protocol 5 fails loudly instead of running peerless.
+   */
+  loginAllow?: Array<string>
 }
 
 /** Identity of the local node (RFC 017 §7.2). */
@@ -791,6 +800,12 @@ export interface NapiNodeIdentity {
   dnsName?: string
   /** Tailscale IP address as a string, if available. */
   ip?: string
+  /**
+   * This node's own tailnet login (RFC 025 §3.6), e.g.
+   * `"alice@example.com"`. `null` until the sidecar reports it, and on a
+   * sidecar older than protocol 5 — absent, never fabricated.
+   */
+  loginName?: string
 }
 
 /** A peer as seen by application code (RFC 022 honest projection). */
@@ -827,6 +842,12 @@ export interface NapiPeer {
   peerRef: string
   /** Registry entry generation (bumped on re-join). */
   generation: number
+  /**
+   * The peer owner's tailnet login (RFC 025 §3.6). From Layer 3, never
+   * self-declared. `null` when it cannot be known; a tagged node reports
+   * Tailscale's `tagged-devices` pseudo-login.
+   */
+  loginName?: string
 }
 
 /** A peer change event delivered to JS. */

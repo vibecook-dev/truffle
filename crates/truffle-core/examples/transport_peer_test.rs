@@ -111,6 +111,7 @@ async fn create_provider(role: &str) -> TailscaleProvider {
         ephemeral: None,
         tags: None,
         idle_timeout_secs: None,
+        login_allow: Vec::new(),
     };
 
     let mut provider = TailscaleProvider::new(config);

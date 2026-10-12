@@ -56,18 +56,21 @@ struct PongDroppingTransport: FrameTransport {
         deviceName: String,
         advertisedHostname: String? = nil,
         hidden: Bool = false,
-        identityPolicy: Handshake.IdentityPolicy = .failClosed
+        identityPolicy: Handshake.IdentityPolicy = .failClosed,
+        loginName: String? = nil,
+        loginAllow: [String] = []
     ) async throws -> (MeshNode, URL) {
         let derived = Hostname.tailscaleHostname(
             appId: try AppId(parsing: appId), deviceName: DeviceName(deviceName))
         let hostname = advertisedHostname ?? derived
         let backend = await network.join(
-            tailscaleId: tailscaleId, hostname: hostname, hidden: hidden)
+            tailscaleId: tailscaleId, hostname: hostname, hidden: hidden,
+            loginName: loginName)
         let dir = tempDir()
         let node = try await MeshNode.start(
             MeshConfiguration(
                 appId: appId, deviceName: deviceName, stateDirectory: dir,
-                auth: .existingState),
+                auth: .existingState, loginAllow: loginAllow),
             backend: backend,
             frameTransport: LengthPrefixFrameTransport(),
             identityPolicy: identityPolicy)
@@ -561,5 +564,593 @@ struct PongDroppingTransport: FrameTransport {
         #expect(await alice.dnsName != nil)
 
         await alice.stop()
+    }
+}
+
+// MARK: - The login gate, end to end (RFC 025 §3.3/§3.4, D1–D5)
+
+/// A gated pair over the loopback tailnet: the Layer 3 filter, the hello
+/// refusal, and the fail-closed row where Layer 3 reports no login at all.
+@Suite struct NodeLoginGateTests {
+    struct ChatPayload: Codable, Equatable {
+        var text: String
+    }
+
+    private func tempDir() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("truffle-gate-test-\(UUID().uuidString)")
+    }
+
+    private func startNode(
+        network: LoopbackNetwork,
+        tailscaleId: String,
+        deviceName: String,
+        loginName: String? = nil,
+        displayName: String? = nil,
+        loginAllow: [String] = []
+    ) async throws -> (MeshNode, URL) {
+        let hostname = Hostname.tailscaleHostname(
+            appId: try AppId(parsing: "demo"), deviceName: DeviceName(deviceName))
+        let backend = await network.join(
+            tailscaleId: tailscaleId, hostname: hostname, loginName: loginName,
+            displayName: displayName)
+        let dir = tempDir()
+        let node = try await MeshNode.start(
+            MeshConfiguration(
+                appId: "demo", deviceName: deviceName, stateDirectory: dir,
+                auth: .existingState, loginAllow: loginAllow),
+            backend: backend,
+            frameTransport: LengthPrefixFrameTransport(),
+            identityPolicy: .failClosed)
+        return (node, dir)
+    }
+
+    /// Await one value with a deadline, so a missing event fails the test
+    /// instead of hanging it.
+    private func firstOrNil<T: Sendable>(
+        timeout: Duration, _ produce: @escaping @Sendable () async -> T?
+    ) async -> T? {
+        await withTaskGroup(of: T?.self) { group in
+            group.addTask { await produce() }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
+    /// (a) A matching glob: the pair converges and messages flow, exactly as
+    /// an ungated pair does.
+    @Test func gatedPairWithMatchingLoginConverges() async throws {
+        let network = LoopbackNetwork()
+        let (alice, dirA) = try await startNode(
+            network: network, tailscaleId: "ts-a", deviceName: "Alice",
+            loginName: "alice@corp.com", loginAllow: ["*@corp.com"])
+        let (bob, dirB) = try await startNode(
+            network: network, tailscaleId: "ts-b", deviceName: "Bob",
+            loginName: "bob@CORP.com", loginAllow: ["*@corp.com"])
+        defer {
+            try? FileManager.default.removeItem(at: dirA)
+            try? FileManager.default.removeItem(at: dirB)
+        }
+
+        let inbox = Mailbox<MeshMessage>()
+        let subscription = await bob.onMessage(namespace: "chat") { message in
+            await inbox.put(message)
+        }
+
+        guard let bobPeer = try await alice.peer("ts-b", waitMs: 2_000) else {
+            Issue.record("gated alice never listed bob under a matching glob")
+            return
+        }
+        // The login is a first-class field on the snapshot (D7), carried
+        // through Layer 3 in the case the netmap reported it.
+        #expect(bobPeer.loginName == "bob@CORP.com")
+        #expect(await alice.loginName == "alice@corp.com")
+        #expect(await alice.localPeer.loginName == "alice@corp.com")
+        #expect(await alice.loginAllow == ["*@corp.com"])
+
+        try await alice.sendJSON(
+            to: bobPeer, namespace: "chat", payload: ChatPayload(text: "hi bob"))
+        guard let received = await inbox.take() else {
+            Issue.record("bob received nothing")
+            return
+        }
+        #expect(try received.decodePayload(ChatPayload.self) == ChatPayload(text: "hi bob"))
+        #expect(received.from.tailscaleId == "ts-a")
+
+        await subscription.cancel()
+        await alice.stop()
+        await bob.stop()
+    }
+
+    /// (b) A foreign glob: the peer is never listed, AND the hello that peer
+    /// dials with is refused — the two halves of the gate, separately.
+    @Test func foreignLoginIsNeitherListedNorAdmitted() async throws {
+        let network = LoopbackNetwork()
+        let (alice, dirA) = try await startNode(
+            network: network, tailscaleId: "ts-a", deviceName: "Alice",
+            loginName: "alice@corp.com", loginAllow: ["*@corp.com"])
+        // Bob is ungated and on a different login: he still discovers and
+        // dials Alice, which is exactly what the hello gate must stop.
+        let (bob, dirB) = try await startNode(
+            network: network, tailscaleId: "ts-b", deviceName: "Bob",
+            loginName: "mallory@evil.com")
+        defer {
+            try? FileManager.default.removeItem(at: dirA)
+            try? FileManager.default.removeItem(at: dirB)
+        }
+
+        try await alice.waitUntilRunning(timeout: .seconds(2))
+        try await bob.waitUntilRunning(timeout: .seconds(2))
+
+        // Layer 3: Alice never lists Bob, though the hostname prefix matches.
+        #expect(try await alice.peer("ts-b", waitMs: 500) == nil)
+        #expect(await alice.peers().isEmpty)
+
+        // Layer 4/5: Bob DOES list Alice and dials her; the hello is refused.
+        guard let alicePeer = try await bob.peer("ts-a", waitMs: 2_000) else {
+            Issue.record("ungated bob should still discover alice")
+            return
+        }
+        await #expect(throws: MeshError.self) {
+            try await bob.sendJSON(
+                to: alicePeer, namespace: "chat", payload: ChatPayload(text: "let me in"))
+        }
+        // The refusal left no provisional entry behind on the gated node.
+        #expect(try await alice.peer("ts-b") == nil)
+        #expect(await alice.peers().isEmpty)
+
+        await alice.stop()
+        await bob.stop()
+    }
+
+    /// (c) Fail closed: on a gated node a Layer 3 row with NO login is not a
+    /// peer — and the node says so rather than showing an empty mesh.
+    @Test func gatedNodeTreatsLoginlessRowAsNotAPeer() async throws {
+        let network = LoopbackNetwork()
+        let (alice, dirA) = try await startNode(
+            network: network, tailscaleId: "ts-a", deviceName: "Alice",
+            loginName: "alice@corp.com", loginAllow: ["*@corp.com"])
+        defer { try? FileManager.default.removeItem(at: dirA) }
+
+        let notices = Mailbox<String>()
+        let stream = await alice.events
+        let drain = Task {
+            for await event in stream {
+                if case .health(let message) = event {
+                    _ = await notices.put(message)
+                }
+            }
+        }
+        defer { drain.cancel() }
+
+        // A well-named app peer whose netmap row carries no login at all.
+        _ = await network.join(
+            tailscaleId: "ts-nologin",
+            hostname: Hostname.tailscaleHostname(
+                appId: try AppId(parsing: "demo"), deviceName: DeviceName("Ghost")),
+            loginName: nil)
+        try await alice.refresh()
+
+        #expect(try await alice.peer("ts-nologin") == nil)
+        #expect(await alice.peers().isEmpty)
+
+        let notice = await firstOrNil(timeout: .seconds(2)) { await notices.take() }
+        #expect(notice?.contains("login gate active") == true)
+
+        // The same row WITH a matching login is admitted — proving the row
+        // was dropped for its login and not for its hostname.
+        await network.setLogin(tailscaleId: "ts-nologin", loginName: "ghost@corp.com")
+        try await alice.refresh()
+        let admitted = try await alice.peer("ts-nologin", waitMs: 1_000)
+        #expect(admitted?.loginName == "ghost@corp.com")
+
+        await alice.stop()
+    }
+
+    /// HIGH-1 (found on review): the gate must run on every row, not only at
+    /// entry creation. A stable node ID survives a device transfer, so a
+    /// re-signed node arrives as an UPDATE to the existing row — and before
+    /// this fix an admitted peer kept its place after re-signing as a foreign
+    /// login, sessions and all.
+    @Test func aPeerThatResignsAsAForeignLoginIsEvicted() async throws {
+        let network = LoopbackNetwork()
+        let (alice, dirA) = try await startNode(
+            network: network, tailscaleId: "ts-a", deviceName: "Alice",
+            loginName: "alice@corp.com", loginAllow: ["*@corp.com"])
+        let (bob, dirB) = try await startNode(
+            network: network, tailscaleId: "ts-b", deviceName: "Bob",
+            loginName: "bob@corp.com")
+        defer {
+            try? FileManager.default.removeItem(at: dirA)
+            try? FileManager.default.removeItem(at: dirB)
+        }
+
+        let departures = Mailbox<String>()
+        let stream = await alice.events
+        let drain = Task {
+            for await event in stream {
+                if case .peerLeft(let peer) = event { _ = await departures.put(peer.tailscaleId) }
+            }
+        }
+        defer { drain.cancel() }
+
+        // Admitted, and a real session established.
+        guard let bobPeer = try await alice.peer("ts-b", waitMs: 2_000) else {
+            Issue.record("alice never admitted bob")
+            return
+        }
+        try await alice.sendJSON(
+            to: bobPeer, namespace: "chat", payload: ChatPayload(text: "hi"))
+        let admittedGeneration = bobPeer.generation
+
+        // The device is transferred: same stable node ID, foreign login.
+        await network.setLogin(tailscaleId: "ts-b", loginName: "mallory@evil.com")
+        try await alice.refresh()
+
+        // A refused login is a DEPARTURE: the row goes, and removeEntry —
+        // which is what emits this event — is also what closes the session.
+        let departed = await firstOrNil(timeout: .seconds(2)) { await departures.take() }
+        #expect(departed == "ts-b")
+        #expect(try await alice.peer("ts-b") == nil)
+        #expect(await alice.peers().isEmpty)
+        // The snapshot taken while he was admitted no longer resolves.
+        await #expect(throws: MeshError.peerGone(bobPeer.ref.description)) {
+            try await alice.sendJSON(
+                to: bobPeer, namespace: "chat", payload: ChatPayload(text: "still there?"))
+        }
+
+        // And the reverse: re-signing back onto the allow-list readmits him,
+        // as a NEW generation — a rejoin is never the same row.
+        await network.setLogin(tailscaleId: "ts-b", loginName: "bob@corp.com")
+        try await alice.refresh()
+        guard let readmitted = try await alice.peer("ts-b", waitMs: 1_000) else {
+            Issue.record("alice never readmitted bob")
+            return
+        }
+        #expect(readmitted.loginName == "bob@corp.com")
+        #expect(readmitted.generation != admittedGeneration)
+
+        await alice.stop()
+        await bob.stop()
+    }
+
+    /// A row that names no owner is KEPT but reports no login (RFC 025 §3.3 as
+    /// refined). Two halves, and both matter: the entry survives, so a
+    /// transient failure to read the logins cannot empty a gated mesh; and the
+    /// last-known login does NOT stick, because the row names no owner and so
+    /// neither may we. A later resolvable row restores it, in the same
+    /// generation — this is not a departure.
+    @Test func anAbsentLoginIsKeptAsAPeerButReportedAbsent() async throws {
+        let network = LoopbackNetwork()
+        let (alice, dirA) = try await startNode(
+            network: network, tailscaleId: "ts-a", deviceName: "Alice",
+            loginName: "alice@corp.com", loginAllow: ["*@corp.com"])
+        let (bob, dirB) = try await startNode(
+            network: network, tailscaleId: "ts-b", deviceName: "Bob",
+            loginName: "bob@corp.com")
+        defer {
+            try? FileManager.default.removeItem(at: dirA)
+            try? FileManager.default.removeItem(at: dirB)
+        }
+
+        guard let bobPeer = try await alice.peer("ts-b", waitMs: 2_000) else {
+            Issue.record("alice never admitted bob")
+            return
+        }
+        #expect(bobPeer.loginName == "bob@corp.com")
+
+        await network.setLogin(tailscaleId: "ts-b", loginName: nil)
+        try await alice.refresh()
+
+        let kept = try await alice.peer("ts-b")
+        #expect(kept != nil)
+        #expect(kept?.generation == bobPeer.generation)
+        #expect(kept?.loginName == nil)
+
+        // Restored, same generation: a login that comes back is not a rejoin.
+        await network.setLogin(tailscaleId: "ts-b", loginName: "bob@corp.com")
+        try await alice.refresh()
+        let restored = try await alice.peer("ts-b")
+        #expect(restored?.loginName == "bob@corp.com")
+        #expect(restored?.generation == bobPeer.generation)
+
+        await alice.stop()
+        await bob.stop()
+    }
+
+    /// The dial-side half: a gated node opens no NEW session to a peer whose
+    /// row cannot name its owner, but never tears down one that is already
+    /// open. Both halves are asserted here because a fix that closed the live
+    /// session would also make the first assertion pass.
+    @Test func aGatedNodeWillNotOpenASessionToAnUnattributablePeer() async throws {
+        let network = LoopbackNetwork()
+        let (alice, dirA) = try await startNode(
+            network: network, tailscaleId: "ts-a", deviceName: "Alice",
+            loginName: "alice@corp.com", loginAllow: ["*@corp.com"])
+        let (bob, dirB) = try await startNode(
+            network: network, tailscaleId: "ts-b", deviceName: "Bob",
+            loginName: "bob@corp.com", loginAllow: ["*@corp.com"])
+        let (carol, dirC) = try await startNode(
+            network: network, tailscaleId: "ts-c", deviceName: "Carol",
+            loginName: "carol@corp.com", loginAllow: ["*@corp.com"])
+        defer {
+            try? FileManager.default.removeItem(at: dirA)
+            try? FileManager.default.removeItem(at: dirB)
+            try? FileManager.default.removeItem(at: dirC)
+        }
+
+        let bobInbox = Mailbox<MeshMessage>()
+        let subBob = await bob.onMessage(namespace: "chat") { await bobInbox.put($0) }
+
+        // Bob: a session is OPEN before his login goes absent.
+        guard let bobPeer = try await alice.peer("ts-b", waitMs: 2_000) else {
+            Issue.record("alice never admitted bob")
+            return
+        }
+        try await alice.sendJSON(
+            to: bobPeer, namespace: "chat", payload: ChatPayload(text: "before"))
+        #expect(await bobInbox.take() != nil)
+
+        // Carol: admitted, but NO session opened yet.
+        guard try await alice.peer("ts-c", waitMs: 2_000) != nil else {
+            Issue.record("alice never admitted carol")
+            return
+        }
+
+        await network.setLogin(tailscaleId: "ts-b", loginName: nil)
+        await network.setLogin(tailscaleId: "ts-c", loginName: nil)
+        try await alice.refresh()
+
+        // The live session stands — no flap.
+        guard let bobNow = try await alice.peer("ts-b") else {
+            Issue.record("bob should still be listed")
+            return
+        }
+        try await alice.sendJSON(
+            to: bobNow, namespace: "chat", payload: ChatPayload(text: "after"))
+        #expect(await bobInbox.take() != nil)
+
+        // Carol has no session to stand on, so opening one is refused.
+        guard let carolNow = try await alice.peer("ts-c") else {
+            Issue.record("carol should still be listed")
+            return
+        }
+        #expect(carolNow.loginName == nil)
+        await #expect(throws: MeshError.loginUnknown(peer: carolNow.ref.description)) {
+            try await alice.sendJSON(
+                to: carolNow, namespace: "chat", payload: ChatPayload(text: "who are you?"))
+        }
+        // The raw plane's outbound dial is this node's act too.
+        await #expect(throws: MeshError.loginUnknown(peer: carolNow.ref.description)) {
+            _ = try await alice.dial(to: carolNow, port: 9500)
+        }
+        await #expect(throws: MeshError.loginUnknown(peer: carolNow.ref.description)) {
+            _ = try await alice.confirmIdentity(of: carolNow)
+        }
+
+        // A login that comes back makes her dialable again.
+        await network.setLogin(tailscaleId: "ts-c", loginName: "carol@corp.com")
+        try await alice.refresh()
+        guard let carolBack = try await alice.peer("ts-c") else {
+            Issue.record("carol should still be listed")
+            return
+        }
+        let confirmed = try await alice.confirmIdentity(of: carolBack)
+        #expect(confirmed.deviceId != nil)
+
+        await subBob.cancel()
+        await alice.stop()
+        await bob.stop()
+        await carol.stop()
+    }
+
+    /// An UNGATED node ignores the field: an absent login never blocks a dial.
+    @Test func anUngatedNodeDialsAPeerWithNoLogin() async throws {
+        let network = LoopbackNetwork()
+        let (alice, dirA) = try await startNode(
+            network: network, tailscaleId: "ts-a", deviceName: "Alice")
+        let (bob, dirB) = try await startNode(
+            network: network, tailscaleId: "ts-b", deviceName: "Bob")
+        defer {
+            try? FileManager.default.removeItem(at: dirA)
+            try? FileManager.default.removeItem(at: dirB)
+        }
+
+        guard let bobPeer = try await alice.peer("ts-b", waitMs: 2_000) else {
+            Issue.record("alice never discovered bob")
+            return
+        }
+        #expect(bobPeer.loginName == nil)
+        let confirmed = try await alice.confirmIdentity(of: bobPeer)
+        #expect(confirmed.deviceId != nil)
+
+        await alice.stop()
+        await bob.stop()
+    }
+
+    /// MEDIUM-2: the dialer must be able to tell a gate from a broken pipe.
+    /// The refusal reaches the dialing side as the close code the gate sent.
+    @Test func aRefusedDialerSeesTheCloseCodeNotAProtocolViolation() async throws {
+        let network = LoopbackNetwork()
+        let (alice, dirA) = try await startNode(
+            network: network, tailscaleId: "ts-a", deviceName: "Alice",
+            loginName: "alice@corp.com", loginAllow: ["*@corp.com"])
+        let (bob, dirB) = try await startNode(
+            network: network, tailscaleId: "ts-b", deviceName: "Bob",
+            loginName: "mallory@evil.com")
+        defer {
+            try? FileManager.default.removeItem(at: dirA)
+            try? FileManager.default.removeItem(at: dirB)
+        }
+
+        guard let alicePeer = try await bob.peer("ts-a", waitMs: 2_000) else {
+            Issue.record("ungated bob should still discover alice")
+            return
+        }
+        await #expect(
+            throws: MeshError.helloRefused(
+                code: SessionCloseCode.loginRefused, reason: "login refused")
+        ) {
+            try await bob.sendJSON(
+                to: alicePeer, namespace: "chat", payload: ChatPayload(text: "let me in"))
+        }
+
+        await alice.stop()
+        await bob.stop()
+    }
+
+    /// MEDIUM-1: the raw plane has an identity surface. `listen(port:)` is NOT
+    /// gated by loginAllow, so an app that opens its own port gates itself
+    /// with this — the login it returns is the one WhoIs authenticated.
+    @Test func whoIsResolvesAnAcceptedAddressOnTheRawPlane() async throws {
+        let network = LoopbackNetwork()
+        let (alice, dirA) = try await startNode(
+            network: network, tailscaleId: "ts-a", deviceName: "Alice",
+            loginName: "alice@corp.com", loginAllow: ["*@corp.com"])
+        let (bob, dirB) = try await startNode(
+            network: network, tailscaleId: "ts-b", deviceName: "Bob",
+            loginName: "bob@corp.com", displayName: "Bob Example")
+        defer {
+            try? FileManager.default.removeItem(at: dirA)
+            try? FileManager.default.removeItem(at: dirB)
+        }
+
+        guard let bobPeer = try await alice.peer("ts-b", waitMs: 2_000),
+            let bobIP = bobPeer.tailnetIPs.first
+        else {
+            Issue.record("alice never discovered bob's address")
+            return
+        }
+        let identity = try await alice.whoIs(remoteEndpoint: "\(bobIP):40001")
+        #expect(identity.tailscaleId == "ts-b")
+        #expect(identity.loginName == "bob@corp.com")
+        #expect(identity.displayName == "Bob Example")
+        // The grammar an app would gate with is the same one the node uses.
+        #expect(LoginGlob.allowed(["*@corp.com"], login: identity.loginName))
+        #expect(!LoginGlob.allowed(["*@other.com"], login: identity.loginName))
+
+        await alice.stop()
+        await bob.stop()
+    }
+
+    /// LOW: a provisional entry from a raced inbound hello carries the login
+    /// that PASSED the gate, rather than waiting for the netmap to say. Bob is
+    /// hidden — WhoIs-resolvable and able to dial, but absent from snapshots.
+    @Test func aProvisionalEntryCarriesTheLoginThatPassedTheGate() async throws {
+        let network = LoopbackNetwork()
+        let (alice, dirA) = try await startNode(
+            network: network, tailscaleId: "ts-a", deviceName: "Alice",
+            loginName: "alice@corp.com", loginAllow: ["*@corp.com"])
+        let bobHostname = Hostname.tailscaleHostname(
+            appId: try AppId(parsing: "demo"), deviceName: DeviceName("Bob"))
+        let bobBackend = await network.join(
+            tailscaleId: "ts-b", hostname: bobHostname, hidden: true,
+            loginName: "bob@corp.com")
+        let dirB = tempDir()
+        let bob = try await MeshNode.start(
+            MeshConfiguration(
+                appId: "demo", deviceName: "Bob", stateDirectory: dirB, auth: .existingState),
+            backend: bobBackend,
+            frameTransport: LengthPrefixFrameTransport(),
+            identityPolicy: .failClosed)
+        defer {
+            try? FileManager.default.removeItem(at: dirA)
+            try? FileManager.default.removeItem(at: dirB)
+        }
+
+        guard let alicePeer = try await bob.peer("ts-a", waitMs: 2_000) else {
+            Issue.record("bob never discovered alice")
+            return
+        }
+        try await bob.sendJSON(
+            to: alicePeer, namespace: "chat", payload: ChatPayload(text: "hello"))
+
+        // Alice knows him only from the hello — no netmap row exists yet.
+        guard let provisional = try await alice.peer("ts-b", waitMs: 2_000) else {
+            Issue.record("alice never created a provisional entry for bob")
+            return
+        }
+        #expect(provisional.hostname.isEmpty)
+        #expect(provisional.deviceId != nil)
+        #expect(provisional.loginName == "bob@corp.com")
+
+        await alice.stop()
+        await bob.stop()
+    }
+
+    /// The witness the overlay-level row cannot be: a REAL `MeshNode` over a
+    /// real `LoopbackNetwork`, applying its own predicate to every row shape
+    /// the status overlay can produce — plus the `isAppPeer` half, which an
+    /// inline re-statement of the login check silently drops.
+    ///
+    /// The overlay renders BOTH "a `UserID` with no profile" and "a row with
+    /// no `UserID`" as an absent login, so those two arrive at the node
+    /// identically; they are kept as separate rows here because they are
+    /// separate nodes on the tailnet, not because the node can tell them
+    /// apart.
+    @Test func aGatedNodeAdmitsOnlyTheRowThatPassesBothHalves() async throws {
+        let network = LoopbackNetwork()
+        let (alice, dirA) = try await startNode(
+            network: network, tailscaleId: "ts-a", deviceName: "Alice",
+            loginName: "alice@corp.com", loginAllow: ["*@corp.com"])
+        defer { try? FileManager.default.removeItem(at: dirA) }
+
+        func appHostname(_ name: String) throws -> String {
+            Hostname.tailscaleHostname(
+                appId: try AppId(parsing: "demo"), deviceName: DeviceName(name))
+        }
+
+        // A UserID the status's User{} does not describe.
+        _ = await network.join(
+            tailscaleId: "ts-orphan", hostname: try appHostname("Orphan"), loginName: nil)
+        // A row carrying no UserID at all.
+        _ = await network.join(
+            tailscaleId: "ts-nouser", hostname: try appHostname("NoUser"), loginName: nil)
+        // A resolvable owner, on the wrong domain.
+        _ = await network.join(
+            tailscaleId: "ts-mallory", hostname: try appHostname("Mallory"),
+            loginName: "mallory@evil.com")
+        // An allowed login that is NOT an app peer — the half a login-only
+        // predicate would admit.
+        _ = await network.join(
+            tailscaleId: "ts-stranger", hostname: "workstation-corp",
+            loginName: "bob@corp.com")
+        // Both halves.
+        _ = await network.join(
+            tailscaleId: "ts-bob", hostname: try appHostname("Bob"), loginName: "bob@corp.com")
+
+        try await alice.refresh()
+        let admitted = await alice.peers().map(\.tailscaleId).sorted()
+        #expect(admitted == ["ts-bob"])
+        #expect(try await alice.peer("ts-bob")?.loginName == "bob@corp.com")
+
+        await alice.stop()
+    }
+
+    /// An ungated node is unchanged: a login-less row is still a peer.
+    @Test func ungatedNodeStillAdmitsLoginlessRows() async throws {
+        let network = LoopbackNetwork()
+        let (alice, dirA) = try await startNode(
+            network: network, tailscaleId: "ts-a", deviceName: "Alice")
+        let (bob, dirB) = try await startNode(
+            network: network, tailscaleId: "ts-b", deviceName: "Bob")
+        defer {
+            try? FileManager.default.removeItem(at: dirA)
+            try? FileManager.default.removeItem(at: dirB)
+        }
+
+        let bobPeer = try await alice.peer("ts-b", waitMs: 2_000)
+        #expect(bobPeer != nil)
+        #expect(bobPeer?.loginName == nil)
+        #expect(await alice.loginName == nil)
+        #expect(await alice.loginAllow.isEmpty)
+
+        await alice.stop()
+        await bob.stop()
     }
 }

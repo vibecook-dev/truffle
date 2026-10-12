@@ -27,7 +27,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, Mutex as AsyncMutex, RwLock, Semaphore};
 
 pub use self::hello::{
-    HelloEnvelope, HelloKind, PeerIdentity, CLOSE_APP_MISMATCH, CLOSE_HELLO_PROTOCOL, HELLO_TIMEOUT,
+    HelloEnvelope, HelloKind, PeerIdentity, CLOSE_APP_MISMATCH, CLOSE_HELLO_PROTOCOL,
+    CLOSE_IDENTITY_MISMATCH, CLOSE_LOGIN_REFUSED, HELLO_TIMEOUT,
 };
 use self::reconnect::ReconnectBackoff;
 
@@ -83,6 +84,10 @@ pub struct PeerState {
     /// because another live peer already owns that ULID in `by_device`
     /// (first-wins, RFC 022 §7.7).
     pub identity_suppressed: bool,
+    /// The peer's Tailscale login (owner) name as Layer 3 reported it
+    /// (RFC 025 §3.3). `None` when the provider does not know it. Refreshed
+    /// on every Layer 3 `Updated`; never taken from the hello.
+    pub login_name: Option<String>,
 }
 
 impl PeerState {
@@ -216,6 +221,18 @@ pub enum SessionError {
         retry_after: Duration,
     },
 
+    /// RFC 025 §3.3: this node is login-gated and Layer 3 cannot currently
+    /// state the peer's owner, so a NEW connection is refused.
+    ///
+    /// The peer keeps its place in the registry — a status that could not
+    /// name an owner must not empty a gated mesh — and an EXISTING
+    /// connection stands. Only opening a new one is refused, so our hello is
+    /// never revealed to a node whose login we cannot check. The inbound
+    /// direction already agrees: a caller whose WhoIs carries no login is
+    /// refused at the hello with 4004.
+    #[error("login unknown for peer: {0}")]
+    LoginUnknown(String),
+
     /// A transport layer error.
     #[error("transport error: {0}")]
     Transport(#[from] crate::transport::TransportError),
@@ -339,6 +356,9 @@ pub struct PeerRegistry<N: NetworkProvider + 'static> {
     /// Per-peer jitter window (ms) applied before an eager dial (RFC 022 §8.1).
     eager_identity_jitter_ms: u64,
 
+    /// RFC 025 §3.3: refuse a NEW dial to a peer whose login is unresolved.
+    login_gated: bool,
+
     /// Peer ids with an in-flight ensure_identity task (dedupe).
     identity_inflight: Arc<AsyncMutex<HashSet<String>>>,
 }
@@ -359,6 +379,13 @@ pub struct PeerRegistryOptions {
     /// eager path is delayed; app `send` / `ensure_ws_connected` never wait.
     /// Default: 250.
     pub eager_identity_jitter_ms: u64,
+    /// RFC 025 §3.3: is this node login-gated (a non-empty `login_allow`)?
+    ///
+    /// When true, the registry refuses to open a NEW connection to a peer
+    /// whose `login_name` Layer 3 cannot state, with
+    /// [`SessionError::LoginUnknown`]. Existing connections stand. Default
+    /// `false` — an ungated node behaves exactly as before RFC 025.
+    pub login_gated: bool,
 }
 
 impl Default for PeerRegistryOptions {
@@ -367,6 +394,7 @@ impl Default for PeerRegistryOptions {
             eager_identity: true,
             eager_identity_concurrency: 4,
             eager_identity_jitter_ms: 250,
+            login_gated: false,
         }
     }
 }
@@ -406,6 +434,7 @@ impl<N: NetworkProvider + 'static> PeerRegistry<N> {
             event_tx,
             incoming_tx,
             background_tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
+            login_gated: options.login_gated,
             eager_identity: options.eager_identity,
             eager_identity_sem: Arc::new(Semaphore::new(concurrency)),
             eager_identity_jitter_ms: options.eager_identity_jitter_ms,
@@ -443,6 +472,7 @@ impl<N: NetworkProvider + 'static> PeerRegistry<N> {
         // Clones for scheduling eager identity from the event loop.
         let schedule_ctx = EagerScheduleCtx {
             eager_identity: self.eager_identity,
+            login_gated: self.login_gated,
             peers: self.peers.clone(),
             by_device: self.by_device.clone(),
             ws_connections: self.ws_connections.clone(),
@@ -838,6 +868,14 @@ impl<N: NetworkProvider + 'static> PeerRegistry<N> {
             if !state.online {
                 return Err(SessionError::PeerOffline(peer_id.to_string()));
             }
+            // RFC 025 §3.3: a gated node never opens a NEW connection to a
+            // peer whose owner Layer 3 cannot state. The entry survives an
+            // unknown login so the mesh is not emptied by a transient
+            // omission, but our hello is not revealed to it and its slices
+            // are not invited. An ALREADY-OPEN connection returned above.
+            if self.login_gated && state.login_name.is_none() {
+                return Err(SessionError::LoginUnknown(peer_id.to_string()));
+            }
             PeerAddr {
                 ip: Some(state.ip),
                 hostname: state.name.clone(),
@@ -1108,6 +1146,79 @@ impl<N: NetworkProvider + 'static> PeerRegistry<N> {
     #[doc(hidden)]
     pub async fn test_by_device(&self, device_id: &str) -> Option<String> {
         self.by_device.read().await.get(device_id).cloned()
+    }
+
+    /// The **published** durable device id of the peer routed by
+    /// `tailscale_id`, if the registry knows the peer, it has completed a
+    /// hello, and its ULID is not suppressed under first-wins (RFC 022
+    /// §7.7). Subsystems that key state by device id (the synced store)
+    /// bind an inbound message to its sender through this — never through
+    /// a device id the payload names (RFC 025 §3.5).
+    ///
+    /// # Hello-only peers
+    ///
+    /// A registry entry is created by a Layer 3 `Joined`, which a node with a
+    /// custom hostname (RFC 023 §6.4) never gets: it fails the
+    /// `truffle-{appId}-` prefix heuristic, so it is not discovered, only
+    /// *accepted*. Its hello identity waits in `pending_identities` for a
+    /// `Joined` that will never arrive, and without a fallback every store
+    /// slice it sends is dropped as "no published identity" — a regression
+    /// against the pre-RFC-025 behaviour, which applied the slice under the
+    /// id the payload claimed.
+    ///
+    /// So when there is NO entry, the pending identity answers, under two
+    /// conditions that keep it as sound a binding as the registry path:
+    ///
+    /// 1. **A connection for that id must still be installed.** The identity
+    ///    is the hello THIS NODE'S TRANSPORT VERIFIED for that connection
+    ///    (`verify_authenticated_identity` against the bridge's WhoIs), and
+    ///    the accept loop only stashes it after `install_connection`
+    ///    succeeds. Once the connection is gone the identity speaks for
+    ///    nothing, and `pending_identities` is only swept on a Layer 3
+    ///    `Left` — which, for a peer that was never discovered, never comes.
+    /// 2. **`by_device` must not map that ULID to a DIFFERENT live peer.**
+    ///    First-wins (RFC 022 §7.7): a hello-only claimant must never be able
+    ///    to speak for — and so overwrite the store slice of — a ULID a
+    ///    published peer already owns.
+    ///
+    /// An entry that EXISTS answers definitively, `Some` or `None`. It never
+    /// falls through to `pending_identities`, because a `None` there means
+    /// "no hello yet" or "suppressed under first-wins", and both must stay
+    /// `None`.
+    pub async fn published_device_id(&self, tailscale_id: &str) -> Option<String> {
+        {
+            let map = self.peers.read().await;
+            if let Some(state) = map.get(tailscale_id) {
+                return state.published_device_id().map(str::to_string);
+            }
+        }
+
+        // No entry: the hello-only path. Condition 1 — a live connection.
+        if !self.ws_connections.read().await.contains_key(tailscale_id) {
+            return None;
+        }
+
+        let device_id = self
+            .pending_identities
+            .read()
+            .await
+            .get(tailscale_id)
+            .map(|identity| identity.device_id.clone())?;
+
+        // Condition 2 — first-wins.
+        match self.by_device.read().await.get(&device_id) {
+            Some(owner) if owner != tailscale_id => {
+                tracing::warn!(
+                    peer_id = %tailscale_id,
+                    device = device_id.as_str(),
+                    owner = owner.as_str(),
+                    "session: hello-only peer claims a ULID another live peer \
+                     published; not binding it (RFC 022 §7.7)"
+                );
+                None
+            }
+            _ => Some(device_id),
+        }
     }
 
     /// Disconnect a specific peer's WebSocket connection.
@@ -1384,6 +1495,8 @@ fn eager_jitter_delay(peer_id: &str, window_ms: u64) -> Duration {
 /// Arcs needed to dial for identity without holding `&PeerRegistry`.
 struct EagerScheduleCtx<N: NetworkProvider + 'static> {
     eager_identity: bool,
+    /// RFC 025 §3.3: mirrors `PeerRegistry::login_gated`.
+    login_gated: bool,
     peers: Arc<RwLock<HashMap<String, PeerState>>>,
     by_device: Arc<RwLock<HashMap<String, String>>>,
     ws_connections: Arc<RwLock<HashMap<String, WsConnectionHandle>>>,
@@ -1427,6 +1540,7 @@ impl<N: NetworkProvider + 'static> EagerScheduleCtx<N> {
             incoming_tx,
             ws_transport,
             network,
+            login_gated: self.login_gated,
         };
 
         let handle = tokio::spawn(async move {
@@ -1519,6 +1633,8 @@ struct EagerConnectCtx<N: NetworkProvider + 'static> {
     incoming_tx: broadcast::Sender<IncomingMessage>,
     ws_transport: Arc<WebSocketTransport<N>>,
     network: Arc<N>,
+    /// RFC 025 §3.3: mirrors `PeerRegistry::login_gated`.
+    login_gated: bool,
 }
 
 /// Connection path shared by eager identity (no send payload).
@@ -1543,6 +1659,11 @@ async fn eager_connect_ws<N: NetworkProvider + 'static>(
         }
         if state.published_device_id().is_some() {
             return Ok(());
+        }
+        // RFC 025 §3.3: the eager dial inherits the gate — an unresolved
+        // login is exactly the case where we must not volunteer a hello.
+        if ctx.login_gated && state.login_name.is_none() {
+            return Err(SessionError::LoginUnknown(peer_id.to_string()));
         }
         PeerAddr {
             ip: Some(state.ip),
@@ -1693,6 +1814,7 @@ fn network_peer_to_state(peer: &NetworkPeer, generation: u64) -> PeerState {
         last_seen: peer.last_seen.clone(),
         identity: None,
         identity_suppressed: false,
+        login_name: peer.login_name.clone(),
     }
 }
 

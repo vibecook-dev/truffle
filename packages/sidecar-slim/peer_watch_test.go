@@ -32,7 +32,18 @@ func TestPeerWatchWithoutLegacyNetMap(t *testing.T) {
 	defer cancel()
 	var mu sync.Mutex
 	peerKey := key.NewNode().Public()
-	status := ipnstate.Status{Peer: map[key.NodePublic]*ipnstate.PeerStatus{}}
+	// RFC 025 §3.3: the peer's login lives only in the status User map, keyed
+	// by the peer's UserID. Self is present so the "running" status can report
+	// our own login the same way.
+	status := ipnstate.Status{
+		Peer: map[key.NodePublic]*ipnstate.PeerStatus{},
+		Self: &ipnstate.PeerStatus{ID: "self-1", UserID: 9},
+		User: map[tailcfg.UserID]tailcfg.UserProfile{
+			9:  {ID: 9, LoginName: "self@example.com"},
+			11: {ID: 11, LoginName: "alice@example.com"},
+			12: {ID: 12, LoginName: "bob@example.com"},
+		},
+	}
 	notifications := make(chan ipn.Notify, 8)
 	statusReads := make(chan struct{}, 16)
 	watchMasks := make(chan ipn.NotifyWatchOpt, 4)
@@ -130,12 +141,25 @@ func TestPeerWatchWithoutLegacyNetMap(t *testing.T) {
 	awaitRead() // seed an empty peer set without fabricating joined events
 
 	mu.Lock()
-	status.Peer[peerKey] = &ipnstate.PeerStatus{ID: "peer-1", HostName: "one", Online: true}
+	status.Peer[peerKey] = &ipnstate.PeerStatus{ID: "peer-1", HostName: "one", Online: true, UserID: 11}
 	mu.Unlock()
 	notifications <- ipn.Notify{PeersChanged: []*tailcfg.Node{{ID: 1, StableID: "peer-1"}}}
 	awaitRead()
-	if got := awaitEvent("joined"); got.Peer == nil || !got.Peer.Online {
+	got := awaitEvent("joined")
+	if got.Peer == nil || !got.Peer.Online {
 		t.Fatalf("joined event lost peer status: %+v", got)
+	}
+	if got.Peer.LoginName != "alice@example.com" {
+		t.Fatalf("joined row missing the owner login a gated core filters on: %+v", got.Peer)
+	}
+
+	// Self's login resolves through the same map — what waitForRunning reports
+	// on the "running" status (RFC 025 §3.3).
+	mu.Lock()
+	selfLogin := loginNameForUser(status.User, status.Self.UserID)
+	mu.Unlock()
+	if selfLogin != "self@example.com" {
+		t.Fatalf("self login = %q, want self@example.com", selfLogin)
 	}
 
 	mu.Lock()
@@ -146,6 +170,19 @@ func TestPeerWatchWithoutLegacyNetMap(t *testing.T) {
 	awaitRead()
 	if got := awaitEvent("updated"); got.Peer == nil || got.Peer.Online {
 		t.Fatalf("patch did not update peer status: %+v", got)
+	} else if got.Peer.LoginName != "alice@example.com" {
+		t.Fatalf("update row lost the owner login: %+v", got.Peer)
+	}
+
+	// A re-owned node is an observable change: the diff must emit "updated"
+	// with the new login so a gated core re-evaluates it (RFC 025 §3.3).
+	mu.Lock()
+	status.Peer[peerKey].UserID = 12
+	mu.Unlock()
+	notifications <- ipn.Notify{PeersChanged: []*tailcfg.Node{{ID: 1, StableID: "peer-1"}}}
+	awaitRead()
+	if got := awaitEvent("updated"); got.Peer == nil || got.Peer.LoginName != "bob@example.com" {
+		t.Fatalf("a re-owned node did not reach the core as an update: %+v", got.Peer)
 	}
 
 	// Losing the stream must reconnect and preserve the existing baseline.

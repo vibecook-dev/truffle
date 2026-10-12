@@ -118,11 +118,13 @@ type dialResultData struct {
 // tls:false); v3 = tsnet:whois query + node identity headers on proxied
 // requests; v4 = requestId echoed on every RPC-style terminal event (listen,
 // unlisten, listenPacket, unlistenPacket, proxy add/remove/list) and on the
-// errors that terminate them; v5 = authenticated UDP relays with binding IDs,
-// assigned ephemeral ports, and cancellation-safe release. An older or absent value makes the core treat
-// the sidecar as v1.
+// errors that terminate them; v5 = loginName on peers and status (RFC 025):
+// every peer row and the node's own status carry the owner's tailnet login, so
+// a login-gated core can filter Layer 3 by it; v6 = authenticated UDP relay
+// capabilities, binding IDs, and registration acknowledgement. An absent
+// value makes the core treat the sidecar as v1.
 // Bump on any addition to the command surface the core must not send blind.
-const sidecarProtocolVersion = 5
+const sidecarProtocolVersion = 6
 
 type statusData struct {
 	State       string `json:"state"`
@@ -131,6 +133,10 @@ type statusData struct {
 	TailscaleIP string `json:"tailscaleIP,omitempty"`
 	NodeID      string `json:"nodeId,omitempty"`
 	Error       string `json:"error,omitempty"`
+	// LoginName is the node's OWN tailnet login (RFC 025 §3.3), resolved
+	// through the status User map. Empty when the status carries no profile
+	// for our user id — absent, never fabricated.
+	LoginName string `json:"loginName,omitempty"`
 	// ProtocolVersion advertises sidecarProtocolVersion on every emission (no
 	// omitempty: a status event must always carry it, and the "running" one is
 	// what the core reads to gate v2 features).
@@ -155,6 +161,11 @@ type peerInfo struct {
 	LastSeen     string   `json:"lastSeen,omitempty"`
 	KeyExpiry    string   `json:"keyExpiry,omitempty"`
 	Expired      bool     `json:"expired,omitempty"`
+	// LoginName is the peer owner's tailnet login (RFC 025 §3.3), resolved
+	// from ipnstate.Status.User[peer.UserID]. A tagged node reports
+	// Tailscale's "tagged-devices" pseudo-user; an unknown user id omits the
+	// field entirely rather than guessing.
+	LoginName string `json:"loginName,omitempty"`
 }
 
 type peersData struct {
@@ -935,7 +946,7 @@ func (s *shim) handleStart(data json.RawMessage) {
 	ctx := s.armLifecycle(token, d.BridgePort)
 	s.setIdleTimeout(resolveIdleTimeout(d.IdleTimeoutSecs))
 
-	s.sendStatus("starting", d.Hostname, "", "", "")
+	s.sendStatus("starting", d.Hostname, "", "", "", "")
 
 	srv := &tsnet.Server{
 		Hostname:  d.Hostname,
@@ -960,7 +971,7 @@ func (s *shim) handleStart(data json.RawMessage) {
 	// M4: only publish the server after a successful Start(), so a failed start
 	// doesn't leave a dead server visible to later commands.
 	if err := srv.Start(); err != nil {
-		s.sendStatus("error", "", "", "", err.Error())
+		s.sendStatus("error", "", "", "", err.Error(), "")
 		return
 	}
 	s.setServer(srv)
@@ -979,10 +990,18 @@ func (s *shim) waitForRunning(ctx context.Context, hostname string) {
 	lc, err := srv.LocalClient()
 	if err != nil {
 		log.Printf("failed to get local client: %v", err)
-		s.sendStatus("error", "", "", "", err.Error())
+		s.sendStatus("error", "", "", "", err.Error(), "")
 		return
 	}
 
+	s.pollUntilRunning(ctx, lc, hostname)
+}
+
+// pollUntilRunning is waitForRunning's loop with the LocalAPI client passed
+// in, so a test can drive the real status path against a fake LocalAPI the
+// way startPeerWatch is driven (RFC 025 L6: the self login must be proven to
+// come from the status this loop actually polls, not from one a test built).
+func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname string) {
 	authURLSent := false
 	needsApprovalSent := false
 	for {
@@ -1025,14 +1044,20 @@ func (s *shim) waitForRunning(ctx context.Context, hostname string) {
 			dnsName := strings.TrimSuffix(status.Self.DNSName, ".")
 			nodeID := string(status.Self.ID)
 			s.setDNSName(dnsName)
+			// RFC 025 §3.3: our own login, resolved through the same User map
+			// the peer rows use. StatusWithoutPeers still carries the self
+			// profile (tailscale/tailscale#19894), so this is not empty on a
+			// logged-in node.
+			loginName := loginNameForUser(status.User, status.Self.UserID)
 
-			s.sendStatus("running", hostname, dnsName, ip, "")
+			s.sendStatus("running", hostname, dnsName, ip, "", loginName)
 			s.sendEvent("tsnet:started", statusData{
 				State:           "running",
 				Hostname:        hostname,
 				DNSName:         dnsName,
 				TailscaleIP:     ip,
 				NodeID:          nodeID,
+				LoginName:       loginName,
 				ProtocolVersion: sidecarProtocolVersion,
 			})
 
@@ -1184,7 +1209,7 @@ func (s *shim) handleGetPeers() {
 
 		peers := make([]peerInfo, 0, len(status.Peer))
 		for _, peer := range status.Peer {
-			peers = append(peers, statusPeerToInfo(peer))
+			peers = append(peers, statusPeerToInfo(peer, status.User))
 		}
 
 		s.sendEvent("tsnet:peers", peersData{Peers: peers})
@@ -1595,7 +1620,7 @@ func (s *shim) startPeerWatch(lc *local.Client) {
 			}
 			current := make(map[string]peerInfo, len(newStatus.Peer))
 			for _, peer := range newStatus.Peer {
-				pi := statusPeerToInfo(peer)
+				pi := statusPeerToInfo(peer, newStatus.User)
 				current[pi.ID] = pi
 			}
 			if !seeded {
@@ -1709,9 +1734,22 @@ func (s *shim) startPeerWatch(lc *local.Client) {
 	}()
 }
 
+// loginNameForUser resolves a tailcfg.UserID through a status User map to the
+// owner's login (RFC 025 §3.3). An unknown id yields "" — the caller omits the
+// field rather than fabricating a login. A tagged node's id resolves to
+// Tailscale's "tagged-devices" pseudo-user profile and passes through as-is.
+func loginNameForUser(users map[tailcfg.UserID]tailcfg.UserProfile, id tailcfg.UserID) string {
+	if users == nil {
+		return ""
+	}
+	return users[id].LoginName
+}
+
 // statusPeerToInfo converts an ipnstate.PeerStatus to our peerInfo type.
-// This uses the same field access as handleGetPeers for consistency.
-func statusPeerToInfo(peer *ipnstate.PeerStatus) peerInfo {
+// This uses the same field access as handleGetPeers for consistency. `users`
+// is the enclosing ipnstate.Status.User map, the only place the peer's login
+// lives (RFC 025 §3.3); pass nil when no status is in hand.
+func statusPeerToInfo(peer *ipnstate.PeerStatus, users map[tailcfg.UserID]tailcfg.UserProfile) peerInfo {
 	var ips []string
 	for _, ip := range peer.TailscaleIPs {
 		ips = append(ips, ip.String())
@@ -1728,6 +1766,7 @@ func statusPeerToInfo(peer *ipnstate.PeerStatus) peerInfo {
 		PeerRelay:    peer.PeerRelay,
 		Active:       peer.Active,
 		Expired:      peer.Expired,
+		LoginName:    loginNameForUser(users, peer.UserID),
 	}
 	if !peer.LastSeen.IsZero() {
 		p.LastSeen = peer.LastSeen.UTC().Format(time.RFC3339)
@@ -1759,6 +1798,11 @@ func watchPeerChanged(old, new peerInfo) bool {
 		return true
 	}
 	if old.Expired != new.Expired {
+		return true
+	}
+	// RFC 025: the login is an observable peer property — a re-owned node
+	// must reach a gated core as an update, not stay silently stale.
+	if old.LoginName != new.LoginName {
 		return true
 	}
 	return false
@@ -3200,14 +3244,17 @@ func (s *shim) sendEvent(eventType string, data interface{}) {
 	}
 }
 
-// sendStatus is a convenience for sending tsnet:status events.
-func (s *shim) sendStatus(state, hostname, dnsName, tailscaleIP, errMsg string) {
+// sendStatus is a convenience for sending tsnet:status events. loginName is
+// the node's own tailnet login (RFC 025 §3.3) and is empty for every state
+// emitted before a real status is in hand.
+func (s *shim) sendStatus(state, hostname, dnsName, tailscaleIP, errMsg, loginName string) {
 	s.sendEvent("tsnet:status", statusData{
 		State:           state,
 		Hostname:        hostname,
 		DNSName:         dnsName,
 		TailscaleIP:     tailscaleIP,
 		Error:           errMsg,
+		LoginName:       loginName,
 		ProtocolVersion: sidecarProtocolVersion,
 	})
 }

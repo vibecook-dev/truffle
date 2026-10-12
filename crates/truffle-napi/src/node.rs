@@ -39,6 +39,7 @@ fn peer_to_napi(p: &truffle_core::node::Peer) -> NapiPeer {
         tailscale_id: p.tailscale_id.clone(),
         peer_ref: p.peer_ref.clone(),
         generation: p.generation as u32,
+        login_name: p.login_name.clone(),
     }
 }
 
@@ -140,6 +141,9 @@ impl NapiNode {
         if let Some(eager) = config.eager_identity {
             builder = builder.eager_identity(eager);
         }
+        if let Some(ref globs) = config.login_allow {
+            builder = builder.login_allow(globs.clone());
+        }
 
         // If the caller installed a pre-start auth handler via
         // `on_auth_required()`, use `build_with_auth_handler` so the auth
@@ -193,6 +197,7 @@ impl NapiNode {
             tailscale_id: info.tailscale_id,
             dns_name: info.dns_name,
             ip: info.ip.map(|ip| ip.to_string()),
+            login_name: info.login_name,
         })
     }
 

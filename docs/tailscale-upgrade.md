@@ -24,7 +24,7 @@ incorrect ephemeral UDP ports, and direct paths mislabeled as DERP. The fixes:
 - Incoming WebSocket hello identity requires a valid WhoIs stable node ID.
   Mock opt-out is explicit and restricted to loopback; concrete mismatches
   are always rejected before returning a hello or yielding a stream.
-- UDP control protocol **v5** derives a per-binding HMAC capability from the
+- UDP control protocol **v6** derives a per-binding HMAC capability from the
   bridge session key and binding ID, pins the authenticated local endpoint,
   and acknowledges registration before data can flow. No secret is added
   to JSON events or logs. Self-test packets no longer enter application IO.
@@ -37,8 +37,11 @@ incorrect ephemeral UDP ports, and direct paths mislabeled as DERP. The fixes:
   not evidence of active relay traffic.
 
 Upgrade the Rust library and sidecar together. New Rust rejects UDP on a
-pre-v5 sidecar with an explicit upgrade error. Distributing the new sidecar
+pre-v6 sidecar with an explicit upgrade error. Distributing the new sidecar
 uses the normal versioned release workflow; do not overwrite published binaries.
+Protocol v5 remains the minimum for login gating; it does not imply support
+for authenticated UDP. Rust and Go regression tests reject that legacy relay
+before opening a listener or exchanging traffic.
 Public `NetworkPeer` literals in custom Rust providers now include `active`
 and `peer_relay`, and loopback mocks must explicitly opt into their trust mode.
 
@@ -96,9 +99,22 @@ A fresh clone of the public tag, with fresh SwiftPM/Xcode caches and no local
 framework, downloaded the archive, passed all 70 Swift tests, and built the
 production runtime for iOS devices and simulators. The downloaded archive and
 both framework binaries match the validated hashes. These checks ran locally;
-the dependency release was published before GitHub Actions CI ran. The CI
-audit is pending. All local consumer checkouts, caches, and build products
-used the portable SSD.
+the dependency release was published before GitHub Actions CI ran. All local
+consumer checkouts, caches, and build products used the portable SSD.
+
+The subsequent [Apple CI run](https://github.com/vibecook-dev/truffle/actions/runs/38235663650)
+checked out that exact source commit and passed source builds, public-download
+consumer tests, iOS device/simulator builds, and Rust interop fixtures.
+[Live-network CI](https://github.com/vibecook-dev/truffle/actions/runs/38235448715)
+and [CodeQL](https://github.com/vibecook-dev/truffle/actions/runs/38235456509)
+also passed. The historical source commit does **not** have fully green CI:
+[security CI](https://github.com/vibecook-dev/truffle/actions/runs/38235452502)
+found RustSec RUSTSEC-2026-0285 in its Rust dependency graph (both Go scans
+passed), and [Rust lint](https://github.com/vibecook-dev/truffle/actions/runs/38235445020)
+found an atomic-method deprecation on the newer CI compiler. These Rust-only
+failures are corrected on the integration branch, which incorporates main's
+rustls 0.23.45 update and uses an MSRV-compatible compare/exchange loop.
+The published Apple artifact and source tag remain unchanged.
 
 Future dependency releases require committed source and successful source-build
 CI before publication. The subsequent root-package URL/checksum change must

@@ -86,6 +86,18 @@ export class Peer {
     return this.#snap.lastSeen ?? null;
   }
 
+  /**
+   * The peer owner's tailnet login (RFC 025 §3.6), e.g. `alice@example.com`.
+   *
+   * From Layer 3 — the tailnet's own view of who owns the node — never the
+   * peer's claim about itself. `null` when it cannot be known (a sidecar
+   * older than protocol 5, or a node the tailnet named no owner for). A
+   * tagged node reports Tailscale's `tagged-devices` pseudo-login.
+   */
+  get loginName(): string | null {
+    return this.#snap.loginName ?? null;
+  }
+
   // ── Identity ───────────────────────────────────────────────────────────
 
   /**

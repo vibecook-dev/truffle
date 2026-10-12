@@ -161,3 +161,104 @@ import Testing
         #expect(!Hostname.isAppPeer(hostname: "laptop", appId: "demo"))
     }
 }
+
+// MARK: - LoginGlob (RFC 025 §3.2 — one grammar, three planes)
+
+/// Both tables are reproduced verbatim from the Rust port
+/// (`crates/truffle-core/src/network/login_allow.rs`), which in turn
+/// reproduces the Go reference (`TestAllowedLogin` / `path.Match`'s `TestMatch`
+/// in `sidecar-slim`). If a row here disagrees with a row there, one of the
+/// three planes has drifted and the gate is no longer one grammar.
+@Suite struct LoginGlobTests {
+    @Test func allowedLoginMatchesTheGoTable() {
+        let cases: [(name: String, globs: [String], login: String, want: Bool)] = [
+            ("empty globs allow all", [], "anyone@example.com", true),
+            ("empty globs allow even empty login", [], "", true),
+            ("non-empty gate, empty login fails closed", ["*@corp.com"], "", false),
+            ("exact match", ["alice@corp.com"], "alice@corp.com", true),
+            ("exact non-match", ["alice@corp.com"], "bob@corp.com", false),
+            ("domain glob matches", ["*@corp.com"], "alice@corp.com", true),
+            ("domain glob rejects other domain", ["*@corp.com"], "alice@evil.com", false),
+            ("case-insensitive glob vs login", ["*@CORP.com"], "Alice@corp.COM", true),
+            ("case-insensitive exact", ["Alice@Corp.Com"], "alice@corp.com", true),
+            ("second glob in list matches", ["*@other.com", "*@corp.com"], "bob@corp.com", true),
+            ("no glob in list matches", ["*@other.com", "*@more.com"], "bob@corp.com", false),
+            ("star does not cross slash", ["*@corp.com"], "a/b@corp.com", false),
+            ("invalid glob does not match", ["[unterminated"], "alice@corp.com", false),
+            ("invalid glob skipped, valid one still matches", ["[bad", "*@corp.com"],
+                "alice@corp.com", true),
+        ]
+        for row in cases {
+            #expect(
+                LoginGlob.allowed(row.globs, login: row.login) == row.want,
+                "\(row.name): allowed(\(row.globs), login: \"\(row.login)\")")
+        }
+        // `nil` is the absent login: fails closed under a gate, passes without one.
+        #expect(!LoginGlob.allowed(["*@corp.com"], login: nil))
+        #expect(LoginGlob.allowed([], login: nil))
+        // A tagged node only passes a glob that names the pseudo-login.
+        #expect(!LoginGlob.allowed(["*@corp.com"], login: "tagged-devices"))
+        #expect(LoginGlob.allowed(["tagged-devices"], login: "tagged-devices"))
+    }
+
+    @Test func globMatchFollowsPathMatch() throws {
+        func ok(_ p: String, _ n: String) throws -> Bool { try LoginGlob.match(p, n) }
+        #expect(try ok("abc", "abc"))
+        #expect(try ok("*", "abc"))
+        #expect(try ok("*c", "abc"))
+        #expect(try !ok("a*", "a/b"))
+        #expect(try ok("a*", "ab"))
+        #expect(try !ok("a*", "abc/d"))
+        #expect(try ok("a*/b", "abc/b"))
+        #expect(try !ok("a*/b", "a/c/b"))
+        #expect(try ok("a*b*c*d*e*/f", "axbxcxdxe/f"))
+        #expect(try ok("a*b*c*d*e*/f", "axbxcxdxexxx/f"))
+        #expect(try !ok("a*b*c*d*e*/f", "axbxcxdxe/xxx/f"))
+        #expect(try !ok("a*b*c*d*e*/f", "axbxcxdxexxx/fff"))
+        #expect(try ok("a*b?c*x", "abxbbxdbxebxczzx"))
+        #expect(try !ok("a*b?c*x", "abxbbxdbxebxczzy"))
+        #expect(try ok("ab[c]", "abc"))
+        #expect(try ok("ab[b-d]", "abc"))
+        #expect(try !ok("ab[e-g]", "abc"))
+        #expect(try !ok("ab[^c]", "abc"))
+        #expect(try !ok("ab[^b-d]", "abc"))
+        #expect(try ok("ab[^e-g]", "abc"))
+        #expect(try ok("a\\*b", "a*b"))
+        #expect(try !ok("a\\*b", "ab"))
+        #expect(try ok("a?b", "a☺b"))
+        #expect(try ok("a[^a]b", "a☺b"))
+        #expect(try !ok("a???b", "a☺b"))
+        #expect(try !ok("a[^a][^a][^a]b", "a☺b"))
+        #expect(try ok("[a-ζ]*", "α"))
+        #expect(try !ok("*[a-ζ]", "A"))
+        #expect(try ok("a?b", "a/b") == false)
+        #expect(try ok("a*b", "a/b") == false)
+        #expect(try ok("[\\]a]", "]"))
+        #expect(try ok("[\\-]", "-"))
+        #expect(try ok("[x\\-]", "x"))
+        #expect(try ok("[x\\-]", "-"))
+        #expect(try !ok("[x\\-]", "z"))
+        #expect(try ok("[\\-x]", "x"))
+        #expect(try ok("[\\-x]", "-"))
+        #expect(try !ok("[\\-x]", "a"))
+        #expect(try ok("*x", "xxx"))
+        #expect(try !ok("", "a"))
+        #expect(try ok("", ""))
+    }
+
+    @Test func globMatchReportsBadPatternsLikeGo() {
+        for bad in [
+            "[]a]", "[-]", "[x-]", "[-x]", "\\", "[a-b-c]", "[", "[^", "[^bc", "a[",
+            "[unterminated",
+        ] {
+            #expect(throws: LoginGlob.BadPattern.self, "\(bad) must be a bad pattern") {
+                try LoginGlob.match(bad, "a")
+            }
+        }
+        // A bad pattern is an error even when an earlier chunk already failed
+        // to match — Go checks the remainder's syntax before answering false.
+        #expect(throws: LoginGlob.BadPattern.self) {
+            try LoginGlob.match("a*[", "b")
+        }
+    }
+}

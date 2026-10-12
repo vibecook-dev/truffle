@@ -121,6 +121,7 @@ pub async fn run(config: &TruffleConfig) -> Result<(), String> {
                             last_seen: peer.last_seen.clone(),
                             identity,
                             identity_suppressed: false,
+                            login_name: peer.login_name.clone(),
                         };
                         let _ = tx.send(event::AppEvent::PeerEvent(
                             truffle_core::session::PeerEvent::Updated(state),

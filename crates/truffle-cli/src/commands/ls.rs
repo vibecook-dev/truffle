@@ -56,7 +56,15 @@ pub async fn run(
     println!();
 
     if long {
-        let headers = &["NODE", "STATUS", "IP", "CONNECTION", "CONNECTED", "OS"];
+        let headers = &[
+            "NODE",
+            "STATUS",
+            "IP",
+            "CONNECTION",
+            "CONNECTED",
+            "OS",
+            "LOGIN",
+        ];
         let rows: Vec<Vec<String>> = filtered
             .iter()
             .map(|p| {
@@ -66,6 +74,9 @@ pub async fn run(
                 let conn_type = p["connection_type"].as_str().unwrap_or("-");
                 let connected = p["ws_connected"].as_bool().unwrap_or(false);
                 let os = p["os"].as_str().unwrap_or("-");
+                // RFC 025: the peer owner's tailnet login. "-" when Layer 3
+                // does not know it, the same as every other unknown here.
+                let login = p["login_name"].as_str().unwrap_or("-");
 
                 vec![
                     output::bold(name),
@@ -90,6 +101,7 @@ pub async fn run(
                         "no".to_string()
                     },
                     os.to_string(),
+                    login.to_string(),
                 ]
             })
             .collect();

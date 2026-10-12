@@ -42,6 +42,7 @@ pub async fn run(config: &TruffleConfig, json: bool, _watch: bool) -> Result<(),
     let status = result["status"].as_str().unwrap_or("offline");
     let ip = result["ip"].as_str().unwrap_or("");
     let dns = result["dns_name"].as_str().unwrap_or("");
+    let login = result["login_name"].as_str().unwrap_or("");
     let uptime = result["uptime_secs"].as_u64().unwrap_or(0);
     let peer_count = result["peer_count"].as_u64().unwrap_or(0);
 
@@ -59,6 +60,10 @@ pub async fn run(config: &TruffleConfig, json: bool, _watch: bool) -> Result<(),
     }
     if !dns.is_empty() {
         println!("  {:<12}{}", "DNS", output::dim(dns));
+    }
+    // RFC 025 §3.6: printed only when Layer 3 knows it.
+    if !login.is_empty() {
+        println!("  {:<12}{}", "Login", login);
     }
 
     println!("  {:<12}{}", "Uptime", output::format_uptime(uptime));

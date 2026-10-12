@@ -26,8 +26,8 @@ func TestPingProjectionDistinguishesPaths(t *testing.T) {
 	}
 }
 func TestPeerProjectionAndWatchIncludeRelayActivity(t *testing.T) {
-	before := statusPeerToInfo(&ipnstate.PeerStatus{ID: "peer", Relay: "ord"})
-	after := statusPeerToInfo(&ipnstate.PeerStatus{ID: "peer", Relay: "ord", Active: true, PeerRelay: "100.64.1.1:1234:vni:2"})
+	before := statusPeerToInfo(&ipnstate.PeerStatus{ID: "peer", Relay: "ord"}, nil)
+	after := statusPeerToInfo(&ipnstate.PeerStatus{ID: "peer", Relay: "ord", Active: true, PeerRelay: "100.64.1.1:1234:vni:2"}, nil)
 	if !after.Active || after.PeerRelay == "" || !watchPeerChanged(before, after) {
 		t.Fatalf("path transition lost: %+v", after)
 	}

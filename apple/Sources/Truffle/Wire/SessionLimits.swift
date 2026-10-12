@@ -58,8 +58,13 @@ public enum SessionCloseCode {
     /// Malformed, invalid, or missing hello envelope.
     public static let helloProtocol: UInt16 = 4002
     /// Claimed `tailscale_id` contradicts the authenticated identity, or no
-    /// authenticated identity was available under the fail-closed policy.
+    /// authenticated identity was available — under the fail-closed policy,
+    /// or on a login-gated node under ANY policy (RFC 025 §3.4).
     public static let identityMismatch: UInt16 = 4003
+    /// The caller's WhoIs login is absent from, or matches no glob in, this
+    /// node's `loginAllow` list (RFC 025 §3.4/§4, D4). Sent before our own
+    /// hello, so a refused caller never learns our identity block.
+    public static let loginRefused: UInt16 = 4004
     /// RFC 6455 normal closure.
     public static let normal: UInt16 = 1000
 }

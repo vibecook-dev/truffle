@@ -58,6 +58,13 @@ pub struct NapiNodeConfig {
     /// RFC 022 Phase C: proactively exchange hello with online peers so
     /// durable deviceId is learned without app send. Defaults to true.
     pub eager_identity: Option<bool>,
+    /// RFC 025 §3.1: `loginName` globs of the tailnet users whose nodes may
+    /// be peers, e.g. `["*@corp.com"]`. Empty or absent = the whole tailnet
+    /// (the behaviour before RFC 025). Non-empty and the node is gated: only
+    /// peers whose login matches are discovered, a peer whose login cannot be
+    /// known is not a peer at all, and starting against a sidecar older than
+    /// protocol 5 fails loudly instead of running peerless.
+    pub login_allow: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +94,10 @@ pub struct NapiNodeIdentity {
     pub dns_name: Option<String>,
     /// Tailscale IP address as a string, if available.
     pub ip: Option<String>,
+    /// This node's own tailnet login (RFC 025 §3.6), e.g.
+    /// `"alice@example.com"`. `null` until the sidecar reports it, and on a
+    /// sidecar older than protocol 5 — absent, never fabricated.
+    pub login_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +135,10 @@ pub struct NapiPeer {
     pub peer_ref: String,
     /// Registry entry generation (bumped on re-join).
     pub generation: u32,
+    /// The peer owner's tailnet login (RFC 025 §3.6). From Layer 3, never
+    /// self-declared. `null` when it cannot be known; a tagged node reports
+    /// Tailscale's `tagged-devices` pseudo-login.
+    pub login_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

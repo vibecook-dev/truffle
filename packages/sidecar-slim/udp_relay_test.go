@@ -11,6 +11,15 @@ import (
 	"time"
 )
 
+func TestUDPRejectsLoginOnlyProtocolV5(t *testing.T) {
+	var buf bytes.Buffer
+	s := &shim{writer: json.NewEncoder(&buf)}
+	s.handleListenPacket(json.RawMessage(`{"port":0,"relayVersion":5,"requestId":"legacy"}`))
+	if !bytes.Contains(buf.Bytes(), []byte("LISTEN_PACKET_ERROR")) || !bytes.Contains(buf.Bytes(), []byte("protocol v6")) {
+		t.Fatalf("legacy relay must be rejected before starting a listener: %s", buf.String())
+	}
+}
+
 func udpTestConn(t *testing.T) net.PacketConn {
 	t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -38,7 +47,7 @@ func udpTestSend(t *testing.T, pc net.PacketConn, payload []byte, to net.Addr) {
 }
 func TestUDPRelayCapabilityFixture(t *testing.T) {
 	token := udpRelayToken(bytes.Repeat([]byte{17}, 32), "bind-123")
-	if hex.EncodeToString(token) != "36f50b02739db95b02b0f4bb41acde54c2b9b89601a2220d96dfeb33f7856c3b" {
+	if hex.EncodeToString(token) != "0afef70c2ee12a62eaf433a58ba7588c38e639c34c5fabf9efcc90b1044c8aec" {
 		t.Fatal("Rust/Go capability mismatch")
 	}
 	if bytes.Equal(token, udpRelayToken(bytes.Repeat([]byte{17}, 32), "bind-124")) {

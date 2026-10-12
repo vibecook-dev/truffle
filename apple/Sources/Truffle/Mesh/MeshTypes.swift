@@ -65,6 +65,25 @@ public struct MeshConfiguration: Sendable {
     public var ephemeral: Bool
     public var auth: MeshAuth
 
+    /// Login allow-list — the tailnet **logins** that may join this node's
+    /// mesh (RFC 025 §3.1/§3.2, D1/D2). Shell-style globs in Go `path.Match`
+    /// grammar, matched case-insensitively by ``LoginGlob``.
+    ///
+    /// **Empty (the default) = no gate**: today's behaviour exactly — the
+    /// whole tailnet, hostname-prefix discovery, and the existing
+    /// ``Handshake/IdentityPolicy`` alone on the inbound path.
+    ///
+    /// **Non-empty = gated**: only peers whose Layer 3 login matches are
+    /// reported (``MeshNode/peers()`` and `peerUpsert`), and every inbound
+    /// hello whose WhoIs login does not match is refused with close code
+    /// 4004 before our own hello is revealed. Under a gate an absent login
+    /// fails closed on both paths, and a caller with no authenticated
+    /// identity is refused with 4003 REGARDLESS of the identity policy.
+    ///
+    /// The list is fixed for the node's lifetime; to change it, restart the
+    /// node (RFC 025 §3.1).
+    public var loginAllow: [String]
+
     public var logger: (any MeshLogger)?
 
     public init(
@@ -74,6 +93,7 @@ public struct MeshConfiguration: Sendable {
         controlURL: URL? = nil,
         ephemeral: Bool = false,
         auth: MeshAuth = .existingState,
+        loginAllow: [String] = [],
         logger: (any MeshLogger)? = nil
     ) {
         self.appId = appId
@@ -82,6 +102,7 @@ public struct MeshConfiguration: Sendable {
         self.controlURL = controlURL
         self.ephemeral = ephemeral
         self.auth = auth
+        self.loginAllow = loginAllow
         self.logger = logger
     }
 }

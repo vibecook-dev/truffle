@@ -425,6 +425,16 @@ The receiving session layer extracts the identity block and stores it on `PeerSt
 
 **AppId mismatch on hello.** If the remote peer's hello advertises a different `appId`, close the WebSocket immediately with a specific close code (e.g., 4001 "app mismatch") and record the rejection in telemetry. This is a belt-and-braces check on top of hostname-prefix filtering — in case two apps end up sharing a hostname prefix due to a future Tailscale naming change, the hello handshake catches it.
 
+> **Amended 2026-09-16 (RFC 025).** The close-code table as shipped: **4001** app
+> mismatch · **4002** hello protocol (malformed, missing, timed out) · **4003** the
+> claimed `tailscale_id` contradicts the WhoIs-authenticated identity — or, on a node
+> that admits only listed logins, the connection carried no authenticated identity ·
+> **4004** the caller's authenticated login is not on the node's allow-list. 4003 and
+> 4004 are sent BEFORE the accepting side reveals its own hello. The dialing side
+> surfaces any 4xxx close received before the hello as
+> `TransportError::HelloRefused { code, reason }`. The login is never carried in the
+> hello; WhoIs is the authority (RFC 025 §3.4, D8).
+
 **Version negotiation.** The `version` field starts at 2 (version 1 being the implicit pre-RFC-017 hello). Newer truffle versions can add fields below `identity` without breaking older peers, as long as the `version` field is monotonically increased and the old required fields stay in place.
 
 ---

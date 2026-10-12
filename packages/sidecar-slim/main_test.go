@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -23,6 +24,10 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"tailscale.com/client/local"
+	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
 )
 
 // testToken returns a deterministic 32-byte token matching Rust's test_token()
@@ -458,19 +463,20 @@ func TestShouldWrapTLS(t *testing.T) {
 // protocolVersion so the core gates capabilities by sidecar version instead of
 // treating this sidecar as v1. The core reads it off the "running" status/started
 // event (protocol.rs StatusEventData.protocol_version, camelCase, integer).
-// The pin is deliberate: v5 adds authenticated, releasable UDP bindings; bumping the constant means updating this test AND the version gates
-// in provider.rs.
+// The pin is deliberate: v5 = loginName (RFC 025 §3.3); v6 = authenticated UDP.
+// Update this test AND provider.rs capability gates when bumping the version.
+// Login gating requires v5; authenticated UDP requires v6.
 func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
-	if sidecarProtocolVersion != 5 {
-		t.Fatalf("sidecarProtocolVersion = %d, want 5 (authenticated UDP bindings)", sidecarProtocolVersion)
+	if sidecarProtocolVersion != 6 {
+		t.Fatalf("sidecarProtocolVersion = %d, want 6 (authenticated UDP relay)", sidecarProtocolVersion)
 	}
 
 	var buf bytes.Buffer
 	s := &shim{writer: json.NewEncoder(&buf)}
-	s.sendStatus("running", "host", "host.tail.ts.net", "100.64.0.1", "")
+	s.sendStatus("running", "host", "host.tail.ts.net", "100.64.0.1", "", "")
 
 	// The core matches the camelCase key exactly, as a JSON integer.
-	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":5`)) {
+	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":6`)) {
 		t.Errorf("status payload missing protocolVersion on the wire: %s", strings.TrimSpace(buf.String()))
 	}
 
@@ -1828,4 +1834,219 @@ func TestBuildReverseProxy(t *testing.T) {
 			t.Errorf("502 body leaked internal detail: %q", body)
 		}
 	})
+}
+
+// ===== RFC 025 §3.3: the login is a Layer 3 fact =====
+
+// TestLoginNameForUser pins the user-map lookup every peer row and the self
+// status go through: a known id resolves, a tagged node's pseudo-user passes
+// through verbatim, an unknown id and a nil map yield "" (the field then
+// marshals away — absent, never fabricated).
+func TestLoginNameForUser(t *testing.T) {
+	users := map[tailcfg.UserID]tailcfg.UserProfile{
+		1: {ID: 1, LoginName: "alice@example.com", DisplayName: "Alice"},
+		2: {ID: 2, LoginName: "tagged-devices", DisplayName: "Tagged Devices"},
+	}
+	cases := []struct {
+		name string
+		id   tailcfg.UserID
+		want string
+	}{
+		{"known user", 1, "alice@example.com"},
+		{"tagged node pseudo-user passes through", 2, "tagged-devices"},
+		{"unknown id yields empty", 99, ""},
+		{"zero id yields empty", 0, ""},
+	}
+	for _, tc := range cases {
+		if got := loginNameForUser(users, tc.id); got != tc.want {
+			t.Errorf("%s: loginNameForUser(_, %d) = %q, want %q", tc.name, tc.id, got, tc.want)
+		}
+	}
+	if got := loginNameForUser(nil, 1); got != "" {
+		t.Errorf("nil map: loginNameForUser = %q, want empty", got)
+	}
+}
+
+// TestStatusPeerToInfoCarriesLoginName drives the converter both callers use
+// (handleGetPeers and the watch diff) and pins the wire key: a peer whose
+// owner is in the map carries loginName; one whose owner is absent omits it.
+func TestStatusPeerToInfoCarriesLoginName(t *testing.T) {
+	users := map[tailcfg.UserID]tailcfg.UserProfile{
+		7: {ID: 7, LoginName: "Alice@Example.com"},
+	}
+	known := statusPeerToInfo(&ipnstate.PeerStatus{
+		ID: "peer-known", HostName: "truffle-app-alice", UserID: 7, Online: true,
+	}, users)
+	if known.LoginName != "Alice@Example.com" {
+		t.Errorf("known owner: loginName = %q, want the profile value verbatim", known.LoginName)
+	}
+	// The sidecar never lowercases: the gate on both planes lowercases at
+	// comparison time (RFC 025 §3.2), so the row reports what control said.
+	unknown := statusPeerToInfo(&ipnstate.PeerStatus{
+		ID: "peer-unknown", HostName: "truffle-app-bob", UserID: 8,
+	}, users)
+	if unknown.LoginName != "" {
+		t.Errorf("unknown owner: loginName = %q, want empty", unknown.LoginName)
+	}
+	raw, err := json.Marshal(unknown)
+	if err != nil {
+		t.Fatalf("marshal peer: %v", err)
+	}
+	if bytes.Contains(raw, []byte("loginName")) {
+		t.Errorf("an unknown owner must omit the key entirely: %s", raw)
+	}
+	raw, err = json.Marshal(known)
+	if err != nil {
+		t.Fatalf("marshal peer: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"loginName":"Alice@Example.com"`)) {
+		t.Errorf("peer row missing the camelCase loginName the core parses: %s", raw)
+	}
+}
+
+// TestWatchPeerChangedOnLogin pins that a re-owned node reaches the core: the
+// watch diff reports an "updated" event when only the login moved.
+func TestWatchPeerChangedOnLogin(t *testing.T) {
+	old := peerInfo{ID: "p", Hostname: "h", Online: true, LoginName: "alice@example.com"}
+	moved := old
+	moved.LoginName = "bob@example.com"
+	if !watchPeerChanged(old, moved) {
+		t.Error("a login change must count as an observable peer change")
+	}
+	if watchPeerChanged(old, old) {
+		t.Error("an unchanged row must not be reported")
+	}
+}
+
+// TestSelfStatusCarriesLoginName drives the resolution waitForRunning performs
+// on the "running" status and pins the wire shape the core's StatusEventData
+// parses. StatusWithoutPeers still carries the self profile upstream
+// (tailscale/tailscale#19894), which is why this is not empty on a real node.
+func TestSelfStatusCarriesLoginName(t *testing.T) {
+	status := &ipnstate.Status{
+		BackendState: "Running",
+		Self:         &ipnstate.PeerStatus{ID: "self-1", UserID: 3, DNSName: "host.tail.ts.net."},
+		User: map[tailcfg.UserID]tailcfg.UserProfile{
+			3: {ID: 3, LoginName: "alice@example.com"},
+		},
+	}
+	login := loginNameForUser(status.User, status.Self.UserID)
+	if login != "alice@example.com" {
+		t.Fatalf("self login = %q, want alice@example.com", login)
+	}
+
+	var buf bytes.Buffer
+	s := &shim{writer: json.NewEncoder(&buf)}
+	s.sendStatus("running", "host", "host.tail.ts.net", "100.64.0.1", "", login)
+	if !bytes.Contains(buf.Bytes(), []byte(`"loginName":"alice@example.com"`)) {
+		t.Errorf("status payload missing loginName: %s", strings.TrimSpace(buf.String()))
+	}
+
+	buf.Reset()
+	s.sendStatus("starting", "host", "", "", "", "")
+	if bytes.Contains(buf.Bytes(), []byte("loginName")) {
+		t.Errorf("a status with no login must omit the key: %s", strings.TrimSpace(buf.String()))
+	}
+}
+
+// TestWaitForRunningResolvesSelfLoginFromLocalAPI drives the REAL status loop
+// (`pollUntilRunning`, which `waitForRunning` is a two-line wrapper around)
+// against a fake LocalAPI, the way peer_watch_test drives the real streaming
+// client.
+//
+// This is the row that pins the DEPENDENCY. `TestSelfStatusCarriesLoginName`
+// builds its own `ipnstate.Status` and calls `loginNameForUser` directly, so
+// it stays green even if the loop stopped resolving the login at all. Here the
+// only source of `loginName` is the status this loop polls — and the status is
+// shaped like `StatusWithoutPeers`' answer: no `Peer` map, a `User` map
+// carrying only the self profile (tailscale/tailscale#19894).
+func TestWaitForRunningResolvesSelfLoginFromLocalAPI(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	status := ipnstate.Status{
+		BackendState: "Running",
+		TailscaleIPs: []netip.Addr{netip.MustParseAddr("100.64.0.7")},
+		Self: &ipnstate.PeerStatus{
+			ID:      "nodeSELF",
+			UserID:  42,
+			DNSName: "myhost.tailnet.ts.net.",
+		},
+		// StatusWithoutPeers omits peers but still carries the self profile.
+		User: map[tailcfg.UserID]tailcfg.UserProfile{
+			42: {ID: 42, LoginName: "alice@example.com"},
+		},
+	}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/localapi/v0/status" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewEncoder(w).Encode(status); err != nil {
+			t.Errorf("write status: %v", err)
+		}
+	}))
+	defer api.Close()
+
+	lc := &local.Client{Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, api.Listener.Addr().String())
+	}}
+
+	events := make(peerWatchEvents, 16)
+	s := newTestShim()
+	defer s.cancel()
+	s.ctx = ctx
+	s.writer = json.NewEncoder(events)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.pollUntilRunning(ctx, lc, "myhost")
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pollUntilRunning did not reach the running state")
+	}
+
+	// Collect the two status-shaped events the loop emits on Running.
+	seen := map[string]statusData{}
+	for len(seen) < 2 {
+		select {
+		case raw := <-events:
+			var ev struct {
+				Event string     `json:"event"`
+				Data  statusData `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &ev); err != nil {
+				t.Fatalf("decode event: %v", err)
+			}
+			if ev.Event == "tsnet:status" || ev.Event == "tsnet:started" {
+				seen[ev.Event] = ev.Data
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("only saw %v; want both tsnet:status and tsnet:started", seen)
+		}
+	}
+
+	for _, name := range []string{"tsnet:status", "tsnet:started"} {
+		got := seen[name]
+		if got.State != "running" {
+			t.Errorf("%s: state = %q, want running", name, got.State)
+		}
+		if got.LoginName != "alice@example.com" {
+			t.Errorf(
+				"%s: loginName = %q — the loop must resolve it from the status User map",
+				name, got.LoginName,
+			)
+		}
+		if got.ProtocolVersion != sidecarProtocolVersion {
+			t.Errorf("%s: protocolVersion = %d, want %d", name, got.ProtocolVersion, sidecarProtocolVersion)
+		}
+	}
+	// The started event additionally carries what the status one does not.
+	if started := seen["tsnet:started"]; started.NodeID != "nodeSELF" ||
+		started.DNSName != "myhost.tailnet.ts.net" {
+		t.Errorf("tsnet:started lost its node fields: %+v", started)
+	}
 }

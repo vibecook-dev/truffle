@@ -73,10 +73,15 @@ for iOS devices and simulators. GitHub's uploaded digests and the freshly
 downloaded archive/binaries match the validated hashes. The exact patched
 source archive and `provenance.json` are attached to the release.
 
-These checks were run locally. Publication occurred before GitHub Actions CI
-ran on the source commit; the CI audit is pending. Future dependency releases
-must pass source-build CI on their committed inputs before publication, then
-pass public-download consumer CI before the package update is merged.
+Publication occurred before GitHub Actions CI ran on the source commit.
+The subsequent [Apple CI run](https://github.com/vibecook-dev/truffle/actions/runs/38235663650)
+checked out that exact commit and passed all three jobs, including source
+builds and public-download consumer validation. The repository-wide audit
+found separate Rust dependency/lint failures; see the
+[upgrade record](../../docs/tailscale-upgrade.md#apple-artifact-publication).
+Future dependency releases must pass source-build CI on their committed
+inputs before publication, then pass public-download consumer CI before
+the package update is merged.
 
 | Field | Value |
 | --- | --- |

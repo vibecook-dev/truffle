@@ -142,6 +142,12 @@ pub struct Peer {
     pub os: Option<String>,
     /// Last time the peer was seen online (RFC 3339 string).
     pub last_seen: Option<String>,
+    /// The peer owner's Tailscale login name, e.g. `alice@example.com`, as
+    /// Layer 3 reported it (RFC 025 §3.6). `None` when the provider cannot
+    /// know it (a sidecar older than protocol 5, a node with no user
+    /// profile). Tagged nodes carry Tailscale's `tagged-devices`
+    /// pseudo-login. Never self-declared: the hello does not carry it.
+    pub login_name: Option<String>,
 }
 
 impl From<PeerState> for Peer {
@@ -191,6 +197,7 @@ impl From<PeerState> for Peer {
             connection_type: s.connection_type,
             os,
             last_seen: s.last_seen,
+            login_name: s.login_name,
         }
     }
 }
@@ -743,6 +750,22 @@ impl<N: NetworkProvider + 'static> Node<N> {
             .into_iter()
             .map(|s| Self::project_peer(s, &app_id))
             .collect()
+    }
+
+    /// The **published** durable device id of the peer whose WhoIs-verified
+    /// Tailscale id is `tailscale_id` (RFC 025 §3.5) — `None` for an unknown
+    /// peer, a peer that has not completed a hello, or one whose ULID is
+    /// suppressed under first-wins (RFC 022 §7.7). Subsystems bind an
+    /// inbound message's `from` to a device id through this, never through
+    /// an id the payload names.
+    pub async fn peer_device_id(&self, tailscale_id: &str) -> Option<String> {
+        self.session.published_device_id(tailscale_id).await
+    }
+
+    /// The Layer 5 registry (test seam: stamping identities on mock peers).
+    #[cfg(test)]
+    pub(crate) fn session(&self) -> &Arc<PeerRegistry<N>> {
+        &self.session
     }
 
     /// Project a session [`PeerState`] to the public [`Peer`] view.
@@ -1489,6 +1512,9 @@ pub struct NodeBuilder {
     idle_timeout_secs: Option<u64>,
     /// RFC 022 Phase C: proactively exchange hello with online peers.
     eager_identity: bool,
+    /// RFC 025 §3.1: `loginName` globs of the tailnet users whose nodes may
+    /// be peers. Empty = the whole tailnet.
+    login_allow: Vec<String>,
 }
 
 /// Manual `Debug`: `auth_key` is a tailnet credential and must never reach
@@ -1507,6 +1533,7 @@ impl std::fmt::Debug for NodeBuilder {
             .field("ws_port", &self.ws_port)
             .field("idle_timeout_secs", &self.idle_timeout_secs)
             .field("eager_identity", &self.eager_identity)
+            .field("login_allow", &self.login_allow)
             .finish()
     }
 }
@@ -1608,6 +1635,7 @@ impl Default for NodeBuilder {
             ws_port: 9417,
             idle_timeout_secs: None,
             eager_identity: true,
+            login_allow: Vec::new(),
         }
     }
 }
@@ -1696,6 +1724,33 @@ impl NodeBuilder {
     /// online peers so durable `device_id` is learned without app `send`.
     pub fn eager_identity(mut self, enabled: bool) -> Self {
         self.eager_identity = enabled;
+        self
+    }
+
+    /// Restrict the mesh to nodes owned by the given tailnet logins
+    /// (RFC 025 §3.1). Each entry is a `loginName` glob in the grammar of
+    /// RFC 023 §9.7 — Go's `path.Match`, case-insensitive: `alice@corp.com`,
+    /// `*@corp.com`. An empty list (the default) is the whole tailnet.
+    ///
+    /// With a non-empty list the node (a) reports as peers only nodes whose
+    /// owner's login matches, (b) refuses every inbound hello whose WhoIs
+    /// login does not match — with close code 4004, before revealing its
+    /// own hello — and (c) refuses a connection the bridge attached no
+    /// authenticated identity to (close code 4003) instead of admitting it
+    /// unverified. Every subsystem on the session plane (the synced store,
+    /// request/reply, file transfer, chat) is thereby scoped to those
+    /// logins by construction. NOT gated by this list: raw `listen`/`dial`
+    /// (the app reads the accepted connection's identity), the QUIC plane
+    /// (its ALPN app check), and served routes (their own `allow`, RFC 023
+    /// §9.7) — RFC 025 §3.7. The list is fixed for the node's lifetime;
+    /// build a new node to change it. Requires a sidecar speaking protocol
+    /// 5 (`loginName` on peer rows): `build()` fails otherwise.
+    pub fn login_allow<I, S>(mut self, globs: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.login_allow = globs.into_iter().map(Into::into).collect();
         self
     }
 
@@ -1823,6 +1878,7 @@ impl NodeBuilder {
             ephemeral: if self.ephemeral { Some(true) } else { None },
             tags: None,
             idle_timeout_secs: self.idle_timeout_secs,
+            login_allow: self.login_allow.clone(),
         })
     }
 
@@ -1850,6 +1906,7 @@ impl NodeBuilder {
         // 2. Create WebSocket transport.
         let ws_config = WsConfig {
             port: ws_port,
+            login_allow: self.login_allow.clone(),
             ..Default::default()
         };
         let ws_transport = Arc::new(WebSocketTransport::new(network.clone(), ws_config));
@@ -1860,6 +1917,10 @@ impl NodeBuilder {
             ws_transport,
             crate::session::PeerRegistryOptions {
                 eager_identity,
+                // RFC 025 §3.3: a node with a non-empty allow-list is gated,
+                // so Layer 5 refuses to open a NEW connection to a peer whose
+                // login Layer 3 cannot state.
+                login_gated: !self.login_allow.is_empty(),
                 ..Default::default()
             },
         ));
@@ -1928,6 +1989,7 @@ impl NodeBuilder {
         // 6. Create WebSocket transport.
         let ws_config = WsConfig {
             port: ws_port,
+            login_allow: self.login_allow.clone(),
             ..Default::default()
         };
         let ws_transport = Arc::new(WebSocketTransport::new(network.clone(), ws_config));
@@ -1938,6 +2000,10 @@ impl NodeBuilder {
             ws_transport,
             crate::session::PeerRegistryOptions {
                 eager_identity,
+                // RFC 025 §3.3: a node with a non-empty allow-list is gated,
+                // so Layer 5 refuses to open a NEW connection to a peer whose
+                // login Layer 3 cannot state.
+                login_gated: !self.login_allow.is_empty(),
                 ..Default::default()
             },
         ));
@@ -2038,6 +2104,7 @@ mod tests {
                     tailscale_id: id.to_string(),
                     dns_name: None,
                     ip: Some("127.0.0.1".parse().unwrap()),
+                    login_name: None,
                 },
                 local_addr: PeerAddr {
                     ip: Some("127.0.0.1".parse().unwrap()),
@@ -2174,6 +2241,7 @@ mod tests {
             last_seen: Some("2026-03-25T12:00:00Z".to_string()),
             key_expiry: None,
             dns_name: None,
+            login_name: None,
         }
     }
 
@@ -2770,6 +2838,7 @@ mod tests {
             last_seen: None,
             key_expiry: None,
             dns_name: None,
+            login_name: None,
         };
         let peer_a = NetworkPeer {
             id: "node-a".to_string(),
@@ -2784,6 +2853,7 @@ mod tests {
             last_seen: None,
             key_expiry: None,
             dns_name: None,
+            login_name: None,
         };
 
         let _ = event_tx_a.send(NetworkPeerEvent::Joined(peer_b));
@@ -2871,6 +2941,7 @@ mod tests {
             last_seen: None,
             key_expiry: None,
             dns_name: None,
+            login_name: None,
         };
         let _ = event_tx_a.send(NetworkPeerEvent::Joined(self_peer));
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -3167,6 +3238,49 @@ mod tests {
         assert!(NodeBuilder::default().hostname(too_long).is_err());
     }
 
+    /// RFC 025 §3.1: the builder's allow-list must reach the provider config
+    /// — a door that does not carry the gate is worse than no door.
+    #[test]
+    fn test_builder_login_allow_reaches_the_provider_config() {
+        let base = || {
+            NodeBuilder::default()
+                .app_id("demo")
+                .unwrap()
+                .sidecar_path("/opt/sidecar")
+                .device_name("dev")
+                .state_dir("/tmp/truffle-login-allow-test")
+        };
+
+        // Never called: the whole tailnet, exactly as before RFC 025.
+        let ungated = base().prepare_config().unwrap();
+        assert!(ungated.login_allow.is_empty());
+
+        // Called: the globs arrive verbatim, in order, unmodified — the
+        // lowercasing belongs to the gate, not to the door.
+        let gated = base()
+            .login_allow(["Alice@Example.com", "*@corp.com"])
+            .prepare_config()
+            .unwrap();
+        assert_eq!(gated.login_allow, ["Alice@Example.com", "*@corp.com"]);
+
+        // It accepts owned strings as readily as literals, and an empty list
+        // means no gate.
+        let owned = base()
+            .login_allow(vec!["ops@corp.com".to_string()])
+            .prepare_config()
+            .unwrap();
+        assert_eq!(owned.login_allow, ["ops@corp.com"]);
+        let cleared = base()
+            .login_allow(Vec::<String>::new())
+            .prepare_config()
+            .unwrap();
+        assert!(cleared.login_allow.is_empty());
+
+        // The gate is not a credential: unlike auth_key it stays readable.
+        let dbg = format!("{:?}", base().login_allow(["ops@corp.com"]));
+        assert!(dbg.contains("ops@corp.com"));
+    }
+
     #[tokio::test]
     async fn test_bind_udp_falls_back_to_direct_socket() {
         // The mock provider has no UDP support, so bind_udp exercises the
@@ -3315,6 +3429,7 @@ mod tests {
             last_seen: None,
             identity: None,
             identity_suppressed: false,
+            login_name: Some("alice@example.com".into()),
         };
         let p = Peer::from(pre);
         assert!(p.device_id.is_none());
@@ -3346,6 +3461,7 @@ mod tests {
                 tailscale_id: "ts-abc".into(),
             }),
             identity_suppressed: false,
+            login_name: Some("alice@example.com".into()),
         };
         let p = Peer::from(post);
         assert_eq!(p.device_id.as_deref(), Some("01J4K9M2Z8AB3RNYQPW6H5TC0X"));
@@ -3371,11 +3487,16 @@ mod tests {
                 tailscale_id: "ts-xyz".into(),
             }),
             identity_suppressed: true,
+            login_name: None,
         };
         let p = Peer::from(suppressed);
         assert!(
             p.device_id.is_none(),
             "suppressed claim must project null device_id"
+        );
+        assert_eq!(
+            p.login_name, None,
+            "RFC 025 §3.6: an absent Layer 3 login projects as None, never fabricated"
         );
     }
 }
