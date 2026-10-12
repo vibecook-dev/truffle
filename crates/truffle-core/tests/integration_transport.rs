@@ -71,6 +71,10 @@ impl MockNetworkProvider {
 }
 
 impl NetworkProvider for MockNetworkProvider {
+    fn trust_mode(&self) -> truffle_core::network::NetworkTrust {
+        truffle_core::network::NetworkTrust::UnverifiedLoopback
+    }
+
     async fn start(&mut self) -> Result<(), NetworkError> {
         Ok(())
     }

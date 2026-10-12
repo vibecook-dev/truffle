@@ -1,165 +1,158 @@
-//! Request/reply RTT macro benchmark (RFC 019 §10.2.3).
-//!
-//! Alpha fires N requests to beta, which echoes each payload. Measures p50,
-//! p95, p99, p99.9 RTT via hdrhistogram.
-
-use std::time::{Duration, Instant};
-
+//! Correlated, validated request/reply RTT samples over the envelope bus.
+use crate::{
+    anyhow_lite,
+    harness::make_bench_pair,
+    report::{self, Distribution},
+};
 use clap::Args as ClapArgs;
-use hdrhistogram::Histogram;
 use serde::Serialize;
-use serde_json::json;
-
-use crate::anyhow_lite;
-use crate::harness::make_bench_pair;
-use crate::report;
+use serde_json::{json, Value};
+use std::time::{Duration, Instant};
+use truffle_core::{
+    node::NamespacedMessage,
+    request_reply::{send_and_wait, RequestError},
+};
 
 #[derive(ClapArgs)]
 pub struct Args {
-    /// Number of request/reply round trips.
-    #[arg(long, default_value_t = 500)]
+    #[arg(long, default_value_t = 500, value_parser = clap::value_parser!(u32).range(1..))]
     count: u32,
-
-    /// Per-request payload size in bytes.
-    #[arg(long, default_value_t = 1024)]
-    payload_bytes: usize,
-
-    /// Per-request timeout in seconds.
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 1024, value_parser = clap::value_parser!(u32).range(1..=1_048_576))]
+    payload_bytes: u32,
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..=3600))]
     timeout_secs: u64,
+    /// Untimed requests used to warm connections and the Tailscale path.
+    #[arg(long, default_value_t = 20)]
+    warmup: u32,
+}
+#[derive(Serialize)]
+struct Sample {
+    sequence: u64,
+    elapsed_ms: f64,
+    outcome: String,
 }
 
-#[derive(Serialize)]
-struct Params {
-    count: u32,
-    payload_bytes: usize,
-    timeout_secs: u64,
-}
-
-#[derive(Serialize)]
-struct Summary {
-    successes: u32,
-    timeouts: u32,
-    total_elapsed_secs: f64,
-    rtt_ms: Percentiles,
-}
-
-#[derive(Serialize)]
-struct Percentiles {
-    p50: f64,
-    p95: f64,
-    p99: f64,
-    p999: f64,
-    min: f64,
-    max: f64,
-    mean: f64,
+fn matches_reply(msg: &NamespacedMessage, peer: &str, payload: &Value) -> bool {
+    msg.from == peer && msg.msg_type == "pong" && &msg.payload == payload
 }
 
 pub async fn run(args: Args, authkey: &str, out_dir: &str) -> anyhow_lite::Result {
-    eprintln!(
-        "[request-reply] count={} payload_bytes={} timeout={}s",
-        args.count, args.payload_bytes, args.timeout_secs
-    );
-
-    let pair = make_bench_pair(authkey)
-        .await
-        .map_err(|e| anyhow_lite::Error(format!("failed to build bench pair: {e}")))?;
-
-    // Beta: echo handler. Must live for the duration of the benchmark.
+    let pair = make_bench_pair(authkey).await.map_err(anyhow_lite::Error)?;
+    // Register synchronously before starting the sender; no scheduling sleep.
     let beta = pair.beta.clone();
+    let mut rx = beta.subscribe("bench-rr");
     let responder = tokio::spawn(async move {
-        let mut rx = beta.subscribe("bench-rr");
-        while let Ok(msg) = rx.recv().await {
-            if msg.msg_type == "ping" {
-                let _ = beta
-                    .send_typed(&msg.from, "bench-rr", "pong", &msg.payload)
-                    .await;
+        loop {
+            match rx.recv().await {
+                Ok(msg) if msg.msg_type == "ping" => {
+                    if beta
+                        .send_typed(&msg.from, "bench-rr", "pong", &msg.payload)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(_) => break,
             }
         }
     });
-
-    // Give the subscription a moment to register.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let payload = json!({ "blob": "x".repeat(args.payload_bytes) });
-    let peer_id = pair.beta_device_id.clone();
-    let mut hist: Histogram<u64> =
-        Histogram::new_with_bounds(1, 60_000_000, 3).expect("create rtt hdrhistogram");
-    let mut successes = 0u32;
-    let mut timeouts = 0u32;
-
-    let t0 = Instant::now();
-    for i in 0..args.count {
+    let expected_sender = pair.beta.local_info().tailscale_id;
+    let before = pair.diagnostics().await;
+    let mut samples = Vec::new();
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let mut warmup_errors = 0;
+    let mut measured_start = Instant::now();
+    for sequence in 0..u64::from(args.warmup) + u64::from(args.count) {
+        if sequence == u64::from(args.warmup) {
+            measured_start = Instant::now();
+        }
+        let payload = json!({"run": run_id, "sequence": sequence, "blob": "x".repeat(args.payload_bytes as usize)});
         let start = Instant::now();
-        let res = truffle_core::request_reply::send_and_wait(
-            &pair.alpha,
-            &peer_id,
-            "bench-rr",
-            "ping",
-            &payload,
+        // The outer deadline includes the send, unlike send_and_wait's reply timer.
+        let result = tokio::time::timeout(
             Duration::from_secs(args.timeout_secs),
-            |msg| {
-                if msg.msg_type == "pong" {
-                    Some(())
-                } else {
-                    None
-                }
-            },
+            send_and_wait(
+                &pair.alpha,
+                &pair.beta_device_id,
+                "bench-rr",
+                "ping",
+                &payload,
+                Duration::from_secs(args.timeout_secs),
+                |msg| matches_reply(msg, &expected_sender, &payload).then_some(()),
+            ),
         )
         .await;
-        let elapsed = start.elapsed();
-        match res {
-            Ok(()) => {
-                successes += 1;
-                let _ = hist.record(elapsed.as_micros() as u64);
+        let outcome = match result {
+            Ok(Ok(())) => "ok",
+            Err(_) | Ok(Err(RequestError::Timeout)) => "timeout",
+            Ok(Err(RequestError::Send(_))) => "send_error",
+            Ok(Err(RequestError::ChannelClosed)) => "channel_closed",
+        };
+        if sequence < u64::from(args.warmup) {
+            if outcome != "ok" {
+                warmup_errors += 1;
             }
-            Err(_) => {
-                timeouts += 1;
-            }
-        }
-        if i % 50 == 0 && i > 0 {
-            eprintln!(
-                "  [request-reply] progress {i}/{}: p50={:.2}ms p99={:.2}ms (so far)",
-                args.count,
-                hist.value_at_quantile(0.50) as f64 / 1000.0,
-                hist.value_at_quantile(0.99) as f64 / 1000.0
-            );
+        } else {
+            samples.push(Sample {
+                sequence: sequence - u64::from(args.warmup),
+                elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
+                outcome: outcome.into(),
+            });
         }
     }
-    let total = t0.elapsed();
-
+    let total_elapsed_secs = measured_start.elapsed().as_secs_f64();
     responder.abort();
-
-    let us_to_ms = |us: f64| us / 1000.0;
-    let pct = Percentiles {
-        p50: us_to_ms(hist.value_at_quantile(0.50) as f64),
-        p95: us_to_ms(hist.value_at_quantile(0.95) as f64),
-        p99: us_to_ms(hist.value_at_quantile(0.99) as f64),
-        p999: us_to_ms(hist.value_at_quantile(0.999) as f64),
-        min: us_to_ms(hist.min() as f64),
-        max: us_to_ms(hist.max() as f64),
-        mean: us_to_ms(hist.mean()),
-    };
-
-    eprintln!(
-        "\n[request-reply] done.  {} ok / {} timeouts  p50={:.2}ms p95={:.2}ms p99={:.2}ms p99.9={:.2}ms",
-        successes, timeouts, pct.p50, pct.p95, pct.p99, pct.p999
-    );
-
-    let summary = Summary {
-        successes,
-        timeouts,
-        total_elapsed_secs: total.as_secs_f64(),
-        rtt_ms: pct,
-    };
-    let params = Params {
-        count: args.count,
-        payload_bytes: args.payload_bytes,
-        timeout_secs: args.timeout_secs,
-    };
-    let path = report::write(out_dir, "request-reply", params, summary)?;
-    eprintln!("[request-reply] report written to {}", path.display());
-
+    let _ = responder.await;
+    let after = pair.diagnostics().await;
     pair.stop().await;
+    let successes = samples.iter().filter(|s| s.outcome == "ok").count();
+    let rtt_ms = Distribution::new(
+        samples
+            .iter()
+            .filter(|s| s.outcome == "ok")
+            .map(|s| s.elapsed_ms),
+    );
+    let valid = successes == args.count as usize && warmup_errors == 0;
+    let path = report::write(
+        out_dir,
+        "request-reply",
+        json!({"topology":"same-host", "before":before, "after":after}),
+        json!({"count":args.count,"payload_bytes":args.payload_bytes,"warmup":args.warmup,"timeout_secs":args.timeout_secs}),
+        json!({"valid":valid,"successes":successes,"warmup_errors":warmup_errors,"total_elapsed_secs":total_elapsed_secs,"rtt_ms":rtt_ms,"samples":samples}),
+    )?;
+    eprintln!(
+        "[request-reply] {successes}/{} succeeded; report {}",
+        args.count,
+        path.display()
+    );
+    if !valid {
+        anyhow_lite::bail!("request/reply benchmark failed validation (see report)");
+    }
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn delayed_wrong_peer_and_corrupt_replies_do_not_count() {
+        let expected = json!({"run":"a","sequence":2,"blob":"xxx"});
+        let mut msg = NamespacedMessage {
+            from: "peer".into(),
+            namespace: "bench-rr".into(),
+            msg_type: "pong".into(),
+            payload: expected.clone(),
+            timestamp: None,
+        };
+        assert!(matches_reply(&msg, "peer", &expected));
+        msg.payload["sequence"] = json!(1);
+        assert!(!matches_reply(&msg, "peer", &expected));
+        msg.payload = expected.clone();
+        msg.from = "imposter".into();
+        assert!(!matches_reply(&msg, "peer", &expected));
+        msg.from = "peer".into();
+        msg.payload["blob"] = json!("corrupt");
+        assert!(!matches_reply(&msg, "peer", &expected));
+    }
 }

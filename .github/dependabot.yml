@@ -25,7 +25,9 @@ updates:
       - ci
 
   - package-ecosystem: gomod
-    directory: /packages/sidecar-slim
+    directories:
+      - /packages/sidecar-slim
+      - /apple/Vendor/libtailscale
     schedule:
       interval: weekly
     labels:

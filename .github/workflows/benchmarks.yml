@@ -65,7 +65,7 @@ jobs:
       - name: Install Go toolchain
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.26.8'
+          go-version: '1.27.2'
           cache-dependency-path: packages/sidecar-slim/go.sum
 
       - name: Validate tailnet credentials
@@ -92,14 +92,20 @@ jobs:
           OPS="${{ github.event.inputs.synced_store_ops || '1000' }}"
           # Halve B2 ops vs B1 — both sides write concurrently so we double
           # the combined workload anyway.
+          B2_OPS="$(((OPS + 1) / 2))"
           cargo run --locked -p truffle-bench --release -- \
-            synced-store --scenario b2-concurrent --ops "$((OPS / 2))"
+            synced-store --scenario b2-concurrent --ops "$B2_OPS"
 
       - name: Request/reply RTT
         run: |
           COUNT="${{ github.event.inputs.request_reply_count || '500' }}"
           cargo run --locked -p truffle-bench --release -- \
             request-reply --count "$COUNT" --payload-bytes 1024
+
+      - name: Raw TCP and QUIC (same-host smoke and overhead)
+        run: |
+          cargo run --locked -p truffle-bench --release -- transport --protocol tcp --bytes 1048576 --iterations 5 --warmup 1
+          cargo run --locked -p truffle-bench --release -- transport --protocol quic --bytes 1048576 --iterations 5 --warmup 1 --concurrency 2
 
       - name: Summarise results
         if: always()

@@ -120,10 +120,11 @@ type dialResultData struct {
 // unlisten, listenPacket, unlistenPacket, proxy add/remove/list) and on the
 // errors that terminate them; v5 = loginName on peers and status (RFC 025):
 // every peer row and the node's own status carry the owner's tailnet login, so
-// a login-gated core can filter Layer 3 by it. An older or absent value makes
-// the core treat the sidecar as v1.
+// a login-gated core can filter Layer 3 by it; v6 = authenticated UDP relay
+// capabilities, binding IDs, and registration acknowledgement. An absent
+// value makes the core treat the sidecar as v1.
 // Bump on any addition to the command surface the core must not send blind.
-const sidecarProtocolVersion = 5
+const sidecarProtocolVersion = 6
 
 type statusData struct {
 	State       string `json:"state"`
@@ -155,6 +156,8 @@ type peerInfo struct {
 	OS           string   `json:"os,omitempty"`
 	CurAddr      string   `json:"curAddr,omitempty"`
 	Relay        string   `json:"relay,omitempty"`
+	PeerRelay    string   `json:"peerRelay,omitempty"`
+	Active       bool     `json:"active"`
 	LastSeen     string   `json:"lastSeen,omitempty"`
 	KeyExpiry    string   `json:"keyExpiry,omitempty"`
 	Expired      bool     `json:"expired,omitempty"`
@@ -227,6 +230,7 @@ type pingResultData struct {
 	LatencyMs float64 `json:"latencyMs"`
 	Direct    bool    `json:"direct"`
 	Relay     string  `json:"relay,omitempty"`
+	PeerRelay string  `json:"peerRelay,omitempty"`
 	PeerAddr  string  `json:"peerAddr,omitempty"`
 	Error     string  `json:"error,omitempty"`
 	RequestID string  `json:"requestId,omitempty"` // echoes pingData.RequestID (P12)
@@ -629,8 +633,9 @@ func (e *proxyEntry) shutdown(timeout time.Duration) {
 // tsnet:unlistenPacket commands, and doubles as the tsnet:unlistenedPacket
 // event payload.
 type listenPacketData struct {
-	Port      uint16 `json:"port"`
-	RequestID string `json:"requestId,omitempty"` // optional correlation id echoed back
+	RelayVersion int    `json:"relayVersion,omitempty"`
+	Port         uint16 `json:"port"`
+	RequestID    string `json:"requestId,omitempty"` // optional correlation id echoed back
 }
 
 // listeningPacketData is the payload for tsnet:listeningPacket events.
@@ -638,15 +643,6 @@ type listeningPacketData struct {
 	Port      uint16 `json:"port"`
 	LocalPort uint16 `json:"localPort"`
 	RequestID string `json:"requestId,omitempty"` // echoes listenPacketData.RequestID
-}
-
-// udpRelay manages a tsnet PacketConn <-> local UDP socket relay.
-type udpRelay struct {
-	port      uint16         // tsnet-bound port
-	localPort uint16         // local relay port (127.0.0.1)
-	tsnetConn net.PacketConn // tsnet PacketConn
-	localConn net.PacketConn // local UDP socket
-	cancel    context.CancelFunc
 }
 
 // shim is the main application state.
@@ -673,9 +669,9 @@ type shim struct {
 	dynamicListenerMu sync.Mutex
 	dynamicListeners  map[uint16]net.Listener
 
-	// udpRelays tracks active UDP relays created via tsnet:listenPacket, keyed by port.
+	// udpRelays tracks active UDP relays created via tsnet:listenPacket, keyed by unique binding ID.
 	udpRelayMu sync.Mutex
-	udpRelays  map[uint16]*udpRelay
+	udpRelays  map[string]*udpRelay
 
 	// proxies tracks active reverse proxies created via proxy:add, keyed by ID.
 	proxyMu          sync.Mutex
@@ -816,7 +812,7 @@ func main() {
 	s := &shim{
 		writer:           json.NewEncoder(os.Stdout),
 		dynamicListeners: make(map[uint16]net.Listener),
-		udpRelays:        make(map[uint16]*udpRelay),
+		udpRelays:        make(map[string]*udpRelay),
 		proxies:          make(map[string]*proxyEntry),
 		pendingProxyAdds: make(map[string]*pendingProxyAdd),
 		ctx:              ctx,
@@ -1123,16 +1119,14 @@ func (s *shim) handleStop() {
 	s.dynamicListeners = make(map[uint16]net.Listener)
 	s.dynamicListenerMu.Unlock()
 
-	// Close UDP relays
+	// Detach leases under the lock, then close potentially blocking sockets.
 	s.udpRelayMu.Lock()
-	for port, relay := range s.udpRelays {
-		debugf("closing UDP relay :%d", port)
-		relay.cancel()
-		relay.tsnetConn.Close()
-		relay.localConn.Close()
-	}
-	s.udpRelays = make(map[uint16]*udpRelay)
+	relays := s.udpRelays
+	s.udpRelays = make(map[string]*udpRelay)
 	s.udpRelayMu.Unlock()
+	for _, relay := range relays {
+		relay.close()
+	}
 
 	// Close live and pending proxies — snapshot while holding the lock, then
 	// tear down without it so potentially slow Shutdown calls cannot block
@@ -1448,288 +1442,6 @@ func (s *shim) handleUnlisten(data json.RawMessage) {
 	s.sendEvent("tsnet:unlistened", unlistenedData{Port: d.Port, RequestID: d.RequestID})
 }
 
-func (s *shim) handleListenPacket(data json.RawMessage) {
-	var d listenPacketData
-	if err := json.Unmarshal(data, &d); err != nil {
-		s.sendError("LISTEN_PACKET_ERROR", fmt.Sprintf("invalid listenPacket data: %v", err))
-		return
-	}
-
-	srv := s.getServer()
-	if srv == nil {
-		s.sendErrorFor("NOT_RUNNING", "node not running", d.RequestID)
-		return
-	}
-
-	// Check if already relaying on this port
-	s.udpRelayMu.Lock()
-	if _, exists := s.udpRelays[d.Port]; exists {
-		s.udpRelayMu.Unlock()
-		s.sendErrorFor("LISTEN_PACKET_ERROR", fmt.Sprintf("already listening UDP on port %d", d.Port), d.RequestID)
-		return
-	}
-	s.udpRelayMu.Unlock()
-
-	go func() {
-		defer s.recoverPanic("handleListenPacket")
-
-		ctx := s.lifecycleCtx()
-
-		// Get the tailscale IP for binding
-		status, err := srv.LocalClient()
-		if err != nil {
-			s.sendErrorFor("LISTEN_PACKET_ERROR", fmt.Sprintf("failed to get local client: %v", err), d.RequestID)
-			return
-		}
-
-		st, err := status.StatusWithoutPeers(ctx)
-		if err != nil {
-			s.sendErrorFor("LISTEN_PACKET_ERROR", fmt.Sprintf("failed to get status: %v", err), d.RequestID)
-			return
-		}
-
-		if len(st.TailscaleIPs) == 0 {
-			s.sendErrorFor("LISTEN_PACKET_ERROR", "no Tailscale IPs available", d.RequestID)
-			return
-		}
-
-		tsIP := st.TailscaleIPs[0].String()
-		listenAddr := fmt.Sprintf("%s:%d", tsIP, d.Port)
-
-		// Bind tsnet PacketConn
-		debugf("UDP relay: calling ListenPacket(%q, %q)", "udp", listenAddr)
-		tsnetPC, err := srv.ListenPacket("udp", listenAddr)
-		if err != nil {
-			s.sendErrorFor("LISTEN_PACKET_ERROR", fmt.Sprintf("ListenPacket %s: %v", listenAddr, err), d.RequestID)
-			return
-		}
-		debugf("UDP relay: ListenPacket succeeded, local addr = %v", tsnetPC.LocalAddr())
-
-		// Bind local relay UDP socket on ephemeral port
-		localPC, err := net.ListenPacket("udp", "127.0.0.1:0")
-		if err != nil {
-			tsnetPC.Close()
-			s.sendErrorFor("LISTEN_PACKET_ERROR", fmt.Sprintf("local UDP bind: %v", err), d.RequestID)
-			return
-		}
-
-		localAddr := localPC.LocalAddr().(*net.UDPAddr)
-		localPort := uint16(localAddr.Port)
-
-		relayCtx, relayCancel := context.WithCancel(ctx)
-
-		relay := &udpRelay{
-			port:      d.Port,
-			localPort: localPort,
-			tsnetConn: tsnetPC,
-			localConn: localPC,
-			cancel:    relayCancel,
-		}
-
-		// B4: re-check under the lock before inserting (closes the check→insert
-		// TOCTOU; the tsnet ListenPacket bind above also rejects duplicates).
-		s.udpRelayMu.Lock()
-		if _, exists := s.udpRelays[d.Port]; exists {
-			s.udpRelayMu.Unlock()
-			relayCancel()
-			tsnetPC.Close()
-			localPC.Close()
-			s.sendErrorFor("LISTEN_PACKET_ERROR", fmt.Sprintf("already listening UDP on port %d", d.Port), d.RequestID)
-			return
-		}
-		s.udpRelays[d.Port] = relay
-		s.udpRelayMu.Unlock()
-
-		s.sendEvent("tsnet:listeningPacket", listeningPacketData{
-			Port:      d.Port,
-			LocalPort: localPort,
-			RequestID: d.RequestID,
-		})
-
-		debugf("UDP relay started: tsnet %s <-> 127.0.0.1:%d", listenAddr, localPort)
-
-		// Self-test: verify the tsnet PacketConn can send to itself.
-		// This catches misconfigurations early (wrong address format, etc).
-		// Use the actual bound address from LocalAddr so ephemeral port 0 works.
-		go func() {
-			selfAddr := tsnetPC.LocalAddr()
-			testPayload := []byte("truffle-udp-selftest")
-			debugf("UDP relay self-test: sending %d bytes to self at %v", len(testPayload), selfAddr)
-			nw, werr := tsnetPC.WriteTo(testPayload, selfAddr)
-			if werr != nil {
-				debugf("UDP relay self-test: WriteTo FAILED: %v", werr)
-			} else {
-				debugf("UDP relay self-test: WriteTo sent %d bytes to self OK", nw)
-			}
-		}()
-
-		// We need to track the Rust peer's address so we can relay inbound packets to it.
-		// The Rust side "connects" its UDP socket to our local relay, so we learn its
-		// address from the first outbound packet it sends.
-		var rustAddr net.Addr
-		var rustAddrMu sync.Mutex
-
-		// Goroutine: tsnet -> local (inbound datagrams)
-		go func() {
-			buf := make([]byte, 65536)
-			for {
-				select {
-				case <-relayCtx.Done():
-					return
-				default:
-				}
-
-				n, remoteAddr, err := tsnetPC.ReadFrom(buf)
-				if err != nil {
-					if relayCtx.Err() != nil {
-						return
-					}
-					log.Printf("UDP relay tsnet read error: %v", err)
-					continue
-				}
-
-				debugf("UDP relay inbound: %d bytes from %v", n, remoteAddr)
-
-				// Parse remote address to get IP and port for the header
-				udpAddr, ok := remoteAddr.(*net.UDPAddr)
-				if !ok {
-					debugf("UDP relay: unexpected remote addr type: %T", remoteAddr)
-					continue
-				}
-
-				ip4 := udpAddr.IP.To4()
-				if ip4 == nil {
-					debugf("UDP relay: non-IPv4 remote addr: %v", udpAddr)
-					continue
-				}
-
-				// Frame: [4-byte IPv4][2-byte port BE][payload]
-				framed := make([]byte, 6+n)
-				copy(framed[0:4], ip4)
-				binary.BigEndian.PutUint16(framed[4:6], uint16(udpAddr.Port))
-				copy(framed[6:], buf[:n])
-
-				rustAddrMu.Lock()
-				ra := rustAddr
-				rustAddrMu.Unlock()
-
-				if ra == nil {
-					debugf("UDP relay: no Rust peer address yet, dropping inbound packet from %v", remoteAddr)
-					continue
-				}
-
-				debugf("UDP relay inbound: forwarding %d framed bytes to Rust at %v", len(framed), ra)
-				if _, err := localPC.WriteTo(framed, ra); err != nil {
-					if relayCtx.Err() != nil {
-						return
-					}
-					log.Printf("UDP relay local write error: %v", err)
-				}
-			}
-		}()
-
-		// Main goroutine: local -> tsnet (outbound datagrams)
-		buf := make([]byte, 65536)
-		for {
-			select {
-			case <-relayCtx.Done():
-				return
-			default:
-			}
-
-			n, senderAddr, err := localPC.ReadFrom(buf)
-			if err != nil {
-				if relayCtx.Err() != nil {
-					return
-				}
-				log.Printf("UDP relay local read error: %v", err)
-				continue
-			}
-
-			isRegister := n >= 20 && string(buf[:20]) == "TRUFFLE_UDP_REGISTER"
-
-			// P11: the loopback relay socket is otherwise unauthenticated, so
-			// only (re)learn the trusted Rust peer address from an explicit
-			// REGISTER packet, and only forward datagrams that come from it —
-			// otherwise another local process could hijack the relay by racing
-			// a datagram to the loopback port.
-			rustAddrMu.Lock()
-			if isRegister {
-				if rustAddr == nil {
-					debugf("UDP relay: learned Rust peer address: %v", senderAddr)
-				}
-				rustAddr = senderAddr
-			}
-			trusted := rustAddr != nil && senderAddr.String() == rustAddr.String()
-			rustAddrMu.Unlock()
-
-			if isRegister {
-				debugf("UDP relay: registration packet from Rust at %v", senderAddr)
-				continue
-			}
-
-			if !trusted {
-				debugf("UDP relay: dropping datagram from untrusted local sender %v", senderAddr)
-				continue
-			}
-
-			if n < 6 {
-				debugf("UDP relay: outbound packet too short (%d bytes)", n)
-				continue
-			}
-
-			// Parse header: [4-byte IPv4][2-byte port BE][payload]
-			// IMPORTANT: Use a raw 4-byte net.IP slice instead of net.IPv4()
-			// which returns a 16-byte IPv4-mapped IPv6 address (::ffff:x.x.x.x).
-			// gvisor's gonet.UDPConn.WriteTo passes the IP to tcpip.AddrFromSlice
-			// which treats 16-byte IPs as IPv6. Since our tsnet PacketConn is
-			// bound as udp4, writing to an IPv6 dest would fail silently or
-			// produce a network-unreachable error.
-			targetIP := net.IP(append([]byte(nil), buf[0:4]...))
-			targetPort := binary.BigEndian.Uint16(buf[4:6])
-			payload := buf[6:n]
-
-			targetAddr := &net.UDPAddr{IP: targetIP, Port: int(targetPort)}
-			debugf("UDP relay outbound: %d payload bytes -> %v (IP len=%d, raw IP=%x)", len(payload), targetAddr, len(targetIP), []byte(targetIP))
-			if _, err := tsnetPC.WriteTo(payload, targetAddr); err != nil {
-				if relayCtx.Err() != nil {
-					return
-				}
-				log.Printf("UDP relay tsnet write error to %v: %v", targetAddr, err)
-			} else {
-				debugf("UDP relay outbound: sent %d bytes to %v OK", len(payload), targetAddr)
-			}
-		}
-	}()
-}
-
-func (s *shim) handleUnlistenPacket(data json.RawMessage) {
-	var d listenPacketData
-	if err := json.Unmarshal(data, &d); err != nil {
-		s.sendError("UNLISTEN_PACKET_ERROR", fmt.Sprintf("invalid unlistenPacket data: %v", err))
-		return
-	}
-
-	s.udpRelayMu.Lock()
-	relay, exists := s.udpRelays[d.Port]
-	if !exists {
-		s.udpRelayMu.Unlock()
-		s.sendErrorFor("UNLISTEN_PACKET_ERROR", fmt.Sprintf("no UDP relay on port %d", d.Port), d.RequestID)
-		return
-	}
-	delete(s.udpRelays, d.Port)
-	s.udpRelayMu.Unlock()
-
-	// P9/P10: cancel AND close both conns so the relay goroutines (blocked in
-	// ReadFrom, which ctx cancellation alone cannot interrupt) exit promptly.
-	relay.cancel()
-	relay.tsnetConn.Close()
-	relay.localConn.Close()
-
-	debugf("stopped UDP relay on :%d", d.Port)
-	s.sendEvent("tsnet:unlistenedPacket", listenPacketData{Port: d.Port, RequestID: d.RequestID})
-}
-
 func (s *shim) handlePing(data json.RawMessage) {
 	var d pingData
 	if err := json.Unmarshal(data, &d); err != nil {
@@ -1767,16 +1479,16 @@ func (s *shim) handlePing(data json.RawMessage) {
 		}
 
 		// Map user-facing ping type to tailcfg.PingType.
-		// Valid values: "TSMP" (default), "disco", "ICMP", "peerapi".
+		// Valid values: "TSMP", "disco" (default), "ICMP", "peerapi".
 		var pt tailcfg.PingType
 		switch strings.ToUpper(d.PingType) {
-		case "DISCO":
+		case "DISCO", "":
 			pt = tailcfg.PingDisco
 		case "ICMP":
 			pt = tailcfg.PingICMP
 		case "PEERAPI":
 			pt = tailcfg.PingPeerAPI
-		case "TSMP", "":
+		case "TSMP":
 			pt = tailcfg.PingTSMP
 		default:
 			emit(pingResultData{Error: fmt.Sprintf("unknown ping type: %s (valid: TSMP, disco, ICMP, peerapi)", d.PingType)})
@@ -1798,13 +1510,18 @@ func (s *shim) handlePing(data json.RawMessage) {
 			return
 		}
 
-		emit(pingResultData{
-			LatencyMs: result.LatencySeconds * 1000.0,
-			Direct:    result.Endpoint != "" && result.DERPRegionID == 0,
-			Relay:     result.DERPRegionCode,
-			PeerAddr:  result.Endpoint,
-		})
+		emit(pingResultToData(result))
 	}()
+}
+
+func pingResultToData(result *ipnstate.PingResult) pingResultData {
+	return pingResultData{
+		LatencyMs: result.LatencySeconds * 1000,
+		Direct:    result.Endpoint != "" && result.DERPRegionID == 0 && result.PeerRelay == "",
+		Relay:     result.DERPRegionCode,
+		PeerRelay: result.PeerRelay,
+		PeerAddr:  result.Endpoint,
+	}
 }
 
 // handleWhois answers a tsnet:whois query: the tailnet identity of the node
@@ -1980,9 +1697,9 @@ func (s *shim) startPeerWatch(lc *local.Client) {
 						watchErrCh <- err
 						return
 					}
-					// Since 1.102, ongoing NetMap notifications are Windows-only.
 					// PeerPatches also subscribes to full-node changes/removals.
-					if n.InitialStatus == nil && n.SelfChange == nil && n.NetMap == nil &&
+					// Tailscale 1.104 removed the legacy NetMap notification.
+					if n.InitialStatus == nil && n.SelfChange == nil &&
 						len(n.PeersChanged) == 0 && len(n.PeersRemoved) == 0 && len(n.PeerChangedPatch) == 0 {
 						continue
 					}
@@ -2046,6 +1763,8 @@ func statusPeerToInfo(peer *ipnstate.PeerStatus, users map[tailcfg.UserID]tailcf
 		OS:           peer.OS,
 		CurAddr:      peer.CurAddr,
 		Relay:        peer.Relay,
+		PeerRelay:    peer.PeerRelay,
+		Active:       peer.Active,
 		Expired:      peer.Expired,
 		LoginName:    loginNameForUser(users, peer.UserID),
 	}
@@ -2060,6 +1779,9 @@ func statusPeerToInfo(peer *ipnstate.PeerStatus, users map[tailcfg.UserID]tailcf
 
 // watchPeerChanged returns true if any observable property of the peer has changed.
 func watchPeerChanged(old, new peerInfo) bool {
+	if old.Active != new.Active || old.PeerRelay != new.PeerRelay {
+		return true
+	}
 	if old.Online != new.Online {
 		return true
 	}

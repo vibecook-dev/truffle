@@ -385,7 +385,7 @@ async fn create_tsnet_server_endpoint<N: NetworkProvider + 'static>(
 }
 
 /// Create a client endpoint via tsnet, falling back to a direct host socket
-/// when the provider has no UDP support (mock providers, loopback tests).
+/// only for providers explicitly configured for unverified loopback tests.
 async fn client_endpoint_with_fallback<N: NetworkProvider + 'static>(
     network: &Arc<N>,
     client_config: quinn::ClientConfig,
@@ -395,24 +395,27 @@ async fn client_endpoint_with_fallback<N: NetworkProvider + 'static>(
             tracing::info!("quic: using TsnetUdpSocket for client endpoint");
             Ok(ep)
         }
-        Err(tsnet_err) => {
+        Err(tsnet_err)
+            if network.trust_mode() == crate::network::NetworkTrust::UnverifiedLoopback =>
+        {
             tracing::debug!(
                 err = %tsnet_err,
-                "quic: tsnet client endpoint unavailable, falling back to direct socket"
+                "quic: tsnet client endpoint unavailable, using explicitly enabled loopback test socket"
             );
-            let mut ep = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap())
+            let mut ep = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap())
                 .map_err(|e| TransportError::ConnectFailed(format!("create quic endpoint: {e}")))?;
             ep.set_default_client_config(client_config);
             Ok(ep)
         }
+        Err(e) => Err(e),
     }
 }
 
 /// Create a server endpoint via tsnet, falling back to a direct host socket
-/// when the provider has no UDP support (mock providers, loopback tests).
+/// only for providers explicitly configured for unverified loopback tests.
 ///
 /// Returns `(Endpoint, actual_port)`. On the tsnet path the "actual" port is
-/// the requested tsnet port (the relay cannot report ephemeral assignments);
+/// the actual assigned tsnet port;
 /// on the fallback path it is the real local socket port.
 async fn server_endpoint_with_fallback<N: NetworkProvider + 'static>(
     network: &Arc<N>,
@@ -424,12 +427,14 @@ async fn server_endpoint_with_fallback<N: NetworkProvider + 'static>(
             tracing::info!(port = p, "quic: using TsnetUdpSocket for server endpoint");
             Ok((ep, p))
         }
-        Err(tsnet_err) => {
+        Err(tsnet_err)
+            if network.trust_mode() == crate::network::NetworkTrust::UnverifiedLoopback =>
+        {
             tracing::debug!(
                 err = %tsnet_err,
-                "quic: tsnet server endpoint unavailable, falling back to direct socket"
+                "quic: tsnet server endpoint unavailable, using explicitly enabled loopback test socket"
             );
-            let bind_addr: SocketAddr = format!("0.0.0.0:{port}")
+            let bind_addr: SocketAddr = format!("127.0.0.1:{port}")
                 .parse()
                 .map_err(|e| TransportError::ListenFailed(format!("parse bind address: {e}")))?;
 
@@ -443,6 +448,7 @@ async fn server_endpoint_with_fallback<N: NetworkProvider + 'static>(
 
             Ok((ep, actual))
         }
+        Err(e) => Err(e),
     }
 }
 
@@ -1040,5 +1046,60 @@ impl std::fmt::Debug for QuicListener {
         f.debug_struct("QuicListener")
             .field("port", &self.port)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod security_regressions {
+    use super::*;
+    use crate::network::tailscale::{TailscaleConfig, TailscaleProvider};
+    fn stopped_provider() -> Arc<TailscaleProvider> {
+        Arc::new(TailscaleProvider::new(TailscaleConfig {
+            binary_path: "/nonexistent/sidecar".into(),
+            app_id: "test".into(),
+            device_id: "device".into(),
+            device_name: "test".into(),
+            hostname: "truffle-test-device".into(),
+            state_dir: "unused".into(),
+            auth_key: None,
+            ephemeral: Some(true),
+            tags: None,
+            idle_timeout_secs: None,
+            login_allow: Vec::new(),
+        }))
+    }
+    #[tokio::test]
+    async fn stopped_tailscale_cannot_create_host_quic_client() {
+        let result = client_endpoint_with_fallback(
+            &stopped_provider(),
+            build_client_config(b"test").unwrap(),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "stopped Tailscale silently created a host QUIC client"
+        );
+    }
+    #[tokio::test]
+    async fn stopped_tailscale_cannot_expose_host_quic_listener() {
+        let result = listen_raw(&stopped_provider(), 0, b"test").await;
+        assert!(
+            result.is_err(),
+            "stopped Tailscale silently exposed a host QUIC listener"
+        );
+    }
+    #[tokio::test]
+    async fn stopped_tailscale_cannot_expose_host_udp_socket() {
+        use crate::transport::{
+            udp::{UdpConfig, UdpTransport},
+            DatagramTransport,
+        };
+        let result = UdpTransport::new(stopped_provider(), UdpConfig::default())
+            .bind(0)
+            .await;
+        assert!(
+            result.is_err(),
+            "stopped Tailscale silently exposed a host UDP socket"
+        );
     }
 }

@@ -1,3 +1,135 @@
+# Tailscale 1.104.1 upgrade (October 2026)
+
+Both Go module graphs pin Tailscale 1.104.1 and Go 1.27.2, with WireGuard/gVisor
+upgraded through Tailscale's dependency graph. `golang.org/x/net` is additionally
+pinned to 0.60.0 for the October HTTP/2 security fixes. Go build workflows use
+the same toolchain. Dependabot watches both graphs; security CI scans the
+sidecar and exact patched libtailscale sources with govulncheck 1.9.0.
+The only remaining module-level advisory concerns unused `x/crypto/openpgp`;
+there are no reachable vulnerable symbols or imported vulnerable packages.
+
+The sidecar peer watcher no longer refers to the removed `Notify.NetMap`.
+Apple retains its reviewed identity/stream patches and adds the typed-DERP-ID
+compatibility patch for upstream test utilities. Wrapper source revision
+is recorded once in `apple/Vendor/libtailscale/REVISION`.
+
+## Transport regression fixes
+
+New tests first reproduced host-network fallback on stopped Tailscale,
+missing WhoIs proof acceptance, unauthorized local UDP injection, leaked and
+incorrect ephemeral UDP ports, and direct paths mislabeled as DERP. The fixes:
+
+- Production QUIC/UDP fail closed. Only providers explicitly selecting
+  `NetworkTrust::UnverifiedLoopback` may bind direct loopback test sockets.
+- Incoming WebSocket hello identity requires a valid WhoIs stable node ID.
+  Mock opt-out is explicit and restricted to loopback; concrete mismatches
+  are always rejected before returning a hello or yielding a stream.
+- UDP control protocol **v6** derives a per-binding HMAC capability from the
+  bridge session key and binding ID, pins the authenticated local endpoint,
+  and acknowledges registration before data can flow. No secret is added
+  to JSON events or logs. Self-test packets no longer enter application IO.
+- Binding IDs, actual assigned ports, and cleanup installed before the bind
+  request cover normal Drop, failures and cancelled futures. Late release
+  cannot close a replacement binding using the same port. Unregistered
+  relays expire after 10 seconds. QUIC can now listen on an ephemeral port.
+- Diagnostic pings explicitly use Disco. Peer status distinguishes direct,
+  peer relay, DERP, and inactive/unknown paths; a home DERP region alone is
+  not evidence of active relay traffic.
+
+Upgrade the Rust library and sidecar together. New Rust rejects UDP on a
+pre-v6 sidecar with an explicit upgrade error. Distributing the new sidecar
+uses the normal versioned release workflow; do not overwrite published binaries.
+Protocol v5 remains the minimum for login gating; it does not imply support
+for authenticated UDP. Rust and Go regression tests reject that legacy relay
+before opening a listener or exchanging traffic.
+Public `NetworkPeer` literals in custom Rust providers now include `active`
+and `peer_relay`, and loopback mocks must explicitly opt into their trust mode.
+
+## Benchmarking and storage
+
+See [Tailscale performance measurements](tailscale-performance.md) for the
+versioned reports, validated application workloads, TCP/QUIC server/client
+modes, native Go/tsnet baseline, and two-host comparison procedure. Hosted
+same-host results are smoke/overhead measurements, not WAN capacity claims.
+
+Large local builds can use external storage. Set `CARGO_TARGET_DIR`, `GOCACHE`,
+`GOTMPDIR`, and `TMPDIR` to that volume. `TRUFFLE_TEST_SIDECAR_PATH` overrides
+the build script, integration harness and benchmark sidecar output/input path.
+Swift supports `--scratch-path`/`--cache-path`; use Xcode `-derivedDataPath`
+and a module-cache path on the same volume. Ignored Apple cache directories
+also support symlinks. Rebuild Swift module caches after moving them: cached
+compiler paths can be absolute.
+
+## Validation on October 12, 2026
+
+- The sidecar and native benchmark pass Go race tests, `go vet`, and module
+  verification. Both final Go graphs pass the reachable-code vulnerability
+  scan. Final sidecar builds pass for macOS arm64/amd64, Linux arm64/amd64,
+  and Windows amd64; embedded build information confirms all three pins.
+- `cargo test --locked --workspace -- --test-threads=1` passes, including
+  366 core unit tests and the live tailnet suites. The 16 ignored transport
+  stress tests also pass when explicitly enabled. Three pre-existing `todo!`
+  integration placeholders and ignored documentation examples remain ignored;
+  real startup, discovery, TCP and ping coverage lives in `integration_network`.
+- Strict Clippy and rustdoc checks pass; existing Criterion benchmarks compile.
+  TypeScript builds, 67 JavaScript tests, and 18 release-tooling tests pass.
+- Release-mode smoke runs pass for request/reply, verified file transfer,
+  both store scenarios, raw TCP, and raw QUIC with two concurrent clients.
+  A native Go/tsnet TCP smoke run also passes. All these measurements use
+  this Mac and are validation results, not evidence of WAN capacity.
+  A native Go client also verifies 1 MiB transfers against the standalone
+  Rust server, confirming the shared benchmark wire protocol.
+- The Apple artifact passes all patched Go race tests, six exact-source Swift
+  stream tests, 70 Swift package tests at its published source snapshot, and
+  iOS device/simulator builds. Integration with main passes 107 Swift tests.
+- Hosted benchmark CI exposed overlapping receiver cleanup between small file
+  transfers. A 13-transfer regression reproduced the pending-offer rejection;
+  the harness now waits for matching receiver completion between iterations,
+  outside the sender's timed interval. The live-network workflow includes
+  benchmark regressions so this ordering remains covered.
+
+The existing QUIC adapter still uses IPv4 datagram framing without batching,
+GSO/GRO or ECN, and allocates framing buffers per datagram. Those optimization
+candidates need profiling and comparisons against the native baseline on two
+hosts; this change does not claim that maximum stack performance is established.
+
+## Apple artifact publication
+
+The [dependency release](https://github.com/vibecook-dev/truffle/releases/tag/tailscalekit-59d4bb82-ts1.104.1-go1.27.2)
+is published from source commit `b1541c5dff71d870640d69f773ec5a2549ca3cd5`.
+Archive and source checksums are recorded in
+[the provenance record](../apple/Vendor/README.md); the root Swift package now
+pins the public URL and checksum.
+
+A fresh clone of the public tag, with fresh SwiftPM/Xcode caches and no local
+framework, downloaded the archive, passed all 70 Swift tests, and built the
+production runtime for iOS devices and simulators. The downloaded archive and
+both framework binaries match the validated hashes. These checks ran locally;
+the dependency release was published before GitHub Actions CI ran. All local
+consumer checkouts, caches, and build products used the portable SSD.
+
+The subsequent [Apple CI run](https://github.com/vibecook-dev/truffle/actions/runs/38235663650)
+checked out that exact source commit and passed source builds, public-download
+consumer tests, iOS device/simulator builds, and Rust interop fixtures.
+[Live-network CI](https://github.com/vibecook-dev/truffle/actions/runs/38235448715)
+and [CodeQL](https://github.com/vibecook-dev/truffle/actions/runs/38235456509)
+also passed. The historical source commit does **not** have fully green CI:
+[security CI](https://github.com/vibecook-dev/truffle/actions/runs/38235452502)
+found RustSec RUSTSEC-2026-0285 in its Rust dependency graph (both Go scans
+passed), and [Rust lint](https://github.com/vibecook-dev/truffle/actions/runs/38235445020)
+found an atomic-method deprecation on the newer CI compiler. These Rust-only
+failures are corrected on the integration branch, which incorporates main's
+rustls 0.23.45 update and uses an MSRV-compatible compare/exchange loop.
+The published Apple artifact and source tag remain unchanged.
+
+Future dependency releases require committed source and successful source-build
+CI before publication. The subsequent root-package URL/checksum change must
+pass public-download consumer CI before merge. Manual Apple CI accepts a
+`source_ref`, allowing a specific immutable commit or dependency tag to be
+validated without moving that tag.
+
+---
+
 # Tailscale 1.102.3 upgrade
 
 ## Scope

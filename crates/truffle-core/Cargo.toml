@@ -32,6 +32,7 @@ quinn.workspace = true
 rustls.workspace = true
 rcgen.workspace = true
 sha2.workspace = true
+hmac.workspace = true
 # RFC 017: identity and namespacing
 ulid.workspace = true
 dirs.workspace = true
