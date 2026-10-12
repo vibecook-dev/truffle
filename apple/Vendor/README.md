@@ -55,7 +55,7 @@ versions embedded in the resulting framework binaries.
 | `libtailscale/go.mod` | `131bb9f3a7e7b7f7576e5c30439f1caa34a722ed03d85249e4d41e8700c09855` |
 | `libtailscale/go.sum` | `86cc3286bdd486996ef3d012d83de656d605b6e854f8d0a7b8c1e4802424280b` |
 
-## Validated artifact (publication pending)
+## Published artifact
 
 The rebuilt local framework uses the inputs above, including `golang.org/x/net
 v0.60.0` for the October HTTP/2 security fixes. On October 12, 2026 it passed
@@ -63,16 +63,27 @@ all C-binding Go packages under the race detector, six exact-source Swift
 stream tests, 70 Swift package tests, and iOS device/simulator builds.
 `govulncheck` reports no reachable vulnerabilities in either Go graph.
 
-The root `Package.swift` pins the new artifact URL and checksum for this
-dependency tag. The validated archive, exact patched source archive, and
-`provenance.json` are prepared for publication with this commit. The public
-URL/clean-consumer validation remains a publication gate.
+The [dependency release](https://github.com/vibecook-dev/truffle/releases/tag/tailscalekit-59d4bb82-ts1.104.1-go1.27.2)
+was published from source commit
+[`b1541c5dff71d870640d69f773ec5a2549ca3cd5`](https://github.com/vibecook-dev/truffle/commit/b1541c5dff71d870640d69f773ec5a2549ca3cd5).
+The root `Package.swift` pins its URL and checksum. A fresh clone of that tag,
+with fresh SwiftPM/Xcode caches and no materialized local framework, downloaded
+the public archive, passed all 70 Swift tests, and built the production runtime
+for iOS devices and simulators. GitHub's uploaded digests and the freshly
+downloaded archive/binaries match the validated hashes. The exact patched
+source archive and `provenance.json` are attached to the release.
+
+These checks were run locally. Publication occurred before GitHub Actions CI
+ran on the source commit; the CI audit is pending. Future dependency releases
+must pass source-build CI on their committed inputs before publication, then
+pass public-download consumer CI before the package update is merged.
 
 | Field | Value |
 | --- | --- |
 | Release tag | `tailscalekit-59d4bb82-ts1.104.1-go1.27.2` |
 | Asset | `TailscaleKit.xcframework.zip` (about 24 MiB) |
 | SwiftPM checksum | `f8a61a742e42cbf04983213ea28f8a2370802b17fe420ea9cac7f59249c3238f` |
+| Patched source archive | `463de5953d3f94790922b8cc495958aafd3713f856eb7986ec99461d84db47ca` |
 | Device binary | `c9a7d20999b41889958f1c5c8dc3f9d3cc94d0ca82ad8409e114ac0a77bc0b55` |
 | Simulator binary | `4d6defab38abd26d6d60430efb59b17ad930edb9fe0a42dd524141ba49ce1d54` |
 

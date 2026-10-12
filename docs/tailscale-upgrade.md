@@ -86,12 +86,25 @@ hosts; this change does not claim that maximum stack performance is established.
 
 ## Apple artifact publication
 
-The validated dependency artifact is
-`tailscalekit-59d4bb82-ts1.104.1-go1.27.2`. Archive and source checksums are
-recorded in [the provenance record](../apple/Vendor/README.md).
-Local validation is complete and the root Swift package pins the new URL
-and checksum. This commit is the dependency-release source snapshot.
-Publication is followed by a clean consumer download/build/test.
+The [dependency release](https://github.com/vibecook-dev/truffle/releases/tag/tailscalekit-59d4bb82-ts1.104.1-go1.27.2)
+is published from source commit `b1541c5dff71d870640d69f773ec5a2549ca3cd5`.
+Archive and source checksums are recorded in
+[the provenance record](../apple/Vendor/README.md); the root Swift package now
+pins the public URL and checksum.
+
+A fresh clone of the public tag, with fresh SwiftPM/Xcode caches and no local
+framework, downloaded the archive, passed all 70 Swift tests, and built the
+production runtime for iOS devices and simulators. The downloaded archive and
+both framework binaries match the validated hashes. These checks ran locally;
+the dependency release was published before GitHub Actions CI ran. The CI
+audit is pending. All local consumer checkouts, caches, and build products
+used the portable SSD.
+
+Future dependency releases require committed source and successful source-build
+CI before publication. The subsequent root-package URL/checksum change must
+pass public-download consumer CI before merge. Manual Apple CI accepts a
+`source_ref`, allowing a specific immutable commit or dependency tag to be
+validated without moving that tag.
 
 ---
 
