@@ -72,7 +72,7 @@ func newTestTailnet(t *testing.T) *testTailnet {
 	})
 
 	control := &testcontrol.Server{
-		DERPMap: &tailcfg.DERPMap{Regions: map[int]*tailcfg.DERPRegion{
+		DERPMap: &tailcfg.DERPMap{Regions: map[tailcfg.DERPRegionID]*tailcfg.DERPRegion{
 			1: {RegionID: 1, RegionCode: "test", Nodes: []*tailcfg.DERPNode{{
 				Name: "t1", RegionID: 1, HostName: "127.0.0.1", IPv4: "127.0.0.1", IPv6: "none",
 				STUNPort: stunAddr.Port, DERPPort: derpLn.Addr().(*net.TCPAddr).Port,
@@ -900,5 +900,45 @@ func TestEgressE3ConnectProxy(t *testing.T) {
 	gatedTap.reply(t, "px-gated").decode(t, &gpx)
 	if res, _, _ := connectThrough(t, gpx.Address, peer443, basic("x", gpx.Credential), ""); res.StatusCode != http.StatusForbidden {
 		t.Errorf("a gated proxy's CONNECT to a foreign-owned peer = %d, want 403", res.StatusCode)
+	}
+}
+
+// A node's own address is admitted too: both E2 and E3 must stay within the
+// same userspace stack when the destination is self, by IP or MagicDNS name.
+func TestEgressSelfDial(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	tn := newTestTailnet(t)
+	self := tn.node(t, ctx, "self")
+	facts := factsOf(t, ctx, self)
+	ln, err := self.Listen("tcp", ":8085")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go serveEcho(ln)
+	s, tap := newEgressShim(t, self)
+	s.handleEgressProxy(mustJSON(t, egressProxyData{NodeLoginAllow: []string{facts.login}, RequestID: "self-proxy"}))
+	var proxy egressProxyResultData
+	tap.reply(t, "self-proxy").decode(t, &proxy)
+	for i, host := range []string{facts.ip.String(), facts.dnsName} {
+		target := net.JoinHostPort(host, "8085")
+		route := addRoute(t, s, tap, egressAddData{
+			ID: fmt.Sprintf("self-%d", i), Target: target, NodeLoginAllow: []string{facts.login},
+			RequestID: fmt.Sprintf("self-add-%d", i),
+		})
+		client, err := net.DialTimeout("tcp", route.Listen, 5*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { client.Close() })
+		echoRoundTrip(t, client, client, "E2 to self")
+		client.Close()
+		response, tunnel, reader := connectThrough(t, proxy.Address, target, basic("truffle", proxy.Credential), "")
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("CONNECT to self returned %d", response.StatusCode)
+		}
+		echoRoundTrip(t, reader, tunnel, "E3 to self")
+		tunnel.Close()
 	}
 }

@@ -31,6 +31,8 @@ struct Cli {
 enum Command {
     /// File transfer workload: send a file from alpha → beta and measure throughput.
     FileTransfer(workloads::file_transfer::Args),
+    /// Raw TCP/QUIC throughput with pair, server and client modes.
+    Transport(workloads::transport::Args),
     /// SyncedStore convergence workload (B1 sequential / B2 concurrent).
     SyncedStore(workloads::synced_store::Args),
     /// Request/reply RTT workload across the pair.
@@ -60,6 +62,7 @@ async fn main() -> anyhow_lite::Result {
     let authkey = require_authkey()?;
 
     match cli.command {
+        Command::Transport(args) => workloads::transport::run(args, &authkey, &out_dir).await?,
         Command::FileTransfer(args) => {
             workloads::file_transfer::run(args, &authkey, &out_dir).await?;
         }

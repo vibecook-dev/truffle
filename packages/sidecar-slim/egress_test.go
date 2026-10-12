@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/net/tsdial"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 )
@@ -427,5 +429,51 @@ func TestHandleStopTearsDownEgress(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("stop must close the CONNECT proxy")
+	}
+}
+
+// Admission and dialing are separate operations. A peer disappearing in
+// between must cause a tailnet failure, never a retry through the host.
+func TestEgressDialUsesNetstackAfterPeerLeaves(t *testing.T) {
+	for _, host := range []string{"beta.tail-scale.ts.net", "fd7a:115c:a1e0::2"} {
+		t.Run(host, func(t *testing.T) {
+			node, refusal := admitEgressHost(egressTestStatus(), host, nil, "")
+			if refusal != nil {
+				t.Fatal(refusal)
+			}
+			target := netip.AddrPortFrom(node.addr, 443)
+			hostDials, netstackDials := 0, 0
+			gone := errors.New("admitted peer is no longer reachable")
+			dialer := tsdial.NewFromFuncForDebug(t.Logf, func(context.Context, string, string) (net.Conn, error) {
+				hostDials++
+				return nil, errors.New("escaped to the host network")
+			})
+			// The later routing snapshot has lost the admitted peer. A
+			// system-dial hook keeps this test entirely off the real network.
+			dialer.UseNetstackForIP = func(netip.Addr) bool { return false }
+			dialer.SetRoutes(nil, []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")})
+			dialer.NetstackDialTCP = func(_ context.Context, dst netip.AddrPort) (net.Conn, error) {
+				netstackDials++
+				if dst != target {
+					t.Errorf("dialed %v, admitted %v", dst, target)
+				}
+				return nil, gone
+			}
+			conn, err := dialEgress(context.Background(), dialer, target)
+			if conn != nil {
+				conn.Close()
+				t.Error("unreachable peer returned a connection")
+			}
+			if hostDials != 0 || netstackDials != 1 || !errors.Is(err, gone) {
+				t.Fatalf("host dials = %d, netstack dials = %d, error = %v; must fail inside netstack", hostDials, netstackDials, err)
+			}
+			dialer.NetstackDialTCP = nil
+			if conn, err := dialEgress(context.Background(), dialer, target); conn != nil || err == nil || hostDials != 0 {
+				if conn != nil {
+					conn.Close()
+				}
+				t.Fatalf("an unavailable netstack must fail closed: conn=%v error=%v host dials=%d", conn, err, hostDials)
+			}
+		})
 	}
 }

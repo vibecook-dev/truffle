@@ -23,11 +23,11 @@ pub struct Args {
     scenario: Scenario,
 
     /// Number of updates to emit per side.
-    #[arg(long, default_value_t = 1000)]
+    #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u32).range(1..))]
     ops: u32,
 
     /// Convergence wait budget (seconds).
-    #[arg(long, default_value_t = 60)]
+    #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=3600))]
     converge_secs: u64,
 }
 
@@ -47,6 +47,7 @@ struct Params {
 
 #[derive(Serialize)]
 struct Summary {
+    valid: bool,
     convergence_ms: u128,
     ops_per_sec_during_writes: f64,
     final_local_count: u64,
@@ -69,11 +70,16 @@ pub async fn run(args: Args, authkey: &str, out_dir: &str) -> anyhow_lite::Resul
         .await
         .map_err(|e| anyhow_lite::Error(format!("failed to build bench pair: {e}")))?;
 
-    let summary = match args.scenario {
-        Scenario::B1Sequential => run_b1(&pair, args.ops, args.converge_secs).await?,
-        Scenario::B2Concurrent => run_b2(&pair, args.ops, args.converge_secs).await?,
+    let before = pair.diagnostics().await;
+    let result = match args.scenario {
+        Scenario::B1Sequential => run_b1(&pair, args.ops, args.converge_secs).await,
+        Scenario::B2Concurrent => run_b2(&pair, args.ops, args.converge_secs).await,
     };
 
+    let after = pair.diagnostics().await;
+    pair.stop().await;
+    let summary = result?;
+    let valid = summary.valid;
     eprintln!(
         "\n[synced-store] convergence={}ms | writes={:.2} ops/s | peer_count={}",
         summary.convergence_ms,
@@ -86,10 +92,18 @@ pub async fn run(args: Args, authkey: &str, out_dir: &str) -> anyhow_lite::Resul
         ops: args.ops,
         converge_secs: args.converge_secs,
     };
-    let path = report::write(out_dir, "synced-store", params, summary)?;
+    let path = report::write(
+        out_dir,
+        "synced-store",
+        serde_json::json!({"topology":"same-host","before":before,"after":after}),
+        params,
+        summary,
+    )?;
     eprintln!("[synced-store] report written to {}", path.display());
 
-    pair.stop().await;
+    if !valid {
+        anyhow_lite::bail!("store did not converge within the budget (see report)");
+    }
     Ok(())
 }
 
@@ -152,6 +166,7 @@ async fn run_b1(
     }
 
     Ok(Summary {
+        valid: observed == target,
         convergence_ms: convergence.as_millis(),
         ops_per_sec_during_writes: ops_per_sec,
         final_local_count: target,
@@ -198,7 +213,9 @@ async fn run_b2(
             }
         })
     };
-    let _ = tokio::join!(a_task, b_task);
+    let (a, b) = tokio::join!(a_task, b_task);
+    a?;
+    b?;
     let writes_elapsed = writes_t0.elapsed();
     let ops_per_sec = (2 * target) as f64 / writes_elapsed.as_secs_f64().max(1e-6);
     eprintln!(
@@ -232,6 +249,7 @@ async fn run_b2(
     let convergence = converge_t0.elapsed();
 
     Ok(Summary {
+        valid: observed_peer == target,
         convergence_ms: convergence.as_millis(),
         ops_per_sec_during_writes: ops_per_sec,
         final_local_count: target,

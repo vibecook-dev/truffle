@@ -275,6 +275,9 @@ export declare class NapiNode {
   loopbackWithLocalApi(): Promise<NapiLoopbackConfig>
   /**
    * Bind a loopback egress route to a fixed tailnet target (RFC 026 E2).
+   *
+   * Any local process can use this unauthenticated route as this node.
+   * The destination must enforce its own application authorization.
    * Connect to the answer's `listen`; every connection is re-admitted
    * (the target must still be an admitted node) and spliced raw, so a
    * WebSocket upgrade passes intact. A target that is not a node of this

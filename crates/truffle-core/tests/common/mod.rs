@@ -146,7 +146,9 @@ pub const RENDEZVOUS_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Default path to the compiled test-sidecar binary.
 pub fn default_sidecar_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/test-sidecar")
+    std::env::var_os("TRUFFLE_TEST_SIDECAR_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/test-sidecar"))
 }
 
 /// Options for customising the pair.

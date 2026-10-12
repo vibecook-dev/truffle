@@ -46,6 +46,7 @@ import (
 
 	"tailscale.com/client/local"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/net/tsdial"
 	"tailscale.com/tsnet"
 )
 
@@ -286,6 +287,18 @@ func (s *shim) admitEgress(ctx context.Context, lc *local.Client, host string, n
 		return egressNode{}, &egressRefusal{egressStatusFailed, "netmap status unavailable: " + err.Error()}
 	}
 	return admitEgressHost(st, host, nodeAllow, routeLogin)
+}
+
+// dialEgress keeps E2/E3 inside this node's userspace stack even if the
+// admitted peer disappears before dialing. Server.Dial/UserDial makes a
+// second routing decision and can fall back to the host for an unknown IP.
+// tsnet exposes no stable tailnet-only TCP dial, so isolate its pinned
+// subsystem API here and exercise it in the upgrade regression suite.
+func dialEgress(ctx context.Context, dialer *tsdial.Dialer, target netip.AddrPort) (net.Conn, error) {
+	if dialer == nil || dialer.NetstackDialTCP == nil {
+		return nil, errors.New("egress netstack dialer is unavailable")
+	}
+	return dialer.NetstackDialTCP(ctx, target)
 }
 
 // newEgressCredential returns 16 random bytes as hex, the shape of tsnet's
@@ -581,7 +594,7 @@ func (s *shim) serveEgressConn(ctx context.Context, srv *tsnet.Server, lc *local
 
 	dialCtx, cancelDial := context.WithTimeout(ctx, dialTimeout)
 	defer cancelDial()
-	upstream, err := srv.Dial(dialCtx, "tcp", netip.AddrPortFrom(node.addr, r.port).String())
+	upstream, err := dialEgress(dialCtx, srv.Sys().Dialer.Get(), netip.AddrPortFrom(node.addr, r.port))
 	if err != nil {
 		_ = client.Close()
 		s.sendEvent("egress:error", egressErrorData{ID: r.id, Code: egressDialFailed, Message: fmt.Sprintf("dial %s: %v", r.target, err)})
@@ -749,7 +762,7 @@ func (s *shim) egressProxyHandler(p *egressHTTPProxy, srv *tsnet.Server, lc *loc
 
 		dialCtx, cancelDial := context.WithTimeout(r.Context(), dialTimeout)
 		defer cancelDial()
-		upstream, err := srv.Dial(dialCtx, "tcp", netip.AddrPortFrom(node.addr, port).String())
+		upstream, err := dialEgress(dialCtx, srv.Sys().Dialer.Get(), netip.AddrPortFrom(node.addr, port))
 		if err != nil {
 			debugf("egress proxy: CONNECT %s dial failed: %v", r.Host, err)
 			http.Error(w, "Bad Gateway", http.StatusBadGateway)

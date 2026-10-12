@@ -378,13 +378,8 @@ impl GoSidecar {
                                 if line.trim().is_empty() {
                                     continue;
                                 }
-                                match serde_json::from_str::<SidecarEvent>(&line) {
-                                    Ok(event) => {
-                                        Self::dispatch_event(event, &pending_replies, &event_tx);
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("failed to parse sidecar event: {e}, line: {line}");
-                                    }
+                                if let Some(event) = Self::parse_stdout_event(&line) {
+                                    Self::dispatch_event(event, &pending_replies, &event_tx);
                                 }
                             }
                             Ok(None) => {
@@ -400,6 +395,23 @@ impl GoSidecar {
                 }
             }
         });
+    }
+
+    fn parse_stdout_event(line: &str) -> Option<SidecarEvent> {
+        match serde_json::from_str(line) {
+            Ok(event) => Some(event),
+            Err(error) => {
+                // Both the payload and serde's Display can quote credentials.
+                // Keep useful parse coordinates without including input values.
+                tracing::warn!(
+                    category = ?error.classify(),
+                    line = error.line(),
+                    column = error.column(),
+                    "failed to parse sidecar event"
+                );
+                None
+            }
+        }
     }
 
     /// Route one parsed event: TEE it into a registered reply slot when its
@@ -777,12 +789,33 @@ impl GoSidecar {
         port: u16,
         request_id: Option<String>,
     ) -> Result<(), NetworkError> {
-        let data = ListenPacketCommandData { port, request_id };
+        let data = ListenPacketCommandData {
+            port,
+            request_id,
+            relay_version: 6,
+        };
         self.send_command(SidecarCommand {
             command: command_type::LISTEN_PACKET,
             data: Some(serde_json::to_value(&data)?),
         })
         .await
+    }
+
+    /// Tie cleanup to this sidecar generation and binding ID, never a port.
+    /// The fast path also works when a socket is dropped outside a runtime.
+    pub(crate) fn udp_cleanup(&self, relay_id: &str) -> impl FnOnce() + Send + Sync + 'static {
+        let tx = self.stdin_tx.clone();
+        let runtime = tokio::runtime::Handle::current();
+        let json =
+            serde_json::json!({"command":"tsnet:unlistenPacket", "data":{"relayId":relay_id}})
+                .to_string();
+        move || {
+            if let Err(mpsc::error::TrySendError::Full(json)) = tx.try_send(json) {
+                runtime.spawn(async move {
+                    let _ = tx.send(json).await;
+                });
+            }
+        }
     }
 
     /// Send the tsnet:watchPeers command to start WatchIPNBus-based peer events.
@@ -907,5 +940,65 @@ mod config_debug_tests {
         assert!(!dbg.contains("SECRET123"));
         assert!(!dbg.contains("deadbeef"));
         assert!(dbg.contains("[REDACTED]"));
+    }
+}
+
+#[cfg(test)]
+mod stdout_log_tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::Mutex as StdMutex;
+
+    #[derive(Clone)]
+    struct Capture(Arc<StdMutex<Vec<u8>>>);
+
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn malformed_stdout_never_logs_credentials() {
+        let output = Arc::new(StdMutex::new(Vec::new()));
+        let sink = output.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || Capture(sink.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            for line in [
+                r#"{"event":"tsnet:loopbackResult","data":{"proxyCredential":"PROXY-SECRET","localAPICredential":"LOCALAPI-SECRET""#,
+                r#"{"event":"egress:proxyResult","data":{"credential":"CONNECT-SECRET""#,
+                // Serde's Display can quote the invalid input, even if the
+                // log message stops including the original line explicitly.
+                r#""ROOT-CREDENTIAL""#,
+            ] {
+                assert!(GoSidecar::parse_stdout_event(line).is_none());
+            }
+            assert!(GoSidecar::parse_stdout_event(
+                r#"{"event":"tsnet:loopbackResult","data":{"proxyCredential":"VALID-SECRET"}}"#
+            )
+            .is_some());
+        });
+        let logged = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(logged.contains("failed to parse sidecar event"));
+        for secret in [
+            "PROXY-SECRET",
+            "LOCALAPI-SECRET",
+            "CONNECT-SECRET",
+            "ROOT-CREDENTIAL",
+            "VALID-SECRET",
+        ] {
+            assert!(
+                !logged.contains(secret),
+                "credential leaked into stdout diagnostics: {logged}"
+            );
+        }
     }
 }

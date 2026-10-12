@@ -1,6 +1,6 @@
 [package]
 name = "truffle-core"
-version = "0.7.14" # x-release-please-version
+version = "0.7.15" # x-release-please-version
 edition.workspace = true
 rust-version.workspace = true
 description = "Truffle mesh networking core (clean architecture)"
@@ -32,6 +32,7 @@ quinn.workspace = true
 rustls.workspace = true
 rcgen.workspace = true
 sha2.workspace = true
+hmac.workspace = true
 # RFC 017: identity and namespacing
 ulid.workspace = true
 dirs.workspace = true

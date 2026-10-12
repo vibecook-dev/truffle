@@ -142,6 +142,7 @@ pub(crate) struct WatchPeersCommandData {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListenPacketCommandData {
     pub port: u16,
+    pub relay_version: u8,
     /// Correlation id echoed on the terminal event (v4 sidecars).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
@@ -194,7 +195,7 @@ pub(crate) struct ProxyListCommandData {
     pub request_id: Option<String>,
 }
 
-// RFC 026 egress commands (sidecar protocol 6). Every one carries a
+// RFC 026 egress commands (sidecar protocol 7). Every one carries a
 // `requestId` the sidecar echoes on its answer, so replies route through the
 // broker; the provider never sends one to an older sidecar.
 
@@ -405,6 +406,10 @@ pub(crate) struct SidecarPeer {
     #[serde(default)]
     pub cur_addr: String,
     #[serde(default)]
+    pub peer_relay: String,
+    #[serde(default)]
+    pub active: bool,
+    #[serde(default)]
     pub relay: String,
     #[serde(default)]
     pub last_seen: Option<String>,
@@ -469,7 +474,7 @@ pub(crate) struct UnlistenedEventData {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListeningPacketEventData {
-    /// The tsnet-bound port (the one requested by Rust).
+    /// The actual tsnet-bound port, including ephemeral assignments.
     pub port: u16,
     /// The local relay port that Rust should send/recv datagrams to/from.
     pub local_port: u16,
@@ -485,6 +490,8 @@ pub(crate) struct PingResultEventData {
     pub latency_ms: f64,
     #[serde(default)]
     pub direct: bool,
+    #[serde(default)]
+    pub peer_relay: String,
     #[serde(default)]
     pub relay: String,
     #[serde(default)]
@@ -941,6 +948,7 @@ mod tests {
     #[test]
     fn serialize_listen_packet_command() {
         let data = ListenPacketCommandData {
+            relay_version: 6,
             port: 19420,
             request_id: None,
         };

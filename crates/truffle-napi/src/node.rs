@@ -594,7 +594,7 @@ impl NapiNode {
     //
     // The mirror of `proxy()`: other processes on this host reach the tailnet
     // THROUGH this node. Every listener is 127.0.0.1; every method rejects on
-    // a sidecar older than protocol 6.
+    // a sidecar older than protocol 7.
 
     /// The node's loopback SOCKS5 proxy onto the tailnet (RFC 026 E1):
     /// `proxyUsername` / `proxyCredential` authenticate. With the credential
@@ -621,6 +621,9 @@ impl NapiNode {
     }
 
     /// Bind a loopback egress route to a fixed tailnet target (RFC 026 E2).
+    ///
+    /// Any local process can use this unauthenticated route as this node.
+    /// The destination must enforce its own application authorization.
     /// Connect to the answer's `listen`; every connection is re-admitted
     /// (the target must still be an admitted node) and spliced raw, so a
     /// WebSocket upgrade passes intact. A target that is not a node of this

@@ -1,6 +1,6 @@
 # RFC 026: Egress — the node's own host processes reach the tailnet through it
 
-**Status**: Implemented (2026-09-30) on `rfc026-egress` (sidecar, core, NAPI); not released
+**Status**: Implemented (sidecar, core, NAPI); integrated with Tailscale 1.104.1 on 2026-10-12
 **Author**: James Yong + Claude
 **Date**: 2026-09-30
 **Depends on**: RFC 017 (identity & namespacing), RFC 021 (raw transport — the bridge idle reap), RFC 023 (HTTP serving — the engine this mirrors), RFC 024 §6.5 (the Swift plane's loopback), RFC 025 (login-scoped nodes — the gate egress admits by)
@@ -37,7 +37,7 @@ attached at all. Every one of these is the same missing verb.
 
 ## 2. Decision
 
-Three rungs, each additive, on sidecar protocol **6**:
+Three rungs, each additive, on sidecar protocol **7**:
 
 | Rung | Command | For | Authenticated by |
 |---|---|---|---|
@@ -85,6 +85,9 @@ Core: `Node::loopback()`, `Node::loopback_with_local_api()`, `Node::egress_add(E
   the egress these rungs must not offer. The quad-100 service address is not a node.
 - **The dial goes to the admitted node's address**: the IP the target named, or the node's first
   IPv4 address when it was named by name. Nothing is re-resolved between admission and dial.
+  E2/E3 call the TCP netstack directly, so a peer disappearing between admission and dialing
+  cannot make `tsnet.Server.Dial` fall back to the host network. The pinned, unstable subsystem
+  API is isolated in `dialEgress` and covered by upgrade regressions.
 - **Gates.** The node's RFC 025 `login_allow` lives in the core; the core sends it with
   `egress:add` and `egress:proxy` as `nodeLoginAllow`. A route may add its own `login` glob
   (RFC 025 §3.2 grammar). With either gate present, the destination's owner login must be
@@ -107,7 +110,7 @@ Core: `Node::loopback()`, `Node::loopback_with_local_api()`, `Node::egress_add(E
   `egress:list {requestId}` → `egress:list {routes: [{id, target, listen, login?}], requestId}`
   (sorted by id, `[]` when empty). Failures answer `egress:error {id?, code, message, requestId}`.
 - A route is one `127.0.0.1:0` listener with a FIXED target. Each accepted connection is
-  admitted (§3.2), dialled through the node (`srv.Dial`), and spliced raw both ways (the
+  admitted (§3.2), dialled directly through the node's TCP netstack, and spliced raw both ways (the
   sidecar's `bridgeCopy`: half-close on EOF, the node's idle reap). **No HTTP is parsed**:
   with the target fixed there is nothing to route on and nothing to rewrite, so any protocol
   passes byte-for-byte — a WebSocket upgrade's path, escaped segments and query included. The
@@ -158,24 +161,26 @@ Core: `Node::loopback()`, `Node::loopback_with_local_api()`, `Node::egress_add(E
 `NetworkError::NotRunning` and every other code to the new
 `NetworkError::EgressError { code, message }`.
 
-`sidecarProtocolVersion`: 5 → **6**. The rule at the constant is "bump on any addition to the
-command surface the core must not send blind", and these five are such additions: a v5 sidecar
+`sidecarProtocolVersion`: 6 → **7**. Protocol 5 added login identity; protocol 6
+already identifies authenticated UDP relay support in Truffle 0.7.15. The rule at the constant
+is "bump on any addition to the command surface the core must not send blind", and these five are such additions: a v6 sidecar
 answers an unknown command only with `tsnet:error {code: UNKNOWN_CMD}` and no `requestId`, which
-no waiter can claim, so a blind send could only time out. A core talking to a sidecar below 6
+no waiter can claim, so a blind send could only time out. A core talking to a sidecar below 7
 refuses every egress call locally with `NetworkError::Unsupported`, naming both versions.
 
 ## 5. Security model
 
-1. **The adversary is a same-uid process.** Every listener is loopback-only, so the network
-   cannot reach them, but any process of the same user can connect. E1 and E3 are credentialed
-   for that reason. **An E2 route is not**: a raw splice cannot authenticate without parsing the
+1. **Local processes can connect.** Every listener is loopback-only, so the network cannot
+   reach them, but any local process, including another OS user, can connect. E1 and E3 are
+   credentialed for that reason. **An E2 route is not**: a raw splice cannot authenticate without parsing the
    protocol it carries, so any local process can use a route to reach that route's one fixed
    target as this node. Truffle cannot decide when that is acceptable; the consumer's rule
    (VibeField DS-L6) is to bind an unauthenticated route only to a far door that demands its own
    grant (a MAC on the first frame), and to reach doors that trust the calling node's identity
    only through E1 or E3.
 2. **Credentials** are 16 random bytes, hex. They cross the bridge once per call, on the
-   sidecar's stdout (the core's own pipe); the sidecar never logs them; the Rust types holding
+   sidecar's stdout (the core's own pipe). Malformed-event diagnostics omit both payloads and
+   input-bearing parser messages; the sidecar never logs credentials. The Rust types holding
    them (`LoopbackConfig`, `HttpProxyConfig`, and the internal event payloads, which an
    unexpected-reply error would format) redact them in `Debug`.
 3. **Least privilege for the LocalAPI** (§3.1): its credential leaves the sidecar only on request.
@@ -190,7 +195,7 @@ refuses every egress call locally with `NetworkError::Unsupported`, naming both 
 
 ## 6. Compatibility
 
-- Additive: no existing command or event changes shape; protocol-5 cores never send the new verbs.
+- Additive: no existing command or event changes shape; protocol-5/6 cores never send the new verbs.
 - `NetworkError::EgressError` is a new variant on an exhaustive public enum (as RFC 023's
   `ProxyError` was); no crate in this workspace, and no consumer we know of, matches it
   exhaustively.
@@ -198,9 +203,9 @@ refuses every egress call locally with `NetworkError::Unsupported`, naming both 
   providers compile unchanged.
 - The Apple plane is unchanged: TailscaleKit already gives it E1 (`LoopbackConfig`); E2/E3 parity
   is future work.
-- `packages/sidecar-slim/go.mod` gains three indirect, test-only modules (`hyperloglog` and
-  `go-metro` via `derpserver`, `hashtriemap` via `testcontrol`); the sidecar binary's imports are
-  unchanged.
+- The in-process test control plane uses the Tailscale 1.104.1 dependency graph.
+  Six additional indirect modules support these tests: `hyperloglog`, `immutable`, `reco`,
+  `go-metro`, `hashtriemap`, and `intmap`. No production dependency is downgraded.
 
 ## 7. Testing
 
@@ -236,14 +241,18 @@ refuses every egress call locally with `NetworkError::Unsupported`, naming both 
   `-race`.
 - **Core**: the command payloads (camelCase, `localAPI`, the gate's omission when ungated); the
   event payloads (the literals the sidecar's wire-shape test pins); `Debug` redaction; every
-  verb refused locally on a protocol-5 sidecar, and passed through on 6; the node's
+  verb refused locally on protocol-1/5/6 sidecars, and passed through on 7; the node's
   `login_allow` riding `egress:add` and `egress:proxy`; every answer mapped through the
   production reply broker, including a refusal staying typed, `NOT_RUNNING`, a misrouted
   `egress:removed`, and an unexpected answer named without printing its credential; Node-level
   `Unsupported` on a provider without egress and `Stopped` after stop.
-- **Not covered**: a run of the two-node rows on Linux and Windows (CI runs them); a
-  real-tailnet row in `crates/truffle-core/tests` (the pair harness needs an auth key); a dial
-  to this node itself through E2 or E3 (admitted by the table, not witnessed end to end).
+- **Release regressions**: protocol-6 sidecars refuse every egress verb locally; a destination
+  disappearing between admission and dial never reaches the host dialer (IPv4 and IPv6);
+  malformed stdout, including serde error details, never logs credentials.
+- **Self dialing**: E2 and E3 reach the node itself by IP and MagicDNS name under its login gate.
+- **Real tailnet** (`integration_egress.rs`): the public Node API exercises all three rungs
+  through the real sidecar, checks payloads and far-side WhoIs attribution, and verifies route
+  removal closes a live stream. The existing integration workflow runs this with its auth key.
 
 ## 8. Consumers
 
@@ -259,7 +268,6 @@ proxy, everything else direct). With all three, nothing crosses through the OS T
 - A runtime egress-error stream on the Node API, as `proxy_runtime_errors` is for the serve engine.
 - `mesh.egress` in `@vibecook/truffle` and the Tauri plugin.
 - E2/E3 on the Apple plane.
-- A real-tailnet integration row, and a witness of the self-dial.
 
 ## 10. Decisions
 
@@ -276,4 +284,5 @@ proxy, everything else direct). With all three, nothing crosses through the OS T
 - **D9** E2 routes carry no credential; the consumer decides which far doors may be reached that
   way (§5.1).
 - **D10** E3 is CONNECT only, Basic with any username, constant-time; refusals are bare (§3.4).
-- **D11** protocol 6, because a v5 sidecar answers the new verbs uncorrelated (§4).
+- **D11** protocol 7, because protocol 6 is authenticated UDP and cannot answer the new verbs (§4).
+  The UDP relay frame version and HMAC domain remain at 6 for interoperability.

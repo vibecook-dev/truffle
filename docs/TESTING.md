@@ -77,7 +77,7 @@ cp .env.example .env
 
 ### 4. Install Go (for the test-sidecar build script)
 
-The integration tests spawn a Go-based tsnet sidecar. Install Go 1.22+ from
+The integration tests spawn a Go-based tsnet sidecar. Install the Go version recorded in `packages/sidecar-slim/go.mod` (currently 1.27.2) from
 <https://go.dev/dl/>. truffle-core's `build.rs` auto-detects Go and builds
 the `test-sidecar` binary the first time you run integration tests.
 
@@ -110,6 +110,7 @@ All variables read by tests and benchmarks. Defaults shown.
 | `crates/*/src/**/*.rs` `#[cfg(test)]` blocks | Mocks / in-process | Yes — always |
 | `crates/truffle-core/tests/integration_network.rs` | **Real Tailscale** (pair) | Yes (skip w/o auth) |
 | `crates/truffle-core/tests/integration_synced_store.rs` | **Real Tailscale** (pair) | Yes (skip w/o auth) |
+| `crates/truffle-core/tests/integration_egress.rs` | **Real Tailscale** (SOCKS5, routes, CONNECT, caller identity) | Yes (skip w/o auth) |
 | `crates/truffle-core/tests/integration_request_reply.rs` | **Real Tailscale** (pair) | Yes (skip w/o auth) |
 | `crates/truffle-core/tests/integration_file_transfer.rs` | **Real Tailscale** (pair) | Yes (skip w/o auth) |
 | `crates/truffle-core/tests/integration_transport.rs` | In-process loopback (heavy) | CI on Linux; locally only with `--ignored` |
@@ -247,7 +248,7 @@ legitimate doc example, add the file to `allowed_files` in
 ## Troubleshooting
 
 **`test-sidecar binary not found`** — Go isn't installed or `go build`
-failed. Install Go 1.22+ and re-run. Or manually: `cd packages/sidecar-slim
+failed. Install the Go version recorded in `packages/sidecar-slim/go.mod` and re-run. Or manually: `cd packages/sidecar-slim
 && go build -o ../../crates/truffle-core/tests/test-sidecar .`
 
 **`pair rendezvous timeout`** — Both nodes registered, but they couldn't

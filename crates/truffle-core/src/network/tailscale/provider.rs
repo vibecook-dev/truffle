@@ -223,6 +223,8 @@ impl TailscaleProvider {
             hostname: peer.hostname.clone(),
             ip,
             online: peer.online,
+            active: peer.active,
+            peer_relay: (!peer.peer_relay.is_empty()).then(|| peer.peer_relay.clone()),
             cur_addr: if peer.cur_addr.is_empty() {
                 None
             } else {
@@ -1081,7 +1083,7 @@ impl super::super::NetworkProvider for TailscaleProvider {
                 let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
                 let reply = sidecar.register_reply(&request_id);
                 sidecar
-                    .send_ping(target, None, Some(request_id.clone()))
+                    .send_ping(target, Some("disco".into()), Some(request_id.clone()))
                     .await?;
                 reply
             };
@@ -1103,7 +1105,9 @@ impl super::super::NetworkProvider for TailscaleProvider {
             let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
 
             let event_rx = sidecar.subscribe();
-            sidecar.send_ping(target.clone(), None, None).await?;
+            sidecar
+                .send_ping(target.clone(), Some("disco".into()), None)
+                .await?;
             event_rx
         };
 
@@ -1182,110 +1186,71 @@ impl super::super::NetworkProvider for TailscaleProvider {
             return Err(NetworkError::NotRunning);
         }
 
-        // Wait for the sidecar to report the local relay port. v4 sidecars
-        // echo a correlation id, routing the reply through the broker;
-        // older ones fall back to port-matched value correlation.
-        let local_port = if self.sidecar_version() >= Self::SIDECAR_V4_REPLY_ROUTING {
-            let request_id = uuid::Uuid::new_v4().to_string();
-            let mut reply = {
-                let sidecar_guard = self.sidecar.lock().await;
-                let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
-                let reply = sidecar.register_reply(&request_id);
-                sidecar
-                    .send_listen_packet(port, Some(request_id.clone()))
-                    .await?;
-                reply
-            };
+        if self.sidecar_version() < 6 {
+            return Err(NetworkError::Unsupported(
+                "authenticated UDP requires sidecar protocol v6; upgrade the sidecar".into(),
+            ));
+        }
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let local = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .map_err(NetworkError::Io)?;
+        // Install cleanup before any command can be sent. This covers errors,
+        // dropped bind futures, registration timeouts, and normal socket Drop.
+        let (mut socket, mut reply) = {
+            let guard = self.sidecar.lock().await;
+            let sidecar = guard.as_ref().ok_or(NetworkError::NotRunning)?;
+            let socket = super::super::NetworkUdpSocket::new(local, 0)
+                .with_cleanup(sidecar.udp_cleanup(&request_id));
+            let reply = sidecar.register_reply(&request_id);
+            sidecar
+                .send_listen_packet(port, Some(request_id.clone()))
+                .await?;
+            (socket, reply)
+        };
+        let (actual_port, local_port) =
             match tokio::time::timeout(Duration::from_secs(10), reply.recv())
                 .await
                 .map_err(|_| {
-                    NetworkError::ListenFailed("UDP listenPacket confirmation timed out".into())
+                    NetworkError::ListenFailed("UDP bind confirmation timed out".into())
                 })?? {
-                SidecarInternalEvent::ListeningPacket { local_port, .. } => local_port,
+                SidecarInternalEvent::ListeningPacket { port, local_port }
+                    if port != 0 && local_port != 0 =>
+                {
+                    (port, local_port)
+                }
                 SidecarInternalEvent::Error { code, message } => {
                     return Err(NetworkError::ListenFailed(format!(
                         "UDP bind failed [{code}] {message}"
-                    )));
+                    )))
                 }
                 other => return Err(Self::unexpected_reply("listenPacket", other)),
-            }
-        } else {
-            // Legacy pre-v4 path: value correlation over broadcast.
-            let mut event_rx = {
-                let sidecar_guard = self.sidecar.lock().await;
-                let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
-
-                let event_rx = sidecar.subscribe();
-                sidecar.send_listen_packet(port, None).await?;
-                event_rx
             };
-
-            tokio::time::timeout(Duration::from_secs(10), async {
-                loop {
-                    match event_rx.recv().await {
-                        Ok(SidecarInternalEvent::ListeningPacket {
-                            port: p,
-                            local_port,
-                        }) if p == port => {
-                            return Ok(local_port);
-                        }
-                        Ok(SidecarInternalEvent::Error { code, message }) => {
-                            return Err(NetworkError::ListenFailed(format!(
-                                "UDP bind failed [{code}] {message}"
-                            )));
-                        }
-                        Err(broadcast::error::RecvError::Closed) => {
-                            return Err(NetworkError::SidecarError("event channel closed".into()));
-                        }
-                        Err(broadcast::error::RecvError::Lagged(_)) => {
-                            return Err(NetworkError::SidecarError(
-                                "event channel lagged: UDP bind confirmation may have been lost"
-                                    .into(),
-                            ));
-                        }
-                        _ => continue,
-                    }
-                }
-            })
+        socket.set_tsnet_port(actual_port);
+        socket
+            .inner()
+            .connect((std::net::Ipv4Addr::LOCALHOST, local_port))
             .await
-            .map_err(|_| {
-                NetworkError::ListenFailed("UDP listenPacket confirmation timed out".into())
-            })??
-        };
-
-        // Bind a local UDP socket and connect it to the relay
-        let local_socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .map_err(NetworkError::Io)?;
+        let token = udp_relay_token(&*self.session_token.read().await, &request_id);
+        let mut registration = b"TRUFFLE_UDP_REGISTER".to_vec();
+        registration.extend_from_slice(&token);
+        socket
+            .inner()
+            .send(&registration)
             .await
-            .map_err(|e| NetworkError::Internal(format!("failed to bind local UDP socket: {e}")))?;
-
-        local_socket
-            .connect(format!("127.0.0.1:{local_port}"))
+            .map_err(NetworkError::Io)?;
+        let mut ack = [0; 64];
+        let n = tokio::time::timeout(Duration::from_secs(5), socket.inner().recv(&mut ack))
             .await
-            .map_err(|e| {
-                NetworkError::Internal(format!("failed to connect local UDP socket to relay: {e}"))
-            })?;
-
-        let rust_local_addr = local_socket
-            .local_addr()
-            .map_err(|e| NetworkError::Internal(format!("failed to get local UDP addr: {e}")))?;
-
-        // Send a registration packet so the relay learns our address.
-        // Without this, the relay drops inbound packets because it doesn't
-        // know where to forward them (it learns the Rust peer address from
-        // the first outbound packet).
-        local_socket
-            .send(b"TRUFFLE_UDP_REGISTER")
-            .await
-            .map_err(|e| NetworkError::Internal(format!("failed to send UDP registration: {e}")))?;
-
-        tracing::info!(
-            tsnet_port = port,
-            relay_port = local_port,
-            rust_local_addr = %rust_local_addr,
-            "UDP socket bound via tsnet relay (registered)"
-        );
-
-        Ok(super::super::NetworkUdpSocket::new(local_socket, port))
+            .map_err(|_| NetworkError::ListenFailed("UDP relay authentication timed out".into()))?
+            .map_err(NetworkError::Io)?;
+        if &ack[..n] != b"TRUFFLE_UDP_READY" {
+            return Err(NetworkError::ListenFailed(
+                "invalid UDP relay authentication acknowledgement".into(),
+            ));
+        }
+        Ok(socket)
     }
 
     async fn health(&self) -> HealthInfo {
@@ -1615,7 +1580,7 @@ impl super::super::NetworkProvider for TailscaleProvider {
 
 impl TailscaleProvider {
     /// Earliest sidecar protocol that speaks the RFC 026 egress commands.
-    pub(crate) const SIDECAR_V6_EGRESS: u32 = 6;
+    pub(crate) const SIDECAR_V7_EGRESS: u32 = 7;
 
     /// How long an egress command may take. `egress:add` reads the netmap to
     /// admit its target (the sidecar bounds that read at 10 s), so the core
@@ -1623,7 +1588,7 @@ impl TailscaleProvider {
     const EGRESS_REPLY_TIMEOUT: Duration = Duration::from_secs(20);
 
     /// Refuse an RFC 026 command this provider cannot carry: not running, or
-    /// a sidecar older than protocol 6. An older sidecar answers the unknown
+    /// a sidecar older than protocol 7. An older sidecar answers the unknown
     /// verb only with an UNKNOWN_CMD error that carries no `requestId`, so a
     /// blind send could only time out — refuse locally instead, loudly.
     async fn egress_ready(&self, verb: &str) -> Result<(), NetworkError> {
@@ -1631,11 +1596,11 @@ impl TailscaleProvider {
             return Err(NetworkError::NotRunning);
         }
         let version = self.sidecar_version();
-        if version < Self::SIDECAR_V6_EGRESS {
+        if version < Self::SIDECAR_V7_EGRESS {
             return Err(NetworkError::Unsupported(format!(
                 "sidecar protocol v{version} predates RFC 026 egress ({verb}); upgrade the \
                  sidecar binary (needs v{})",
-                Self::SIDECAR_V6_EGRESS
+                Self::SIDECAR_V7_EGRESS
             )));
         }
         Ok(())
@@ -1849,6 +1814,8 @@ impl TailscaleProvider {
         }
         let connection = if data.direct {
             "direct".to_string()
+        } else if !data.peer_relay.is_empty() {
+            format!("peer-relay:{}", data.peer_relay)
         } else if !data.relay.is_empty() {
             format!("relay:{}", data.relay)
         } else {
@@ -1976,6 +1943,68 @@ mod config_debug_tests {
     }
 }
 
+pub(super) fn udp_relay_token(session: &[u8; 32], request_id: &str) -> [u8; 32] {
+    use hmac::{Hmac, KeyInit, Mac};
+    let mut mac =
+        Hmac::<sha2::Sha256>::new_from_slice(session).expect("HMAC accepts a 32-byte key");
+    mac.update(b"truffle-udp-v6\0");
+    mac.update(request_id.as_bytes());
+    mac.finalize().into_bytes().into()
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+    use crate::network::NetworkProvider;
+
+    #[tokio::test]
+    async fn authenticated_udp_rejects_login_only_protocol_v5() {
+        let provider = TailscaleProvider::new(TailscaleConfig {
+            binary_path: "/nonexistent/sidecar".into(),
+            app_id: "test".into(),
+            device_id: "device".into(),
+            device_name: "test".into(),
+            hostname: "truffle-test-device".into(),
+            state_dir: "unused".into(),
+            auth_key: None,
+            ephemeral: Some(true),
+            tags: None,
+            idle_timeout_secs: None,
+            login_allow: Vec::new(),
+        });
+        *provider.state.write().await = ProviderState::Running;
+        provider
+            .sidecar_protocol_version
+            .store(5, std::sync::atomic::Ordering::Relaxed);
+        // Protocol 5 advertises loginName, but has no authenticated UDP relay.
+        // Reject it before allocating a socket or sending a legacy command.
+        assert!(matches!(provider.bind_udp(0).await,
+            Err(NetworkError::Unsupported(message)) if message.contains("v6")));
+    }
+
+    #[test]
+    fn ping_paths_survive_the_json_boundary() {
+        for (value, expected) in [
+            (
+                serde_json::json!({"direct":true,"peerAddr":"192.0.2.1:1234"}),
+                "direct",
+            ),
+            (serde_json::json!({"relay":"ord"}), "relay:ord"),
+            (
+                serde_json::json!({"peerRelay":"100.64.2.1:1234:vni:4","relay":"ord"}),
+                "peer-relay:100.64.2.1:1234:vni:4",
+            ),
+            (serde_json::json!({}), "unknown"),
+        ] {
+            let data: PingResultEventData = serde_json::from_value(value).unwrap();
+            assert_eq!(
+                TailscaleProvider::map_ping_result(data).unwrap().connection,
+                expected
+            );
+        }
+    }
+}
+
 /// RFC 025 §3.3 (D3): the login gate as the provider actually applies it —
 /// these drive the real `spawn_event_processor`, not a re-derivation of its
 /// predicate, so a filter that stops being called fails here.
@@ -1996,6 +2025,8 @@ mod login_gate_tests {
             os: "linux".into(),
             cur_addr: String::new(),
             relay: String::new(),
+            active: true,
+            peer_relay: String::new(),
             last_seen: None,
             key_expiry: None,
             expired: false,
@@ -2520,7 +2551,7 @@ mod login_gate_tests {
     }
 }
 
-/// RFC 026: the egress verbs as the provider carries them — the protocol-6
+/// RFC 026: the egress verbs as the provider carries them — the protocol-7
 /// gate, the node's login gate on the wire, and every answer mapped through
 /// the production broker (`GoSidecar::dispatch_event`) the way the stdout
 /// reader delivers it.
@@ -2567,35 +2598,47 @@ mod egress_tests {
         provider
     }
 
+    /// Protocol 6 supplies authenticated UDP, but has no RFC 026 commands.
+    /// Reject it before looking for a process or waiting for an unknown verb.
     #[tokio::test]
-    async fn a_pre_v6_sidecar_is_refused_locally() {
-        let provider = running_at(LOGIN_NAME_PROTOCOL_VERSION).await;
-        let refusals = [
-            ("loopback", provider.loopback(false).await.err()),
-            ("egress_add", provider.egress_add(route()).await.err()),
-            ("egress_remove", provider.egress_remove("cell").await.err()),
-            ("egress_list", provider.egress_list().await.err()),
-            (
-                "egress_http_proxy",
-                provider.egress_http_proxy().await.err(),
-            ),
-        ];
-        for (verb, err) in refusals {
-            match err {
-                Some(NetworkError::Unsupported(message)) => assert!(
-                    message.contains("v5") && message.contains("RFC 026") && message.contains("v6"),
-                    "{verb}: the refusal must name both versions and the RFC: {message}"
+    async fn a_pre_v7_sidecar_is_refused_locally() {
+        for version in [6, LOGIN_NAME_PROTOCOL_VERSION, 1] {
+            let provider = running_at(version).await;
+            let refusals = [
+                ("loopback", provider.loopback(false).await.err()),
+                (
+                    "loopback_with_local_api",
+                    provider.loopback(true).await.err(),
                 ),
-                other => panic!("{verb}: want Unsupported before any send, got {other:?}"),
+                ("egress_add", provider.egress_add(route()).await.err()),
+                ("egress_remove", provider.egress_remove("cell").await.err()),
+                ("egress_list", provider.egress_list().await.err()),
+                (
+                    "egress_http_proxy",
+                    provider.egress_http_proxy().await.err(),
+                ),
+            ];
+            for (verb, err) in refusals {
+                match err {
+                    Some(NetworkError::Unsupported(message)) => assert!(
+                        message.contains(&format!("v{version}"))
+                            && message.contains("RFC 026")
+                            && message.contains("v7"),
+                        "{verb}: the refusal must name both versions and the RFC: {message}"
+                    ),
+                    other => panic!(
+                        "{verb} on v{version}: want Unsupported before any send, got {other:?}"
+                    ),
+                }
             }
         }
     }
 
     #[tokio::test]
-    async fn a_v6_sidecar_passes_the_gate() {
+    async fn a_v7_sidecar_passes_the_gate() {
         // With no sidecar attached, a request the gate lets through fails at
         // the sidecar handle — NotRunning, never Unsupported.
-        let provider = running_at(TailscaleProvider::SIDECAR_V6_EGRESS).await;
+        let provider = running_at(TailscaleProvider::SIDECAR_V7_EGRESS).await;
         assert!(matches!(
             provider.loopback(true).await,
             Err(NetworkError::NotRunning)

@@ -440,6 +440,8 @@ fn filter_app_peers_only() {
             online: true,
             os: "linux".into(),
             cur_addr: String::new(),
+            active: true,
+            peer_relay: String::new(),
             relay: String::new(),
             last_seen: None,
             key_expiry: None,
@@ -455,6 +457,8 @@ fn filter_app_peers_only() {
             online: true,
             os: "darwin".into(),
             cur_addr: String::new(),
+            active: true,
+            peer_relay: String::new(),
             relay: String::new(),
             last_seen: None,
             key_expiry: None,
@@ -470,6 +474,8 @@ fn filter_app_peers_only() {
             online: false,
             os: "linux".into(),
             cur_addr: String::new(),
+            active: true,
+            peer_relay: String::new(),
             relay: String::new(),
             last_seen: None,
             key_expiry: None,
@@ -486,6 +492,8 @@ fn filter_app_peers_only() {
             online: true,
             os: "linux".into(),
             cur_addr: String::new(),
+            active: true,
+            peer_relay: String::new(),
             relay: String::new(),
             last_seen: None,
             key_expiry: None,
@@ -501,6 +509,8 @@ fn filter_app_peers_only() {
             online: true,
             os: "linux".into(),
             cur_addr: String::new(),
+            active: true,
+            peer_relay: String::new(),
             relay: String::new(),
             last_seen: None,
             key_expiry: None,
@@ -541,6 +551,8 @@ fn peer_row(id: &str, hostname: &str, login: Option<&str>) -> SidecarPeer {
         os: "linux".into(),
         cur_addr: String::new(),
         relay: String::new(),
+        active: true,
+        peer_relay: String::new(),
         last_seen: None,
         key_expiry: None,
         expired: false,
@@ -1144,6 +1156,7 @@ fn test_sidecar_listen_packet_command_serialization() {
     use super::protocol::{command_type, ListenPacketCommandData, SidecarCommand};
 
     let data = ListenPacketCommandData {
+        relay_version: 6,
         port: 19420,
         request_id: None,
     };
@@ -1207,4 +1220,21 @@ async fn integration_ping() {
     // 3. Ping a known peer
     // 4. Verify PingResult has reasonable latency
     todo!("integration test requires real Tailscale network")
+}
+
+#[test]
+fn udp_capability_matches_go_fixture_and_is_binding_specific() {
+    let token = super::provider::udp_relay_token(&[17; 32], "bind-123");
+    assert_eq!(
+        hex::encode(token),
+        "0afef70c2ee12a62eaf433a58ba7588c38e639c34c5fabf9efcc90b1044c8aec"
+    );
+    assert_ne!(
+        token,
+        super::provider::udp_relay_token(&[17; 32], "bind-124")
+    );
+    assert_ne!(
+        token,
+        super::provider::udp_relay_token(&[18; 32], "bind-123")
+    );
 }

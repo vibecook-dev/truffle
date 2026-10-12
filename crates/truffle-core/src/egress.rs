@@ -20,7 +20,7 @@
 //! [`login_allow`](crate::NodeBuilder::login_allow) gate (RFC 025), and they
 //! re-check at every connection. E1 is tsnet's own server: with its
 //! credential it dials anything the node can, so the credential is its whole
-//! gate. Everything here needs sidecar protocol 6; an older sidecar is
+//! gate. Everything here needs sidecar protocol 7; an older sidecar is
 //! refused locally with [`NetworkError::Unsupported`](crate::network::NetworkError::Unsupported).
 
 /// The SOCKS5 username tsnet's loopback proxy requires. The password is
@@ -62,6 +62,10 @@ impl std::fmt::Debug for LoopbackConfig {
 }
 
 /// An egress route to bind (RFC 026 E2).
+///
+/// This loopback route has no local authentication: any process on the host
+/// can use it as this node. The destination must enforce its own application
+/// authorization. Use credentialed SOCKS5 or CONNECT for identity-trusting doors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EgressRoute {
     /// Caller-chosen id, unique among the node's routes.

@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   real-network:
-    name: cargo test -p truffle-core --tests
+    name: Core and benchmark live-network regressions
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     env:
@@ -48,7 +48,7 @@ jobs:
       - name: Install Go toolchain
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.26.8'
+          go-version: '1.27.2'
           cache-dependency-path: packages/sidecar-slim/go.sum
 
       - name: Preflight — report skip-vs-run mode
@@ -67,4 +67,4 @@ jobs:
         # node pair; running them in parallel on shared GH runners causes
         # occasional convergence timeouts (documented flake). Serializing
         # within each test binary trades ~a minute of wall clock for green.
-        run: cargo test --locked -p truffle-core --tests --verbose -- --nocapture --test-threads=1
+        run: cargo test --locked -p truffle-core -p truffle-bench --tests --verbose -- --nocapture --test-threads=1

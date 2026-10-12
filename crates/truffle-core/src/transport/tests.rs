@@ -29,9 +29,9 @@ struct MockNetworkProvider {
     local_addr: PeerAddr,
     peer_event_tx: broadcast::Sender<NetworkPeerEvent>,
     /// WhoIs identity JSON to attach to every `IncomingConnection` this mock
-    /// yields. Empty by default so existing tests take the warn-and-allow
-    /// path in `verify_authenticated_identity`.
+    /// yields. Empty identity is accepted only in explicit loopback test mode.
     incoming_remote_identity: String,
+    require_identity: bool,
 }
 
 impl MockNetworkProvider {
@@ -61,6 +61,7 @@ impl MockNetworkProvider {
             },
             peer_event_tx,
             incoming_remote_identity: String::new(),
+            require_identity: false,
         }
     }
 
@@ -69,11 +70,20 @@ impl MockNetworkProvider {
     /// against it. Used only by the identity-verification tests.
     fn with_incoming_identity(mut self, json: &str) -> Self {
         self.incoming_remote_identity = json.to_string();
+        self.require_identity = true;
         self
     }
 }
 
 impl NetworkProvider for MockNetworkProvider {
+    fn trust_mode(&self) -> crate::network::NetworkTrust {
+        if self.require_identity {
+            crate::network::NetworkTrust::Authenticated
+        } else {
+            crate::network::NetworkTrust::UnverifiedLoopback
+        }
+    }
+
     async fn start(&mut self) -> Result<(), NetworkError> {
         Ok(())
     }
@@ -1280,6 +1290,50 @@ async fn ws_connect_to_unreachable_returns_connect_failed() {
             );
         }
         other => panic!("expected ConnectFailed, got: {other}"),
+    }
+}
+
+#[tokio::test]
+async fn ws_unverifiable_identity_never_yields_an_authenticated_stream() {
+    use crate::transport::websocket::WebSocketTransport;
+    for proof in [
+        "",
+        "legacy.tailnet.ts.net",
+        "{broken",
+        r#"{"dnsName":"peer.ts.net"}"#,
+        r#"{"nodeId":"   "}"#,
+    ] {
+        let provider = Arc::new(MockNetworkProvider::new("server").with_incoming_identity(proof));
+        let server = WebSocketTransport::new(
+            provider,
+            WsConfig {
+                port: 0,
+                ..Default::default()
+            },
+        );
+        let mut listener = server.listen().await.unwrap();
+        let client = WebSocketTransport::new(
+            Arc::new(MockNetworkProvider::new("client")),
+            WsConfig {
+                port: listener.port,
+                ..Default::default()
+            },
+        );
+        let addr = PeerAddr {
+            ip: Some("127.0.0.1".parse().unwrap()),
+            hostname: "localhost".into(),
+            dns_name: None,
+        };
+        assert!(
+            client.connect(&addr).await.is_err(),
+            "accepted invalid proof {proof:?}"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err(),
+            "yielded unverified peer {proof:?}"
+        );
     }
 }
 

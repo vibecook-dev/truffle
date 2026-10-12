@@ -155,6 +155,10 @@ mod tests {
     }
 
     impl NetworkProvider for MockNetworkProvider {
+        fn trust_mode(&self) -> crate::network::NetworkTrust {
+            crate::network::NetworkTrust::UnverifiedLoopback
+        }
+
         fn local_identity(&self) -> NodeIdentity {
             self.identity.clone()
         }
@@ -227,6 +231,8 @@ mod tests {
             ip: "127.0.0.1".parse().unwrap(),
             online: true,
             cur_addr: Some("127.0.0.1:41641".to_string()),
+            active: true,
+            peer_relay: None,
             relay: None,
             os: Some("linux".to_string()),
             last_seen: Some("2026-03-25T12:00:00Z".to_string()),
