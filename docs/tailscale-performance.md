@@ -33,6 +33,11 @@ percentiles without also checking failure counts and `valid`.
 Request/reply validates the sender, run ID, sequence, and payload. Warmups are
 excluded. File transfers validate both the returned and received SHA-256 and
 byte counts; verification and output deletion occur outside the timed interval.
+Each file-transfer sample times the sender through its ACK, then waits for the
+matching receiver completion before starting the next iteration. This excludes
+receiver shutdown delay from throughput while preventing overlapping samples
+from exhausting pending-offer limits. Missing or failed completion invalidates
+the run.
 Store runs fail unless both required views converge. Their convergence polling
 interval is 25 ms, so sub-25-ms comparisons are not meaningful.
 

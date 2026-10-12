@@ -8,6 +8,7 @@ use std::time::Instant;
 use clap::Args as ClapArgs;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use truffle_core::file_transfer::{FileTransferEvent, TransferDirection};
 
 use crate::anyhow_lite;
 use crate::harness::make_bench_pair;
@@ -98,18 +99,37 @@ pub async fn run(args: Args, authkey: &str, out_dir: &str) -> anyhow_lite::Resul
 
             // Pass "." so auto_accept resolves to `{output_dir}/{file_name}` rather
             // than a relative path interpreted against the receiver's CWD.
+            let mut receiver_events = pair.beta.file_transfer().subscribe();
+            let sender_id = pair.alpha.local_info().tailscale_id;
             let t0 = Instant::now();
-            let r = tokio::time::timeout(
-                std::time::Duration::from_secs(300),
-                pair.alpha.file_transfer().send_file(
-                    &pair.beta_device_id,
-                    src_path.to_str().expect("utf8 path"),
-                    ".",
-                ),
-            )
-            .await?
-            .map_err(|e| anyhow_lite::Error(format!("send_file failed: {e}")))?;
-            let elapsed = t0.elapsed();
+            let sending = async {
+                let result = pair
+                    .alpha
+                    .file_transfer()
+                    .send_file(
+                        &pair.beta_device_id,
+                        src_path.to_str().expect("utf8 path"),
+                        ".",
+                    )
+                    .await
+                    .map_err(|e| anyhow_lite::Error(format!("send_file failed: {e}")))?;
+                Ok((result, t0.elapsed()))
+            };
+            // Drain events concurrently so slow transfers cannot overflow the
+            // bounded broadcast queue. The sender timing ends at its ACK, but
+            // the next sample waits for the receiver's completion and cleanup.
+            let receiving = wait_for_receive(
+                &mut receiver_events,
+                &sender_id,
+                "payload.bin",
+                size,
+                &expected_hash,
+            );
+            let ((r, elapsed), ()) =
+                tokio::time::timeout(std::time::Duration::from_secs(300), async {
+                    tokio::try_join!(sending, receiving)
+                })
+                .await??;
             let secs = elapsed.as_secs_f64().max(1e-6);
             let mb_per_sec = (r.bytes_transferred as f64 / 1_000_000.0) / secs;
 
@@ -191,6 +211,47 @@ pub async fn run(args: Args, authkey: &str, out_dir: &str) -> anyhow_lite::Resul
     outcome
 }
 
+async fn wait_for_receive(
+    events: &mut tokio::sync::broadcast::Receiver<FileTransferEvent>,
+    sender_id: &str,
+    file_name: &str,
+    size: u64,
+    expected_hash: &str,
+) -> anyhow_lite::Result {
+    let mut offered_token = None;
+    loop {
+        match events.recv().await? {
+            FileTransferEvent::OfferReceived(offer)
+                if offer.from_peer == sender_id && offer.file_name == file_name =>
+            {
+                if offer.size != size || offer.sha256 != expected_hash {
+                    anyhow_lite::bail!("receiver offer differs from benchmark payload");
+                }
+                offered_token = Some(offer.token);
+            }
+            FileTransferEvent::Completed {
+                token,
+                direction: TransferDirection::Receive,
+                bytes_transferred,
+                sha256,
+                ..
+            } if offered_token.as_deref() == Some(token.as_str()) => {
+                if bytes_transferred != size || sha256 != expected_hash {
+                    anyhow_lite::bail!("receiver completion failed size/hash verification");
+                }
+                return Ok(());
+            }
+            FileTransferEvent::Failed { token, reason, .. }
+            | FileTransferEvent::Rejected { token, reason, .. }
+                if offered_token.as_deref() == Some(token.as_str()) =>
+            {
+                anyhow_lite::bail!("receiver failed: {reason}");
+            }
+            _ => {}
+        }
+    }
+}
+
 fn make_payload(size: usize) -> Vec<u8> {
     (0..size).map(|i| ((i * 7 + 13) % 256) as u8).collect()
 }
@@ -218,6 +279,43 @@ fn parse_size(s: &str) -> anyhow_lite::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn sequential_transfers_drain_receiver_before_next_iteration() {
+        let _ = dotenvy::dotenv();
+        let Ok(authkey) = crate::require_authkey() else {
+            eprintln!("[skip] sequential file benchmark requires TRUFFLE_TEST_AUTHKEY");
+            return;
+        };
+        let reports = tempfile::tempdir().unwrap();
+        // Small transfers finish before the receiver's ACK-drain period.
+        // More than four back-to-back sends expose a pending-offer backlog
+        // unless the harness awaits receiver completion between iterations.
+        run(
+            Args {
+                size: "1".into(),
+                iterations: 12,
+                warmup: 1,
+            },
+            &authkey,
+            reports.path().to_str().unwrap(),
+        )
+        .await
+        .expect("sequential samples must not overlap receiver work");
+        let report = std::fs::read_dir(reports.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(report.path()).unwrap()).unwrap();
+        assert_eq!(report["results"]["valid"], true);
+        assert_eq!(
+            report["results"]["iterations"].as_array().unwrap().len(),
+            12
+        );
+    }
+
     #[test]
     fn sizes_reject_zero_overflow_and_unbounded_allocations() {
         assert_eq!(parse_size("1M").unwrap(), 1_048_576);

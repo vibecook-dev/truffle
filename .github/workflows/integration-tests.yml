@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   real-network:
-    name: cargo test -p truffle-core --tests
+    name: Core and benchmark live-network regressions
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     env:
@@ -67,4 +67,4 @@ jobs:
         # node pair; running them in parallel on shared GH runners causes
         # occasional convergence timeouts (documented flake). Serializing
         # within each test binary trades ~a minute of wall clock for green.
-        run: cargo test --locked -p truffle-core --tests --verbose -- --nocapture --test-threads=1
+        run: cargo test --locked -p truffle-core -p truffle-bench --tests --verbose -- --nocapture --test-threads=1

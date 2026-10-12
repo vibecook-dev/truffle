@@ -67,7 +67,7 @@ compiler paths can be absolute.
   scan. Final sidecar builds pass for macOS arm64/amd64, Linux arm64/amd64,
   and Windows amd64; embedded build information confirms all three pins.
 - `cargo test --locked --workspace -- --test-threads=1` passes, including
-  320 core unit tests and the live tailnet suites. The 16 ignored transport
+  366 core unit tests and the live tailnet suites. The 16 ignored transport
   stress tests also pass when explicitly enabled. Three pre-existing `todo!`
   integration placeholders and ignored documentation examples remain ignored;
   real startup, discovery, TCP and ping coverage lives in `integration_network`.
@@ -80,7 +80,13 @@ compiler paths can be absolute.
   A native Go client also verifies 1 MiB transfers against the standalone
   Rust server, confirming the shared benchmark wire protocol.
 - The Apple artifact passes all patched Go race tests, six exact-source Swift
-  stream tests, 70 Swift package tests, and iOS device/simulator builds.
+  stream tests, 70 Swift package tests at its published source snapshot, and
+  iOS device/simulator builds. Integration with main passes 107 Swift tests.
+- Hosted benchmark CI exposed overlapping receiver cleanup between small file
+  transfers. A 13-transfer regression reproduced the pending-offer rejection;
+  the harness now waits for matching receiver completion between iterations,
+  outside the sender's timed interval. The live-network workflow includes
+  benchmark regressions so this ordering remains covered.
 
 The existing QUIC adapter still uses IPv4 datagram framing without batching,
 GSO/GRO or ECN, and allocates framing buffers per datagram. Those optimization
