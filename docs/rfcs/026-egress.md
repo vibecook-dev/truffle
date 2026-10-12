@@ -140,7 +140,8 @@ Core: `Node::loopback()`, `Node::loopback_with_local_api()`, `Node::egress_add(E
   request it relays. Chromium tunnels `https:` (and WebSockets) through CONNECT but sends a
   plain `http:` request in absolute form, so an `http://` tailnet origin is not reachable
   through E3: serve it with TLS (RFC 023 `tls: true`) or reach it through an E2 route.
-- Header reads are bounded (10 s, the serve engine's slow-loris bound); tunnels are tracked and
+- Header reads are bounded (10 s, the serve engine's slow-loris bound). The initial CONNECT
+  response and pipelined payload writes use the node's idle timeout too. Tunnels are tracked and
   closed on `tsnet:stop` (`http.Server.Close` does not touch hijacked connections).
 
 ## 4. Wire changes
@@ -248,7 +249,8 @@ refuses every egress call locally with `NetworkError::Unsupported`, naming both 
   `Unsupported` on a provider without egress and `Stopped` after stop.
 - **Release regressions**: protocol-6 sidecars refuse every egress verb locally; a destination
   disappearing between admission and dial never reaches the host dialer (IPv4 and IPv6);
-  malformed stdout, including serde error details, never logs credentials.
+  malformed stdout, including serde error details, never logs credentials; stalled CONNECT
+  setup writes close both ends within the idle bound.
 - **Self dialing**: E2 and E3 reach the node itself by IP and MagicDNS name under its login gate.
 - **Real tailnet** (`integration_egress.rs`): the public Node API exercises all three rungs
   through the real sidecar, checks payloads and far-side WhoIs attribution, and verifies route

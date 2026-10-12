@@ -24,6 +24,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -790,23 +791,31 @@ func (s *shim) egressProxyHandler(p *egressHTTPProxy, srv *tsnet.Server, lc *loc
 		}
 		defer p.untrack(upstream)
 
-		if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		spliceEgressTunnel(upstream, client, buffered.Reader, s.idleTimeoutOrDefault())
+	})
+}
+
+// spliceEgressTunnel writes the CONNECT response and any already-buffered
+// client bytes before handing both streams to the regular idle-bounded copy.
+func spliceEgressTunnel(upstream, client net.Conn, buffered *bufio.Reader, idleTimeout time.Duration) {
+	_ = client.SetWriteDeadline(time.Now().Add(idleTimeout))
+	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		_ = client.Close()
+		_ = upstream.Close()
+		return
+	}
+	// Bytes the client pipelined behind the CONNECT (a TLS ClientHello)
+	// already sit in the server's reader; forward them before splicing.
+	if n := buffered.Buffered(); n > 0 {
+		pending, _ := buffered.Peek(n)
+		_ = upstream.SetWriteDeadline(time.Now().Add(idleTimeout))
+		if _, err := upstream.Write(pending); err != nil {
 			_ = client.Close()
 			_ = upstream.Close()
 			return
 		}
-		// Bytes the client pipelined behind the CONNECT (a TLS ClientHello)
-		// already sit in the server's reader; forward them before splicing.
-		if n := buffered.Reader.Buffered(); n > 0 {
-			pending, _ := buffered.Reader.Peek(n)
-			if _, err := upstream.Write(pending); err != nil {
-				_ = client.Close()
-				_ = upstream.Close()
-				return
-			}
-		}
-		bridgeCopy(upstream, client, s.idleTimeoutOrDefault())
-	})
+	}
+	bridgeCopy(upstream, client, idleTimeout)
 }
 
 // handleEgressProxy starts the node's E3 proxy on first call and answers the

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -473,6 +474,52 @@ func TestEgressDialUsesNetstackAfterPeerLeaves(t *testing.T) {
 					conn.Close()
 				}
 				t.Fatalf("an unavailable netstack must fail closed: conn=%v error=%v host dials=%d", conn, err, hostDials)
+			}
+		})
+	}
+}
+
+// The idle bound applies before bridgeCopy too: either the CONNECT response
+// or a pipelined ClientHello can encounter backpressure during tunnel setup.
+func TestEgressConnectSetupHonorsIdleTimeout(t *testing.T) {
+	for _, pipelined := range []bool{false, true} {
+		name := "blocked response"
+		if pipelined {
+			name = "blocked pipelined payload"
+		}
+		t.Run(name, func(t *testing.T) {
+			client, clientPeer := net.Pipe()
+			upstream, upstreamPeer := net.Pipe()
+			defer clientPeer.Close()
+			defer upstreamPeer.Close()
+			buffered := bufio.NewReader(strings.NewReader(""))
+			if pipelined {
+				buffered = bufio.NewReader(strings.NewReader("pipelined hello"))
+				if _, err := buffered.Peek(1); err != nil {
+					t.Fatal(err)
+				}
+				// Drain the successful CONNECT response. Only the upstream
+				// write remains blocked in this case.
+				go io.Copy(io.Discard, clientPeer)
+			}
+			done := make(chan struct{})
+			go func() {
+				spliceEgressTunnel(upstream, client, buffered, 30*time.Millisecond)
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				client.Close()
+				upstream.Close()
+				<-done
+				t.Fatal("CONNECT setup ignored the stream idle timeout")
+			}
+			if _, err := client.Write([]byte{1}); err == nil {
+				t.Error("client connection remains open")
+			}
+			if _, err := upstream.Write([]byte{1}); err == nil {
+				t.Error("upstream connection remains open")
 			}
 		})
 	}
