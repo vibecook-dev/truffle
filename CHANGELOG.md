@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.15](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.14...truffle-v0.7.15) (2026-10-12)
+
+
+### Bug Fixes
+
+* **tailscale:** upgrade dependencies and authenticate UDP relays ([#197](https://github.com/vibecook-dev/truffle/issues/197)) ([975e416](https://github.com/vibecook-dev/truffle/commit/975e416b77d9e9cb3cf8e0b93208a2db74340483))
+
 ## [0.7.14](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.13...truffle-v0.7.14) (2026-09-16)
 
 
