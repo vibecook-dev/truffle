@@ -1669,10 +1669,14 @@ async fn eager_connect_ws<N: NetworkProvider + 'static>(
 /// not by Layer 3 discovery. `generation` must be supplied by the registry
 /// (bumped per re-join of the same Tailscale id).
 fn network_peer_to_state(peer: &NetworkPeer, generation: u64) -> PeerState {
-    let connection_type = if let Some(ref relay) = peer.relay {
-        format!("relay:{relay}")
-    } else if peer.cur_addr.is_some() {
+    let connection_type = if !peer.active {
+        "unknown".to_string()
+    } else if peer.cur_addr.as_ref().is_some_and(|s| !s.is_empty()) {
         "direct".to_string()
+    } else if let Some(ref relay) = peer.peer_relay {
+        format!("peer-relay:{relay}")
+    } else if let Some(ref relay) = peer.relay {
+        format!("relay:{relay}")
     } else {
         "unknown".to_string()
     };

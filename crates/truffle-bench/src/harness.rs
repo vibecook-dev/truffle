@@ -29,6 +29,10 @@ pub struct BenchPair {
 }
 
 impl BenchPair {
+    pub async fn diagnostics(&self) -> serde_json::Value {
+        diagnostics(&self.alpha, &self.beta_device_id, "same-host").await
+    }
+
     pub async fn stop(self) {
         self.alpha.stop().await;
         self.beta.stop().await;
@@ -40,7 +44,7 @@ pub async fn make_bench_pair(authkey: &str) -> Result<BenchPair, String> {
     if !sidecar.exists() {
         return Err(format!(
             "test-sidecar not found at {}. Run `cargo build -p truffle-core` to auto-build it \
-             (requires Go 1.22+).",
+             (requires the Go version in packages/sidecar-slim/go.mod).",
             sidecar.display()
         ));
     }
@@ -87,17 +91,32 @@ pub async fn make_bench_pair(authkey: &str) -> Result<BenchPair, String> {
         .build();
 
     let (alpha_res, beta_res) = tokio::join!(alpha_fut, beta_fut);
-    let alpha = Arc::new(alpha_res.map_err(|e| format!("alpha build: {e}"))?);
-    let beta = Arc::new(beta_res.map_err(|e| format!("beta build: {e}"))?);
+    let (alpha, beta) = match (alpha_res, beta_res) {
+        (Ok(a), Ok(b)) => (Arc::new(a), Arc::new(b)),
+        (Ok(a), Err(e)) => {
+            a.stop().await;
+            return Err(format!("beta build: {e}"));
+        }
+        (Err(e), Ok(b)) => {
+            b.stop().await;
+            return Err(format!("alpha build: {e}"));
+        }
+        (Err(e), Err(_)) => return Err(format!("alpha build: {e}")),
+    };
 
     let alpha_id = alpha.local_info().device_id;
     let beta_id = beta.local_info().device_id;
 
-    rendezvous(&alpha, &beta, &alpha_name, &beta_name, RENDEZVOUS_TIMEOUT).await?;
-
-    // Layer-3 peers visible, but the hello handshake hasn't run yet; force
-    // WS connect so `resolve_peer_id(<ULID>)` can find the other side.
-    warm_up(&alpha, &beta, &alpha_name, &beta_name, RENDEZVOUS_TIMEOUT).await?;
+    let ready = async {
+        rendezvous(&alpha, &beta, &alpha_name, &beta_name, RENDEZVOUS_TIMEOUT).await?;
+        warm_up(&alpha, &beta, &alpha_name, &beta_name, RENDEZVOUS_TIMEOUT).await
+    }
+    .await;
+    if let Err(e) = ready {
+        alpha.stop().await;
+        beta.stop().await;
+        return Err(e);
+    }
 
     eprintln!("[bench-pair] ready — alpha={alpha_id} beta={beta_id}");
 
@@ -113,10 +132,14 @@ pub async fn make_bench_pair(authkey: &str) -> Result<BenchPair, String> {
     })
 }
 
-fn default_sidecar_path() -> PathBuf {
+pub fn default_sidecar_path() -> PathBuf {
     // CARGO_MANIFEST_DIR is crates/truffle-bench; test-sidecar lives in
     // crates/truffle-core/tests/test-sidecar.
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../truffle-core/tests/test-sidecar")
+    std::env::var_os("TRUFFLE_TEST_SIDECAR_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../truffle-core/tests/test-sidecar")
+        })
 }
 
 async fn warm_up(
@@ -227,4 +250,40 @@ async fn rendezvous(
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+}
+
+/// Probe before/after a workload so relay transitions aren't hidden by averages.
+pub async fn diagnostics(
+    node: &Node<TailscaleProvider>,
+    peer: &str,
+    topology: &str,
+) -> serde_json::Value {
+    let ping = match tokio::time::timeout(Duration::from_secs(10), node.ping(peer)).await {
+        Ok(Ok(p)) => {
+            serde_json::json!({"path": p.connection, "rtt_ms": p.latency.as_secs_f64()*1000.0, "endpoint": p.peer_addr})
+        }
+        Ok(Err(e)) => serde_json::json!({"error": e.to_string()}),
+        Err(_) => serde_json::json!({"error": "path probe timed out"}),
+    };
+    serde_json::json!({"topology": topology, "ping": ping})
+}
+
+pub async fn make_bench_node(
+    authkey: &str,
+    app_id: &str,
+    name: &str,
+) -> Result<(Arc<Node<TailscaleProvider>>, tempfile::TempDir), String> {
+    let state = tempfile::TempDir::with_prefix("truffle-bench-").map_err(|e| e.to_string())?;
+    let node = NodeBuilder::default()
+        .app_id(app_id)
+        .map_err(|e| e.to_string())?
+        .device_name(name)
+        .sidecar_path(default_sidecar_path())
+        .state_dir(state.path().to_str().ok_or("non-UTF8 state path")?)
+        .auth_key(authkey)
+        .ephemeral(true)
+        .build()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok((Arc::new(node), state))
 }

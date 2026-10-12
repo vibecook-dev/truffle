@@ -19,6 +19,17 @@ use tokio::sync::broadcast;
 // NetworkProvider trait — the public API of Layer 3
 // ---------------------------------------------------------------------------
 
+/// The trust boundary a provider supplies to transports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NetworkTrust {
+    /// Network operations and peer identity must come from the provider.
+    #[default]
+    Authenticated,
+    /// Explicit opt-in for test providers. Unverified connections and direct
+    /// datagram sockets are restricted to loopback, never wildcard interfaces.
+    UnverifiedLoopback,
+}
+
 /// Provides network-level peer discovery and raw connectivity.
 ///
 /// The primary implementation is [`TailscaleProvider`](tailscale::TailscaleProvider)
@@ -36,6 +47,11 @@ use tokio::sync::broadcast;
 /// inside `tokio::spawn` tasks (required by the file transfer subsystem
 /// and any other code that needs to spawn tasks with node access).
 pub trait NetworkProvider: Send + Sync {
+    /// Production providers fail closed. Only loopback test providers opt out.
+    fn trust_mode(&self) -> NetworkTrust {
+        NetworkTrust::Authenticated
+    }
+
     /// Start the network provider.
     ///
     /// This spawns child processes, binds ports, and performs authentication.
@@ -258,7 +274,11 @@ pub struct NetworkPeer {
     pub online: bool,
     /// Direct endpoint address, if connected directly.
     pub cur_addr: Option<String>,
-    /// DERP relay name if connection is relayed.
+    /// Active peer relay endpoint, if any.
+    pub peer_relay: Option<String>,
+    /// Whether the peer recently exchanged traffic.
+    pub active: bool,
+    /// Home DERP region; its presence alone does not imply relay traffic.
     pub relay: Option<String>,
     /// Operating system of the peer.
     pub os: Option<String>,
@@ -442,6 +462,7 @@ pub struct NetworkUdpSocket {
     inner: tokio::net::UdpSocket,
     /// The tsnet-bound port (the logical port on the Tailscale network).
     tsnet_port: u16,
+    on_drop: Option<Box<dyn FnOnce() + Send + Sync>>,
 }
 
 /// Address header size: 4 bytes IPv4 + 2 bytes port (big-endian).
@@ -450,7 +471,20 @@ const UDP_ADDR_HEADER_SIZE: usize = 6;
 impl NetworkUdpSocket {
     /// Create a new `NetworkUdpSocket` from a tokio UdpSocket and the tsnet port.
     pub(crate) fn new(inner: tokio::net::UdpSocket, tsnet_port: u16) -> Self {
-        Self { inner, tsnet_port }
+        Self {
+            inner,
+            tsnet_port,
+            on_drop: None,
+        }
+    }
+
+    pub(crate) fn with_cleanup(mut self, cleanup: impl FnOnce() + Send + Sync + 'static) -> Self {
+        self.on_drop = Some(Box::new(cleanup));
+        self
+    }
+
+    pub(crate) fn set_tsnet_port(&mut self, port: u16) {
+        self.tsnet_port = port;
     }
 
     /// Send a datagram to the specified address via the relay.
@@ -543,6 +577,14 @@ impl NetworkUdpSocket {
     /// bypass the address framing — prefer `send_to` / `recv_from` instead.
     pub fn inner(&self) -> &tokio::net::UdpSocket {
         &self.inner
+    }
+}
+
+impl Drop for NetworkUdpSocket {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.on_drop.take() {
+            cleanup();
+        }
     }
 }
 

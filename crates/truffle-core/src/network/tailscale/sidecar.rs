@@ -723,12 +723,33 @@ impl GoSidecar {
         port: u16,
         request_id: Option<String>,
     ) -> Result<(), NetworkError> {
-        let data = ListenPacketCommandData { port, request_id };
+        let data = ListenPacketCommandData {
+            port,
+            request_id,
+            relay_version: 5,
+        };
         self.send_command(SidecarCommand {
             command: command_type::LISTEN_PACKET,
             data: Some(serde_json::to_value(&data)?),
         })
         .await
+    }
+
+    /// Tie cleanup to this sidecar generation and binding ID, never a port.
+    /// The fast path also works when a socket is dropped outside a runtime.
+    pub(crate) fn udp_cleanup(&self, relay_id: &str) -> impl FnOnce() + Send + Sync + 'static {
+        let tx = self.stdin_tx.clone();
+        let runtime = tokio::runtime::Handle::current();
+        let json =
+            serde_json::json!({"command":"tsnet:unlistenPacket", "data":{"relayId":relay_id}})
+                .to_string();
+        move || {
+            if let Err(mpsc::error::TrySendError::Full(json)) = tx.try_send(json) {
+                runtime.spawn(async move {
+                    let _ = tx.send(json).await;
+                });
+            }
+        }
     }
 
     /// Send the tsnet:watchPeers command to start WatchIPNBus-based peer events.

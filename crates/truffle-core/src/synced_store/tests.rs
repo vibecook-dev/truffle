@@ -61,6 +61,10 @@ impl MockNetworkProvider {
 }
 
 impl NetworkProvider for MockNetworkProvider {
+    fn trust_mode(&self) -> crate::network::NetworkTrust {
+        crate::network::NetworkTrust::UnverifiedLoopback
+    }
+
     fn local_identity(&self) -> NodeIdentity {
         self.identity.clone()
     }
@@ -410,6 +414,8 @@ async fn test_peer_leave_removes_slice() {
         ip: "127.0.0.1".parse().unwrap(),
         online: true,
         cur_addr: Some("127.0.0.1:41641".to_string()),
+        active: true,
+        peer_relay: None,
         relay: None,
         os: None,
         last_seen: None,

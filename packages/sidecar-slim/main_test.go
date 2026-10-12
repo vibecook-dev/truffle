@@ -183,7 +183,7 @@ func newTestShim() *shim {
 	return &shim{
 		writer:           json.NewEncoder(io.Discard),
 		dynamicListeners: make(map[uint16]net.Listener),
-		udpRelays:        make(map[uint16]*udpRelay),
+		udpRelays:        make(map[string]*udpRelay),
 		proxies:          make(map[string]*proxyEntry),
 		pendingProxyAdds: make(map[string]*pendingProxyAdd),
 		ctx:              ctx,
@@ -458,12 +458,11 @@ func TestShouldWrapTLS(t *testing.T) {
 // protocolVersion so the core gates capabilities by sidecar version instead of
 // treating this sidecar as v1. The core reads it off the "running" status/started
 // event (protocol.rs StatusEventData.protocol_version, camelCase, integer).
-// The pin is deliberate: v4 = requestId echoed on every RPC-style terminal
-// event; bumping the constant means updating this test AND the version gates
+// The pin is deliberate: v5 adds authenticated, releasable UDP bindings; bumping the constant means updating this test AND the version gates
 // in provider.rs.
 func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
-	if sidecarProtocolVersion != 4 {
-		t.Fatalf("sidecarProtocolVersion = %d, want 4 (requestId echo on RPC events)", sidecarProtocolVersion)
+	if sidecarProtocolVersion != 5 {
+		t.Fatalf("sidecarProtocolVersion = %d, want 5 (authenticated UDP bindings)", sidecarProtocolVersion)
 	}
 
 	var buf bytes.Buffer
@@ -471,7 +470,7 @@ func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
 	s.sendStatus("running", "host", "host.tail.ts.net", "100.64.0.1", "")
 
 	// The core matches the camelCase key exactly, as a JSON integer.
-	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":4`)) {
+	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":5`)) {
 		t.Errorf("status payload missing protocolVersion on the wire: %s", strings.TrimSpace(buf.String()))
 	}
 

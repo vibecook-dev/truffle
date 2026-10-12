@@ -36,7 +36,7 @@ pub struct UdpConfig {
 ///
 /// Generic over the [`NetworkProvider`] type `N`. Attempts to use the provider's
 /// `bind_udp` for network-relayed UDP (Tailscale tsnet). Falls back to direct
-/// `tokio::net::UdpSocket` binding when the provider does not support UDP.
+/// `tokio::net::UdpSocket` binding only when the provider explicitly enables unverified loopback tests.
 ///
 /// # Example
 ///
@@ -75,20 +75,9 @@ impl<N: NetworkProvider + 'static> DatagramTransport for UdpTransport<N> {
                 );
                 return Ok(DatagramSocket::network(network_socket));
             }
-            Err(crate::network::NetworkError::Internal(msg))
-                if msg.contains("not yet implemented") || msg.contains("not supported") =>
-            {
-                tracing::debug!(
-                    port = port,
-                    "udp: network provider does not support UDP, falling back to direct bind"
-                );
-            }
-            Err(crate::network::NetworkError::NotRunning) => {
-                tracing::debug!(
-                    port = port,
-                    "udp: network provider not running, falling back to direct bind"
-                );
-            }
+            Err(_)
+                if self.network.trust_mode()
+                    == crate::network::NetworkTrust::UnverifiedLoopback => {}
             Err(e) => {
                 return Err(TransportError::ListenFailed(format!(
                     "udp bind via network provider: {e}"
@@ -96,8 +85,8 @@ impl<N: NetworkProvider + 'static> DatagramTransport for UdpTransport<N> {
             }
         }
 
-        // Fallback: bind directly via tokio (loopback / LAN)
-        let bind_addr = format!("0.0.0.0:{port}");
+        // Explicit test mode: bind only loopback.
+        let bind_addr = format!("127.0.0.1:{port}");
         tracing::debug!(addr = %bind_addr, "udp: binding socket directly");
 
         let socket = tokio::net::UdpSocket::bind(&bind_addr)

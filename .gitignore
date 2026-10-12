@@ -36,11 +36,11 @@ docs/.vitepress/cache/
 
 # State directories
 .truffle-state/
-apple/.vendor/
+apple/.vendor
 
 # SwiftPM build products for the root manifest (sources live in apple/,
 # but `swift build` at the repo root writes here).
-/.build/
+/.build
 /.swiftpm/
 /Package.resolved
 

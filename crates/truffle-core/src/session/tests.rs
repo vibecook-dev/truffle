@@ -82,6 +82,10 @@ impl MockNetworkProvider {
 }
 
 impl NetworkProvider for MockNetworkProvider {
+    fn trust_mode(&self) -> crate::network::NetworkTrust {
+        crate::network::NetworkTrust::UnverifiedLoopback
+    }
+
     async fn start(&mut self) -> Result<(), NetworkError> {
         Ok(())
     }
@@ -196,6 +200,8 @@ fn make_network_peer(id: &str, ip: &str) -> NetworkPeer {
         ip: ip.parse().unwrap(),
         online: true,
         cur_addr: Some(format!("{ip}:41641")),
+        active: true,
+        peer_relay: None,
         relay: None,
         os: Some("linux".to_string()),
         last_seen: Some("2026-03-25T12:00:00Z".to_string()),
@@ -226,6 +232,8 @@ fn make_loopback_peer(id: &str) -> NetworkPeer {
         ip: "127.0.0.1".parse().unwrap(),
         online: true,
         cur_addr: Some("127.0.0.1:41641".to_string()),
+        active: true,
+        peer_relay: None,
         relay: None,
         os: None,
         last_seen: None,
@@ -1588,4 +1596,38 @@ proptest! {
         let formatted = super::format_peer_ref(&id, generation);
         prop_assert_eq!(super::parse_peer_ref(&formatted), Some((id.as_str(), generation)));
     }
+}
+
+#[test]
+fn direct_endpoint_takes_precedence_over_home_derp_region() {
+    let mut peer = make_network_peer("peer", "100.64.1.1");
+    peer.cur_addr = Some("192.0.2.1:41641".into());
+    peer.relay = Some("ord".into());
+    assert_eq!(
+        super::network_peer_to_state(&peer, 1).connection_type,
+        "direct"
+    );
+}
+
+#[test]
+fn inactive_home_region_is_not_an_active_relay_path() {
+    let mut peer = make_network_peer("peer", "100.64.1.1");
+    peer.cur_addr = None;
+    peer.relay = Some("ord".into());
+    peer.active = false;
+    assert_eq!(
+        super::network_peer_to_state(&peer, 1).connection_type,
+        "unknown"
+    );
+    peer.active = true;
+    peer.peer_relay = Some("100.64.2.1:1234:vni:4".into());
+    assert_eq!(
+        super::network_peer_to_state(&peer, 1).connection_type,
+        "peer-relay:100.64.2.1:1234:vni:4"
+    );
+    peer.peer_relay = None;
+    assert_eq!(
+        super::network_peer_to_state(&peer, 1).connection_type,
+        "relay:ord"
+    );
 }

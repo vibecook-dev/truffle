@@ -25,7 +25,10 @@ use std::time::SystemTime;
 fn main() {
     let crate_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let sidecar_src = crate_dir.join("../../packages/sidecar-slim");
-    let output = crate_dir.join("tests/test-sidecar");
+    println!("cargo:rerun-if-env-changed=TRUFFLE_TEST_SIDECAR_PATH");
+    let output = std::env::var_os("TRUFFLE_TEST_SIDECAR_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate_dir.join("tests/test-sidecar"));
 
     // If the sidecar source tree isn't here (e.g. a published-crate build),
     // do nothing and watch for it to appear.

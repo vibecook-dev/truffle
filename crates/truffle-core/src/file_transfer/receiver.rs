@@ -1189,6 +1189,10 @@ mod tests {
     }
 
     impl NetworkProvider for MockNetworkProvider {
+        fn trust_mode(&self) -> crate::network::NetworkTrust {
+            crate::network::NetworkTrust::UnverifiedLoopback
+        }
+
         fn local_identity(&self) -> NodeIdentity {
             self.identity.clone()
         }

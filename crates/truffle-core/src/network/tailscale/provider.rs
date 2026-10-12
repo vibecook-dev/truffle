@@ -211,6 +211,8 @@ impl TailscaleProvider {
             hostname: peer.hostname.clone(),
             ip,
             online: peer.online,
+            active: peer.active,
+            peer_relay: (!peer.peer_relay.is_empty()).then(|| peer.peer_relay.clone()),
             cur_addr: if peer.cur_addr.is_empty() {
                 None
             } else {
@@ -837,7 +839,7 @@ impl super::super::NetworkProvider for TailscaleProvider {
                 let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
                 let reply = sidecar.register_reply(&request_id);
                 sidecar
-                    .send_ping(target, None, Some(request_id.clone()))
+                    .send_ping(target, Some("disco".into()), Some(request_id.clone()))
                     .await?;
                 reply
             };
@@ -859,7 +861,9 @@ impl super::super::NetworkProvider for TailscaleProvider {
             let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
 
             let event_rx = sidecar.subscribe();
-            sidecar.send_ping(target.clone(), None, None).await?;
+            sidecar
+                .send_ping(target.clone(), Some("disco".into()), None)
+                .await?;
             event_rx
         };
 
@@ -938,110 +942,71 @@ impl super::super::NetworkProvider for TailscaleProvider {
             return Err(NetworkError::NotRunning);
         }
 
-        // Wait for the sidecar to report the local relay port. v4 sidecars
-        // echo a correlation id, routing the reply through the broker;
-        // older ones fall back to port-matched value correlation.
-        let local_port = if self.sidecar_version() >= Self::SIDECAR_V4_REPLY_ROUTING {
-            let request_id = uuid::Uuid::new_v4().to_string();
-            let mut reply = {
-                let sidecar_guard = self.sidecar.lock().await;
-                let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
-                let reply = sidecar.register_reply(&request_id);
-                sidecar
-                    .send_listen_packet(port, Some(request_id.clone()))
-                    .await?;
-                reply
-            };
+        if self.sidecar_version() < 5 {
+            return Err(NetworkError::Unsupported(
+                "authenticated UDP requires sidecar protocol v5; upgrade the sidecar".into(),
+            ));
+        }
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let local = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .map_err(NetworkError::Io)?;
+        // Install cleanup before any command can be sent. This covers errors,
+        // dropped bind futures, registration timeouts, and normal socket Drop.
+        let (mut socket, mut reply) = {
+            let guard = self.sidecar.lock().await;
+            let sidecar = guard.as_ref().ok_or(NetworkError::NotRunning)?;
+            let socket = super::super::NetworkUdpSocket::new(local, 0)
+                .with_cleanup(sidecar.udp_cleanup(&request_id));
+            let reply = sidecar.register_reply(&request_id);
+            sidecar
+                .send_listen_packet(port, Some(request_id.clone()))
+                .await?;
+            (socket, reply)
+        };
+        let (actual_port, local_port) =
             match tokio::time::timeout(Duration::from_secs(10), reply.recv())
                 .await
                 .map_err(|_| {
-                    NetworkError::ListenFailed("UDP listenPacket confirmation timed out".into())
+                    NetworkError::ListenFailed("UDP bind confirmation timed out".into())
                 })?? {
-                SidecarInternalEvent::ListeningPacket { local_port, .. } => local_port,
+                SidecarInternalEvent::ListeningPacket { port, local_port }
+                    if port != 0 && local_port != 0 =>
+                {
+                    (port, local_port)
+                }
                 SidecarInternalEvent::Error { code, message } => {
                     return Err(NetworkError::ListenFailed(format!(
                         "UDP bind failed [{code}] {message}"
-                    )));
+                    )))
                 }
                 other => return Err(Self::unexpected_reply("listenPacket", other)),
-            }
-        } else {
-            // Legacy pre-v4 path: value correlation over broadcast.
-            let mut event_rx = {
-                let sidecar_guard = self.sidecar.lock().await;
-                let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
-
-                let event_rx = sidecar.subscribe();
-                sidecar.send_listen_packet(port, None).await?;
-                event_rx
             };
-
-            tokio::time::timeout(Duration::from_secs(10), async {
-                loop {
-                    match event_rx.recv().await {
-                        Ok(SidecarInternalEvent::ListeningPacket {
-                            port: p,
-                            local_port,
-                        }) if p == port => {
-                            return Ok(local_port);
-                        }
-                        Ok(SidecarInternalEvent::Error { code, message }) => {
-                            return Err(NetworkError::ListenFailed(format!(
-                                "UDP bind failed [{code}] {message}"
-                            )));
-                        }
-                        Err(broadcast::error::RecvError::Closed) => {
-                            return Err(NetworkError::SidecarError("event channel closed".into()));
-                        }
-                        Err(broadcast::error::RecvError::Lagged(_)) => {
-                            return Err(NetworkError::SidecarError(
-                                "event channel lagged: UDP bind confirmation may have been lost"
-                                    .into(),
-                            ));
-                        }
-                        _ => continue,
-                    }
-                }
-            })
+        socket.set_tsnet_port(actual_port);
+        socket
+            .inner()
+            .connect((std::net::Ipv4Addr::LOCALHOST, local_port))
             .await
-            .map_err(|_| {
-                NetworkError::ListenFailed("UDP listenPacket confirmation timed out".into())
-            })??
-        };
-
-        // Bind a local UDP socket and connect it to the relay
-        let local_socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .map_err(NetworkError::Io)?;
+        let token = udp_relay_token(&*self.session_token.read().await, &request_id);
+        let mut registration = b"TRUFFLE_UDP_REGISTER".to_vec();
+        registration.extend_from_slice(&token);
+        socket
+            .inner()
+            .send(&registration)
             .await
-            .map_err(|e| NetworkError::Internal(format!("failed to bind local UDP socket: {e}")))?;
-
-        local_socket
-            .connect(format!("127.0.0.1:{local_port}"))
+            .map_err(NetworkError::Io)?;
+        let mut ack = [0; 64];
+        let n = tokio::time::timeout(Duration::from_secs(5), socket.inner().recv(&mut ack))
             .await
-            .map_err(|e| {
-                NetworkError::Internal(format!("failed to connect local UDP socket to relay: {e}"))
-            })?;
-
-        let rust_local_addr = local_socket
-            .local_addr()
-            .map_err(|e| NetworkError::Internal(format!("failed to get local UDP addr: {e}")))?;
-
-        // Send a registration packet so the relay learns our address.
-        // Without this, the relay drops inbound packets because it doesn't
-        // know where to forward them (it learns the Rust peer address from
-        // the first outbound packet).
-        local_socket
-            .send(b"TRUFFLE_UDP_REGISTER")
-            .await
-            .map_err(|e| NetworkError::Internal(format!("failed to send UDP registration: {e}")))?;
-
-        tracing::info!(
-            tsnet_port = port,
-            relay_port = local_port,
-            rust_local_addr = %rust_local_addr,
-            "UDP socket bound via tsnet relay (registered)"
-        );
-
-        Ok(super::super::NetworkUdpSocket::new(local_socket, port))
+            .map_err(|_| NetworkError::ListenFailed("UDP relay authentication timed out".into()))?
+            .map_err(NetworkError::Io)?;
+        if &ack[..n] != b"TRUFFLE_UDP_READY" {
+            return Err(NetworkError::ListenFailed(
+                "invalid UDP relay authentication acknowledgement".into(),
+            ));
+        }
+        Ok(socket)
     }
 
     async fn health(&self) -> HealthInfo {
@@ -1371,6 +1336,8 @@ impl TailscaleProvider {
         }
         let connection = if data.direct {
             "direct".to_string()
+        } else if !data.peer_relay.is_empty() {
+            format!("peer-relay:{}", data.peer_relay)
         } else if !data.relay.is_empty() {
             format!("relay:{}", data.relay)
         } else {
@@ -1494,5 +1461,40 @@ mod config_debug_tests {
         let dbg = format!("{config:?}");
         assert!(!dbg.contains("SECRET123"));
         assert!(dbg.contains("[REDACTED]"));
+    }
+}
+
+pub(super) fn udp_relay_token(session: &[u8; 32], request_id: &str) -> [u8; 32] {
+    use hmac::{Hmac, KeyInit, Mac};
+    let mut mac =
+        Hmac::<sha2::Sha256>::new_from_slice(session).expect("HMAC accepts a 32-byte key");
+    mac.update(b"truffle-udp-v5\0");
+    mac.update(request_id.as_bytes());
+    mac.finalize().into_bytes().into()
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+    #[test]
+    fn ping_paths_survive_the_json_boundary() {
+        for (value, expected) in [
+            (
+                serde_json::json!({"direct":true,"peerAddr":"192.0.2.1:1234"}),
+                "direct",
+            ),
+            (serde_json::json!({"relay":"ord"}), "relay:ord"),
+            (
+                serde_json::json!({"peerRelay":"100.64.2.1:1234:vni:4","relay":"ord"}),
+                "peer-relay:100.64.2.1:1234:vni:4",
+            ),
+            (serde_json::json!({}), "unknown"),
+        ] {
+            let data: PingResultEventData = serde_json::from_value(value).unwrap();
+            assert_eq!(
+                TailscaleProvider::map_ping_result(data).unwrap().connection,
+                expected
+            );
+        }
     }
 }

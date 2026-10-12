@@ -272,6 +272,10 @@ async fn test_ping() {
         result.latency > Duration::ZERO,
         "ping latency should be > 0"
     );
+    assert_ne!(
+        result.connection, "unknown",
+        "diagnostic ping must report the selected Tailscale path"
+    );
     assert!(
         !result.connection.is_empty(),
         "ping connection type should not be empty"
@@ -411,4 +415,138 @@ async fn test_health() {
     // Stop beta explicitly to avoid leaking an ephemeral peer longer than needed.
     let beta = beta;
     let _ = beta.stop().await;
+}
+
+#[tokio::test]
+async fn test_udp_ephemeral_ports_are_distinct_and_released() {
+    let Some(key) = common::require_authkey("test_udp_ephemeral_ports_are_distinct_and_released")
+    else {
+        return;
+    };
+    let pair = common::make_pair_of_nodes(&key).await;
+    let (a, b) = tokio::join!(pair.alpha.bind_udp(0), pair.alpha.bind_udp(0));
+    let a = a.expect("first ephemeral UDP bind");
+    let b = b.expect("second concurrent ephemeral UDP bind");
+    assert_ne!(a.tsnet_port(), 0, "ephemeral assignment must be reported");
+    assert_ne!(
+        a.tsnet_port(),
+        b.tsnet_port(),
+        "simultaneous relays need distinct ports"
+    );
+    let port = a.tsnet_port();
+    drop(a);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let rebound = loop {
+        match pair.alpha.bind_udp(port).await {
+            Ok(socket) => break socket,
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(25)).await
+            }
+            Err(e) => panic!("dropped relay did not release port {port}: {e}"),
+        }
+    };
+    drop(rebound);
+    drop(b);
+    pair.stop().await;
+}
+
+#[tokio::test]
+async fn test_udp_drop_releases_explicit_port() {
+    let Some(key) = common::require_authkey("test_udp_drop_releases_explicit_port") else {
+        return;
+    };
+    let pair = common::make_pair_of_nodes(&key).await;
+    let socket = pair.alpha.bind_udp(9460).await.expect("bind UDP");
+    drop(socket);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match pair.alpha.bind_udp(9460).await {
+            Ok(socket) => {
+                drop(socket);
+                break;
+            }
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(25)).await
+            }
+            Err(e) => panic!("drop leaked UDP port: {e}"),
+        }
+    }
+    pair.stop().await;
+}
+
+#[tokio::test]
+async fn test_udp_local_sender_cannot_hijack_relay() {
+    let Some(key) = common::require_authkey("test_udp_local_sender_cannot_hijack_relay") else {
+        return;
+    };
+    let pair = common::make_pair_of_nodes(&key).await;
+    let sender = pair.alpha.bind_udp(9461).await.unwrap();
+    let receiver = pair.beta.bind_udp(9462).await.unwrap();
+    let attacker = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    attacker
+        .connect(sender.inner().peer_addr().unwrap())
+        .await
+        .unwrap();
+    let beta_ip = pair.beta_ip().await;
+    // First establish the legitimate data path so a routing failure cannot
+    // make an unauthenticated injection test pass by dropping every packet.
+    sender
+        .send_to(b"legitimate", std::net::SocketAddr::new(beta_ip, 9462))
+        .await
+        .unwrap();
+    let mut buf = [0; 128];
+    timeout(OP_TIMEOUT, async {
+        loop {
+            let (n, _) = receiver.recv_from(&mut buf).await.unwrap();
+            // The old relay injects a self-test packet into application data.
+            // Drain that separately so this regression proves attacker injection.
+            if &buf[..n] == b"truffle-udp-selftest" {
+                continue;
+            }
+            assert_eq!(&buf[..n], b"legitimate");
+            break;
+        }
+    })
+    .await
+    .unwrap();
+    for registration in [
+        b"TRUFFLE_UDP_REGISTER".to_vec(),
+        [b"TRUFFLE_UDP_REGISTER".as_slice(), &[0; 32]].concat(),
+    ] {
+        attacker.send(&registration).await.unwrap();
+        let std::net::IpAddr::V4(ip) = beta_ip else {
+            panic!("test requires IPv4")
+        };
+        let forged = [ip.octets().as_slice(), &9462u16.to_be_bytes(), b"forged"].concat();
+        attacker.send(&forged).await.unwrap();
+    }
+    assert!(
+        timeout(Duration::from_secs(1), receiver.recv_from(&mut buf))
+            .await
+            .is_err(),
+        "unauthenticated local process injected a tailnet packet"
+    );
+    sender
+        .send_to(b"still-owned", std::net::SocketAddr::new(beta_ip, 9462))
+        .await
+        .unwrap();
+    let (n, _) = timeout(OP_TIMEOUT, receiver.recv_from(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&buf[..n], b"still-owned");
+    // Inbound forwarding must also still target the original Rust socket.
+    receiver
+        .send_to(
+            b"reply",
+            std::net::SocketAddr::new(pair.alpha_ip().await, 9461),
+        )
+        .await
+        .unwrap();
+    let (n, _) = timeout(OP_TIMEOUT, sender.recv_from(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&buf[..n], b"reply");
+    pair.stop().await;
 }

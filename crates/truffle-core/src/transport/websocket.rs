@@ -277,49 +277,20 @@ struct AuthenticatedIdentity {
 /// incoming connection (RFC 017 §8, close code 4003).
 ///
 /// `authenticated` is the raw `remote_identity` string from the bridge header.
-/// The policy deliberately fails open when there is no trustworthy
-/// authenticated identity to compare against, so mock/loopback fixtures and
-/// WhoIs failures keep working as before, and only rejects a hello when the
-/// bridge gave us a concrete node ID that contradicts the claim:
-///
-/// - Empty `authenticated` → accept unverified (MockNetworkProvider, or the
-///   sidecar returned `""` because WhoIs failed).
-/// - Unparseable `authenticated` → accept unverified (legacy plain-DNS-name
-///   form of the bridge header field).
-/// - Parsed but empty `nodeId` → accept unverified (WhoIs returned no Node).
-/// - `nodeId == claimed.tailscale_id` → accept.
-/// - Otherwise → [`TransportError::IdentityMismatch`].
+/// Missing or malformed WhoIs proof fails closed; a DNS name is not proof
+/// of the stable node ID claimed by a hello.
 fn verify_authenticated_identity(
     claimed: &PeerIdentity,
     authenticated: &str,
 ) -> Result<(), TransportError> {
-    if authenticated.trim().is_empty() {
-        tracing::warn!(
-            claimed_tailscale_id = %claimed.tailscale_id,
-            "ws: no authenticated identity for incoming connection (mock/loopback or WhoIs failure); accepting hello claim unverified"
-        );
-        return Ok(());
+    let parsed = serde_json::from_str::<AuthenticatedIdentity>(authenticated).map_err(|_| {
+        TransportError::HandshakeFailed("missing or malformed Tailscale identity proof".into())
+    })?;
+    if parsed.node_id.trim().is_empty() {
+        return Err(TransportError::HandshakeFailed(
+            "Tailscale identity proof has no node ID".into(),
+        ));
     }
-
-    let parsed = match serde_json::from_str::<AuthenticatedIdentity>(authenticated) {
-        Ok(parsed) => parsed,
-        Err(_) => {
-            tracing::warn!(
-                claimed_tailscale_id = %claimed.tailscale_id,
-                "ws: unparseable authenticated identity; accepting hello claim unverified"
-            );
-            return Ok(());
-        }
-    };
-
-    if parsed.node_id.is_empty() {
-        tracing::warn!(
-            claimed_tailscale_id = %claimed.tailscale_id,
-            "ws: authenticated identity carried no nodeId; accepting hello claim unverified"
-        );
-        return Ok(());
-    }
-
     if parsed.node_id == claimed.tailscale_id {
         Ok(())
     } else {
@@ -402,6 +373,7 @@ async fn server_hello_exchange(
     ws: &mut WebSocketStream<TcpStream>,
     local_hello: &HelloEnvelope,
     authenticated_identity: &str,
+    allow_unverified_loopback: bool,
 ) -> Result<PeerIdentity, TransportError> {
     // Step 1: read remote hello (timed).
     let remote = match receive_hello(ws).await {
@@ -441,7 +413,12 @@ async fn server_hello_exchange(
     // authenticated identity BEFORE we reveal our own hello. Doing this
     // before send_hello means an impersonator never receives our identity
     // block and the stream is never yielded to the session layer.
-    if let Err(e) = verify_authenticated_identity(&identity, authenticated_identity) {
+    let verified = if allow_unverified_loopback && authenticated_identity.is_empty() {
+        Ok(())
+    } else {
+        verify_authenticated_identity(&identity, authenticated_identity)
+    };
+    if let Err(e) = verified {
         close_ws_with_code(ws, CLOSE_IDENTITY_MISMATCH, "identity mismatch").await;
         return Err(e);
     }
@@ -538,6 +515,7 @@ impl<N: NetworkProvider + 'static> StreamTransport for WebSocketTransport<N> {
         let pong_timeout = self.config.pong_timeout;
         let ws_config = self.ws_protocol_config();
         let handshake_timeout = self.config.handshake_timeout;
+        let trust_mode = self.network.trust_mode();
         let handshake_permits = Arc::new(tokio::sync::Semaphore::new(
             self.config.max_pending_handshakes,
         ));
@@ -568,6 +546,12 @@ impl<N: NetworkProvider + 'static> StreamTransport for WebSocketTransport<N> {
                         // Clone the bridge-provided WhoIs identity before
                         // `incoming.stream` is moved into the WS upgrade below.
                         let authenticated_identity = incoming.remote_identity.clone();
+                        let allow_unverified_loopback = trust_mode
+                            == crate::network::NetworkTrust::UnverifiedLoopback
+                            && incoming
+                                .remote_addr
+                                .parse::<std::net::SocketAddr>()
+                                .is_ok_and(|addr| addr.ip().is_loopback());
                         let ws_config = ws_config;
 
                         tokio::spawn(async move {
@@ -588,6 +572,7 @@ impl<N: NetworkProvider + 'static> StreamTransport for WebSocketTransport<N> {
                                     &mut ws,
                                     &local_hello,
                                     &authenticated_identity,
+                                    allow_unverified_loopback,
                                 )
                                 .await?;
                                 Ok::<(WebSocketStream<TcpStream>, PeerIdentity), TransportError>((
@@ -1154,35 +1139,33 @@ mod unit_tests {
     }
 
     #[test]
-    fn verify_identity_accepts_empty_authenticated_string() {
-        // MockNetworkProvider fixtures and WhoIs failures deliver "" —
-        // preserve the pre-fix warn-and-allow behavior.
+    fn verify_identity_rejects_empty_authenticated_string() {
+        // WhoIs failure is not authenticated identity.
         let identity = valid_identity();
         assert!(
-            verify_authenticated_identity(&identity, "").is_ok(),
-            "empty authenticated identity must fall open"
+            verify_authenticated_identity(&identity, "").is_err(),
+            "missing WhoIs proof must fail closed"
         );
     }
 
     #[test]
-    fn verify_identity_accepts_non_json_legacy_dns_value() {
-        // The bridge header historically carried a plain DNS name; an
-        // unparseable value falls open rather than rejecting.
+    fn verify_identity_rejects_non_json_legacy_dns_value() {
+        // Legacy DNS names cannot prove a claimed stable node ID.
         let identity = valid_identity();
         assert!(
-            verify_authenticated_identity(&identity, "peer.tailnet.ts.net").is_ok(),
-            "legacy plain-DNS-name authenticated value must fall open"
+            verify_authenticated_identity(&identity, "peer.tailnet.ts.net").is_err(),
+            "unverifiable legacy identity must fail closed"
         );
     }
 
     #[test]
-    fn verify_identity_accepts_json_without_node_id() {
+    fn verify_identity_rejects_json_without_node_id() {
         // WhoIs returned no Node — the JSON parses but nodeId is absent.
         let identity = valid_identity();
         let authenticated = r#"{"dnsName":"peer.ts.net"}"#;
         assert!(
-            verify_authenticated_identity(&identity, authenticated).is_ok(),
-            "missing nodeId must fall open"
+            verify_authenticated_identity(&identity, authenticated).is_err(),
+            "missing nodeId must fail closed"
         );
     }
 

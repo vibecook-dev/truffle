@@ -439,6 +439,8 @@ fn filter_app_peers_only() {
             online: true,
             os: "linux".into(),
             cur_addr: String::new(),
+            active: true,
+            peer_relay: String::new(),
             relay: String::new(),
             last_seen: None,
             key_expiry: None,
@@ -453,6 +455,8 @@ fn filter_app_peers_only() {
             online: true,
             os: "darwin".into(),
             cur_addr: String::new(),
+            active: true,
+            peer_relay: String::new(),
             relay: String::new(),
             last_seen: None,
             key_expiry: None,
@@ -467,6 +471,8 @@ fn filter_app_peers_only() {
             online: false,
             os: "linux".into(),
             cur_addr: String::new(),
+            active: true,
+            peer_relay: String::new(),
             relay: String::new(),
             last_seen: None,
             key_expiry: None,
@@ -482,6 +488,8 @@ fn filter_app_peers_only() {
             online: true,
             os: "linux".into(),
             cur_addr: String::new(),
+            active: true,
+            peer_relay: String::new(),
             relay: String::new(),
             last_seen: None,
             key_expiry: None,
@@ -496,6 +504,8 @@ fn filter_app_peers_only() {
             online: true,
             os: "linux".into(),
             cur_addr: String::new(),
+            active: true,
+            peer_relay: String::new(),
             relay: String::new(),
             last_seen: None,
             key_expiry: None,
@@ -1041,6 +1051,7 @@ fn test_sidecar_listen_packet_command_serialization() {
     use super::protocol::{command_type, ListenPacketCommandData, SidecarCommand};
 
     let data = ListenPacketCommandData {
+        relay_version: 5,
         port: 19420,
         request_id: None,
     };
@@ -1104,4 +1115,21 @@ async fn integration_ping() {
     // 3. Ping a known peer
     // 4. Verify PingResult has reasonable latency
     todo!("integration test requires real Tailscale network")
+}
+
+#[test]
+fn udp_capability_matches_go_fixture_and_is_binding_specific() {
+    let token = super::provider::udp_relay_token(&[17; 32], "bind-123");
+    assert_eq!(
+        hex::encode(token),
+        "36f50b02739db95b02b0f4bb41acde54c2b9b89601a2220d96dfeb33f7856c3b"
+    );
+    assert_ne!(
+        token,
+        super::provider::udp_relay_token(&[17; 32], "bind-124")
+    );
+    assert_ne!(
+        token,
+        super::provider::udp_relay_token(&[18; 32], "bind-123")
+    );
 }

@@ -1374,18 +1374,11 @@ impl<N: NetworkProvider + 'static> Node<N> {
     ///
     /// Returns a [`QuicListener`] that yields [`QuicConnection`]s. Only
     /// same-app peers can complete the handshake (ALPN scoping). The
-    /// session WebSocket port (default 9417) is reserved, and port 0 is
-    /// not yet supported over the tsnet relay (the relay cannot report the
-    /// actual ephemeral port back).
+    /// session WebSocket port (default 9417) is reserved. Port 0 requests an
+    /// ephemeral port; [`QuicListener::port`] reports the assigned tailnet port.
     pub async fn listen_quic(&self, port: u16) -> Result<QuicListener, NodeError> {
         self.ensure_not_stopped()?;
         ensure_port_unreserved(port, self.ws_port)?;
-        if port == 0 {
-            return Err(NodeError::NotImplemented(
-                "ephemeral (port 0) QUIC listeners are not supported over the tsnet relay yet — choose an explicit port"
-                    .to_string(),
-            ));
-        }
         let alpn = crate::transport::quic::raw_alpn(&self.network.local_identity().app_id);
         crate::transport::quic::listen_raw(&self.network, port, &alpn)
             .await
@@ -1395,8 +1388,8 @@ impl<N: NetworkProvider + 'static> Node<N> {
     /// Bind a UDP datagram socket on a port.
     ///
     /// Datagrams are relayed through the network provider (tsnet) with
-    /// boundaries preserved; the transport falls back to a direct host
-    /// socket only when the provider has no UDP support (tests). Returns a
+    /// boundaries preserved. Production provider errors fail closed. Explicit
+    /// test providers may use loopback sockets. Returns a
     /// [`DatagramSocket`] supporting `send_to` / `recv_from` with tailnet
     /// addresses. IPv4 (`100.x`) peers only; keep payloads ≤ ~1200 bytes
     /// to stay under the tailnet MTU. Port 0 binds an ephemeral relay
@@ -2068,6 +2061,10 @@ mod tests {
     }
 
     impl NetworkProvider for MockNetworkProvider {
+        fn trust_mode(&self) -> crate::network::NetworkTrust {
+            crate::network::NetworkTrust::UnverifiedLoopback
+        }
+
         async fn start(&mut self) -> Result<(), NetworkError> {
             Ok(())
         }
@@ -2170,6 +2167,8 @@ mod tests {
             ip: "127.0.0.1".parse().unwrap(),
             online: true,
             cur_addr: Some("127.0.0.1:41641".to_string()),
+            active: true,
+            peer_relay: None,
             relay: None,
             os: Some("linux".to_string()),
             last_seen: Some("2026-03-25T12:00:00Z".to_string()),
@@ -2764,6 +2763,8 @@ mod tests {
             ip: "127.0.0.1".parse().unwrap(),
             online: true,
             cur_addr: Some("127.0.0.1:41641".to_string()),
+            active: true,
+            peer_relay: None,
             relay: None,
             os: None,
             last_seen: None,
@@ -2776,6 +2777,8 @@ mod tests {
             ip: "127.0.0.1".parse().unwrap(),
             online: true,
             cur_addr: Some("127.0.0.1:41641".to_string()),
+            active: true,
+            peer_relay: None,
             relay: None,
             os: None,
             last_seen: None,
@@ -2861,6 +2864,8 @@ mod tests {
             ip: "127.0.0.1".parse().unwrap(),
             online: true,
             cur_addr: Some("127.0.0.1:41641".to_string()),
+            active: true,
+            peer_relay: None,
             relay: None,
             os: None,
             last_seen: None,
@@ -3136,15 +3141,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_listen_quic_rejects_reserved_and_ephemeral_ports() {
+    async fn test_listen_quic_rejects_reserved_and_accepts_ephemeral_ports() {
         let ws_port = random_port().await;
         let (node, _event_tx, _net) = make_test_node("node-1", ws_port).await;
 
         let err = node.listen_quic(9417).await.unwrap_err();
         assert!(matches!(err, NodeError::ReservedPort(9417)));
 
-        let err = node.listen_quic(0).await.unwrap_err();
-        assert!(matches!(err, NodeError::NotImplemented(_)));
+        let listener = node.listen_quic(0).await.expect("ephemeral QUIC listener");
+        assert_ne!(listener.port(), 0);
+        listener.close();
     }
 
     #[test]
