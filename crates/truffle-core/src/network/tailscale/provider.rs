@@ -15,9 +15,12 @@ use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 
 use super::bridge::{Bridge, DIAL_TIMEOUT};
 use super::protocol::{
-    PingResultEventData, ProxyAddCommandData, ProxyInfoEventData, WhoisResultEventData,
+    command_type, EgressAddCommandData, EgressListCommandData, EgressProxyCommandData,
+    EgressRemoveCommandData, LoopbackCommandData, PingResultEventData, ProxyAddCommandData,
+    ProxyInfoEventData, WhoisResultEventData,
 };
 use super::sidecar::{GoSidecar, ReplyGuard, SidecarConfig, SidecarInternalEvent};
+use crate::egress::{BoundEgress, EgressRoute, EgressRouteInfo, HttpProxyConfig, LoopbackConfig};
 use crate::network::login_allow::login_allowed;
 use crate::network::{
     DialOpts, HealthInfo, IncomingConnection, ListenOpts, NetworkError, NetworkPeer,
@@ -635,6 +638,15 @@ impl TailscaleProvider {
                                 tracing::warn!("proxy runtime error [{code}] for {id}: {message}");
                                 let _ =
                                     proxy_error_tx.send(ProxyRuntimeError { id, code, message });
+                            }
+                            SidecarInternalEvent::EgressError { id, code, message }
+                                if !id.is_empty() =>
+                            {
+                                // RFC 026: a route refused (or could not dial) an
+                                // accepted connection — or an egress command failed;
+                                // the broker tees command answers here too. Neither
+                                // is a node fault, so a trace, not a warning.
+                                tracing::debug!("egress [{code}] for {id}: {message}");
                             }
                             // Dial/Listen/Ping results are handled by the caller,
                             // not the background event processor
@@ -1511,6 +1523,240 @@ impl super::super::NetworkProvider for TailscaleProvider {
         .await
         .map_err(|_| NetworkError::ProxyError("proxy list timed out".into()))?
     }
+
+    // ── Egress (RFC 026) ──────────────────────────────────────────────
+
+    async fn loopback(&self, local_api: bool) -> Result<LoopbackConfig, NetworkError> {
+        let reply = self
+            .egress_rpc("tsnet:loopback", command_type::LOOPBACK, |request_id| {
+                serde_json::to_value(LoopbackCommandData {
+                    local_api,
+                    request_id: Some(request_id),
+                })
+            })
+            .await?;
+        Self::map_loopback_reply(reply, local_api)
+    }
+
+    async fn egress_add(&self, route: EgressRoute) -> Result<BoundEgress, NetworkError> {
+        let command = |request_id| serde_json::to_value(self.egress_add_command(route, request_id));
+        let reply = self
+            .egress_rpc("egress:add", command_type::EGRESS_ADD, command)
+            .await?;
+        Self::map_egress_added(reply)
+    }
+
+    async fn egress_remove(&self, id: &str) -> Result<(), NetworkError> {
+        let reply = self
+            .egress_rpc("egress:remove", command_type::EGRESS_REMOVE, |request_id| {
+                serde_json::to_value(EgressRemoveCommandData {
+                    id: id.to_string(),
+                    request_id: Some(request_id),
+                })
+            })
+            .await?;
+        Self::map_egress_removed(reply, id)
+    }
+
+    async fn egress_list(&self) -> Result<Vec<EgressRouteInfo>, NetworkError> {
+        let reply = self
+            .egress_rpc("egress:list", command_type::EGRESS_LIST, |request_id| {
+                serde_json::to_value(EgressListCommandData {
+                    request_id: Some(request_id),
+                })
+            })
+            .await?;
+        Self::map_egress_list(reply)
+    }
+
+    async fn egress_http_proxy(&self) -> Result<HttpProxyConfig, NetworkError> {
+        let command = |request_id| serde_json::to_value(self.egress_proxy_command(request_id));
+        let reply = self
+            .egress_rpc("egress:proxy", command_type::EGRESS_PROXY, command)
+            .await?;
+        Self::map_egress_proxy(reply)
+    }
+}
+
+impl TailscaleProvider {
+    /// Earliest sidecar protocol that speaks the RFC 026 egress commands.
+    pub(crate) const SIDECAR_V7_EGRESS: u32 = 7;
+
+    /// How long an egress command may take. `egress:add` reads the netmap to
+    /// admit its target (the sidecar bounds that read at 10 s), so the core
+    /// waits past the sidecar's own budget rather than racing it.
+    const EGRESS_REPLY_TIMEOUT: Duration = Duration::from_secs(20);
+
+    /// Refuse an RFC 026 command this provider cannot carry: not running, or
+    /// a sidecar older than protocol 7. An older sidecar answers the unknown
+    /// verb only with an UNKNOWN_CMD error that carries no `requestId`, so a
+    /// blind send could only time out — refuse locally instead, loudly.
+    async fn egress_ready(&self, verb: &str) -> Result<(), NetworkError> {
+        if *self.state.read().await != ProviderState::Running {
+            return Err(NetworkError::NotRunning);
+        }
+        let version = self.sidecar_version();
+        if version < Self::SIDECAR_V7_EGRESS {
+            return Err(NetworkError::Unsupported(format!(
+                "sidecar protocol v{version} predates RFC 026 egress ({verb}); upgrade the \
+                 sidecar binary (needs v{})",
+                Self::SIDECAR_V7_EGRESS
+            )));
+        }
+        Ok(())
+    }
+
+    /// One correlated RFC 026 request: build the payload around a fresh
+    /// `requestId`, gate, register the reply slot BEFORE sending (the answer
+    /// can never race the registration), send, and await the routed answer.
+    async fn egress_rpc<F>(
+        &self,
+        verb: &str,
+        command: &'static str,
+        build: F,
+    ) -> Result<SidecarInternalEvent, NetworkError>
+    where
+        F: FnOnce(String) -> Result<serde_json::Value, serde_json::Error>,
+    {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let data = build(request_id.clone())?;
+        self.egress_ready(verb).await?;
+        let mut reply = {
+            let sidecar_guard = self.sidecar.lock().await;
+            let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
+            let reply = sidecar.register_reply(&request_id);
+            sidecar.send_egress(command, &data).await?;
+            reply
+        };
+        tokio::time::timeout(Self::EGRESS_REPLY_TIMEOUT, reply.recv())
+            .await
+            .map_err(|_| NetworkError::SidecarError(format!("{verb} timed out")))?
+    }
+
+    /// The `egress:add` payload. The node's RFC 025 gate rides along as
+    /// `nodeLoginAllow`: the core owns `login_allow`, and the sidecar needs
+    /// it to re-check every accepted connection.
+    pub(super) fn egress_add_command(
+        &self,
+        route: EgressRoute,
+        request_id: String,
+    ) -> EgressAddCommandData {
+        EgressAddCommandData {
+            id: route.id,
+            target: route.target,
+            login: route.login.filter(|l| !l.is_empty()),
+            node_login_allow: self.config.login_allow.clone(),
+            request_id: Some(request_id),
+        }
+    }
+
+    /// The `egress:proxy` payload, carrying the node's gate as `egress:add`
+    /// does.
+    pub(super) fn egress_proxy_command(&self, request_id: String) -> EgressProxyCommandData {
+        EgressProxyCommandData {
+            node_login_allow: self.config.login_allow.clone(),
+            request_id: Some(request_id),
+        }
+    }
+
+    /// A failed egress answer as a typed error. `NOT_RUNNING` keeps its own
+    /// variant; every other code rides [`NetworkError::EgressError`].
+    fn egress_failure(code: String, message: String) -> NetworkError {
+        if code == "NOT_RUNNING" {
+            NetworkError::NotRunning
+        } else {
+            NetworkError::EgressError { code, message }
+        }
+    }
+
+    /// Map a `tsnet:loopback` answer. A LocalAPI credential the caller did
+    /// not ask for is dropped here too: the contract holds on both sides of
+    /// the bridge.
+    pub(super) fn map_loopback_reply(
+        event: SidecarInternalEvent,
+        local_api: bool,
+    ) -> Result<LoopbackConfig, NetworkError> {
+        match event {
+            SidecarInternalEvent::Loopback(data) => Ok(LoopbackConfig {
+                address: data.address,
+                proxy_credential: data.proxy_credential,
+                local_api_credential: data
+                    .local_api_credential
+                    .filter(|credential| local_api && !credential.is_empty()),
+            }),
+            SidecarInternalEvent::Error { code, message }
+            | SidecarInternalEvent::EgressError { code, message, .. } => {
+                Err(Self::egress_failure(code, message))
+            }
+            other => Err(Self::unexpected_reply("tsnet:loopback", other)),
+        }
+    }
+
+    pub(super) fn map_egress_added(
+        event: SidecarInternalEvent,
+    ) -> Result<BoundEgress, NetworkError> {
+        match event {
+            SidecarInternalEvent::EgressAdded { id, listen } => Ok(BoundEgress { id, listen }),
+            SidecarInternalEvent::Error { code, message }
+            | SidecarInternalEvent::EgressError { code, message, .. } => {
+                Err(Self::egress_failure(code, message))
+            }
+            other => Err(Self::unexpected_reply("egress:add", other)),
+        }
+    }
+
+    /// Map an `egress:remove` answer; it must name the route that was asked
+    /// for, or the reply was misrouted.
+    pub(super) fn map_egress_removed(
+        event: SidecarInternalEvent,
+        requested: &str,
+    ) -> Result<(), NetworkError> {
+        match event {
+            SidecarInternalEvent::EgressRemoved { id } if id == requested => Ok(()),
+            SidecarInternalEvent::Error { code, message }
+            | SidecarInternalEvent::EgressError { code, message, .. } => {
+                Err(Self::egress_failure(code, message))
+            }
+            other => Err(Self::unexpected_reply("egress:remove", other)),
+        }
+    }
+
+    pub(super) fn map_egress_list(
+        event: SidecarInternalEvent,
+    ) -> Result<Vec<EgressRouteInfo>, NetworkError> {
+        match event {
+            SidecarInternalEvent::EgressList { routes } => Ok(routes
+                .into_iter()
+                .map(|route| EgressRouteInfo {
+                    id: route.id,
+                    target: route.target,
+                    listen: route.listen,
+                    login: route.login.filter(|l| !l.is_empty()),
+                })
+                .collect()),
+            SidecarInternalEvent::Error { code, message }
+            | SidecarInternalEvent::EgressError { code, message, .. } => {
+                Err(Self::egress_failure(code, message))
+            }
+            other => Err(Self::unexpected_reply("egress:list", other)),
+        }
+    }
+
+    pub(super) fn map_egress_proxy(
+        event: SidecarInternalEvent,
+    ) -> Result<HttpProxyConfig, NetworkError> {
+        match event {
+            SidecarInternalEvent::EgressProxy(data) => Ok(HttpProxyConfig {
+                address: data.address,
+                credential: data.credential,
+            }),
+            SidecarInternalEvent::Error { code, message }
+            | SidecarInternalEvent::EgressError { code, message, .. } => {
+                Err(Self::egress_failure(code, message))
+            }
+            other => Err(Self::unexpected_reply("egress:proxy", other)),
+        }
+    }
 }
 
 impl TailscaleProvider {
@@ -2302,5 +2548,279 @@ mod login_gate_tests {
             None,
         ));
         assert_eq!(np.login_name, None);
+    }
+}
+
+/// RFC 026: the egress verbs as the provider carries them — the protocol-7
+/// gate, the node's login gate on the wire, and every answer mapped through
+/// the production broker (`GoSidecar::dispatch_event`) the way the stdout
+/// reader delivers it.
+#[cfg(test)]
+mod egress_tests {
+    use super::*;
+    use crate::network::tailscale::protocol::SidecarEvent;
+    use crate::network::tailscale::sidecar::test_reply_slot;
+    use crate::network::NetworkProvider;
+    use std::sync::atomic::Ordering;
+
+    fn config(login_allow: Vec<String>) -> TailscaleConfig {
+        TailscaleConfig {
+            binary_path: PathBuf::from("/opt/sidecar"),
+            app_id: "demo".to_string(),
+            device_id: "01JZZZZZZZZZZZZZZZZZZZZZZZ".to_string(),
+            device_name: "dev".to_string(),
+            hostname: "truffle-demo-dev".to_string(),
+            state_dir: "/tmp/state".to_string(),
+            auth_key: None,
+            ephemeral: None,
+            tags: None,
+            idle_timeout_secs: None,
+            login_allow,
+        }
+    }
+
+    fn route() -> EgressRoute {
+        EgressRoute {
+            id: "cell".into(),
+            target: "beta.tail-scale.ts.net:9417".into(),
+            login: None,
+        }
+    }
+
+    /// A provider that believes it is running against a sidecar of
+    /// `version`, with no sidecar process attached.
+    async fn running_at(version: u32) -> TailscaleProvider {
+        let provider = TailscaleProvider::new(config(Vec::new()));
+        *provider.state.write().await = ProviderState::Running;
+        provider
+            .sidecar_protocol_version
+            .store(version, Ordering::Relaxed);
+        provider
+    }
+
+    /// Protocol 6 supplies authenticated UDP, but has no RFC 026 commands.
+    /// Reject it before looking for a process or waiting for an unknown verb.
+    #[tokio::test]
+    async fn a_pre_v7_sidecar_is_refused_locally() {
+        for version in [6, LOGIN_NAME_PROTOCOL_VERSION, 1] {
+            let provider = running_at(version).await;
+            let refusals = [
+                ("loopback", provider.loopback(false).await.err()),
+                (
+                    "loopback_with_local_api",
+                    provider.loopback(true).await.err(),
+                ),
+                ("egress_add", provider.egress_add(route()).await.err()),
+                ("egress_remove", provider.egress_remove("cell").await.err()),
+                ("egress_list", provider.egress_list().await.err()),
+                (
+                    "egress_http_proxy",
+                    provider.egress_http_proxy().await.err(),
+                ),
+            ];
+            for (verb, err) in refusals {
+                match err {
+                    Some(NetworkError::Unsupported(message)) => assert!(
+                        message.contains(&format!("v{version}"))
+                            && message.contains("RFC 026")
+                            && message.contains("v7"),
+                        "{verb}: the refusal must name both versions and the RFC: {message}"
+                    ),
+                    other => panic!(
+                        "{verb} on v{version}: want Unsupported before any send, got {other:?}"
+                    ),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_v7_sidecar_passes_the_gate() {
+        // With no sidecar attached, a request the gate lets through fails at
+        // the sidecar handle — NotRunning, never Unsupported.
+        let provider = running_at(TailscaleProvider::SIDECAR_V7_EGRESS).await;
+        assert!(matches!(
+            provider.loopback(true).await,
+            Err(NetworkError::NotRunning)
+        ));
+        assert!(matches!(
+            provider.egress_add(route()).await,
+            Err(NetworkError::NotRunning)
+        ));
+        // A stopped provider refuses before the version is consulted.
+        let stopped = TailscaleProvider::new(config(Vec::new()));
+        assert!(matches!(
+            stopped.egress_list().await,
+            Err(NetworkError::NotRunning)
+        ));
+    }
+
+    #[test]
+    fn egress_commands_carry_the_nodes_login_gate() {
+        let gated = TailscaleProvider::new(config(vec!["*@example.com".into()]));
+        let add = gated.egress_add_command(
+            EgressRoute {
+                login: Some(String::new()),
+                ..route()
+            },
+            "r1".into(),
+        );
+        assert_eq!(add.node_login_allow, vec!["*@example.com".to_string()]);
+        assert_eq!(add.login, None, "an empty glob is no glob");
+        assert_eq!(add.request_id.as_deref(), Some("r1"));
+        assert_eq!(
+            gated.egress_proxy_command("r2".into()).node_login_allow,
+            vec!["*@example.com".to_string()]
+        );
+
+        let ungated = TailscaleProvider::new(config(Vec::new()));
+        assert!(ungated
+            .egress_add_command(route(), "r3".into())
+            .node_login_allow
+            .is_empty());
+        assert!(ungated
+            .egress_proxy_command("r4".into())
+            .node_login_allow
+            .is_empty());
+    }
+
+    /// Dispatch one wire line through the production broker into a slot
+    /// registered for `request_id`, and return what the waiter receives.
+    async fn routed(line: &str, request_id: &str) -> SidecarInternalEvent {
+        let (pending, mut reply) = test_reply_slot(request_id);
+        let (event_tx, _event_rx) = broadcast::channel(8);
+        let event: SidecarEvent = serde_json::from_str(line).unwrap();
+        GoSidecar::dispatch_event(event, &pending, &event_tx);
+        reply
+            .recv()
+            .await
+            .expect("the answer must route to its slot")
+    }
+
+    #[tokio::test]
+    async fn answers_map_to_typed_results() {
+        let loopback = r#"{"event":"tsnet:loopbackResult","data":{"address":"127.0.0.1:41641","proxyCredential":"p","localAPICredential":"l","requestId":"r1"}}"#;
+        assert_eq!(
+            TailscaleProvider::map_loopback_reply(routed(loopback, "r1").await, false).unwrap(),
+            LoopbackConfig {
+                address: "127.0.0.1:41641".into(),
+                proxy_credential: "p".into(),
+                local_api_credential: None,
+            },
+            "a LocalAPI credential nobody asked for is dropped"
+        );
+        assert_eq!(
+            TailscaleProvider::map_loopback_reply(routed(loopback, "r1").await, true)
+                .unwrap()
+                .local_api_credential
+                .as_deref(),
+            Some("l")
+        );
+
+        assert_eq!(
+            TailscaleProvider::map_egress_added(
+                routed(
+                    r#"{"event":"egress:added","data":{"id":"cell","listen":"127.0.0.1:50001","requestId":"r2"}}"#,
+                    "r2"
+                )
+                .await
+            )
+            .unwrap(),
+            BoundEgress {
+                id: "cell".into(),
+                listen: "127.0.0.1:50001".into(),
+            }
+        );
+
+        let removed = r#"{"event":"egress:removed","data":{"id":"cell","requestId":"r3"}}"#;
+        assert!(TailscaleProvider::map_egress_removed(routed(removed, "r3").await, "cell").is_ok());
+        assert!(
+            matches!(
+                TailscaleProvider::map_egress_removed(routed(removed, "r3").await, "other"),
+                Err(NetworkError::SidecarError(_))
+            ),
+            "an answer naming another route is a misrouted reply"
+        );
+
+        assert_eq!(
+            TailscaleProvider::map_egress_list(
+                routed(
+                    r#"{"event":"egress:list","data":{"routes":[{"id":"a","target":"t:1","listen":"127.0.0.1:2"},{"id":"b","target":"u:2","listen":"127.0.0.1:3","login":"bob@*"}],"requestId":"r4"}}"#,
+                    "r4"
+                )
+                .await
+            )
+            .unwrap(),
+            vec![
+                EgressRouteInfo {
+                    id: "a".into(),
+                    target: "t:1".into(),
+                    listen: "127.0.0.1:2".into(),
+                    login: None,
+                },
+                EgressRouteInfo {
+                    id: "b".into(),
+                    target: "u:2".into(),
+                    listen: "127.0.0.1:3".into(),
+                    login: Some("bob@*".into()),
+                },
+            ]
+        );
+
+        assert_eq!(
+            TailscaleProvider::map_egress_proxy(
+                routed(
+                    r#"{"event":"egress:proxyResult","data":{"address":"127.0.0.1:41642","credential":"c","requestId":"r5"}}"#,
+                    "r5"
+                )
+                .await
+            )
+            .unwrap(),
+            HttpProxyConfig {
+                address: "127.0.0.1:41642".into(),
+                credential: "c".into(),
+            }
+        );
+
+        match TailscaleProvider::map_egress_added(
+            routed(
+                r#"{"event":"egress:error","data":{"id":"cell","code":"TARGET_NOT_PEER","message":"192.0.2.1 is not a node of this node's tailnet","requestId":"r6"}}"#,
+                "r6",
+            )
+            .await,
+        ) {
+            Err(NetworkError::EgressError { code, message }) => {
+                assert_eq!(code, "TARGET_NOT_PEER");
+                assert!(message.contains("192.0.2.1"));
+            }
+            other => panic!("a refusal must stay typed, got {other:?}"),
+        }
+        assert!(matches!(
+            TailscaleProvider::map_loopback_reply(
+                routed(
+                    r#"{"event":"tsnet:error","data":{"code":"NOT_RUNNING","message":"node not running","requestId":"r7"}}"#,
+                    "r7"
+                )
+                .await,
+                false
+            ),
+            Err(NetworkError::NotRunning)
+        ));
+
+        // An answer of the wrong kind is named, not swallowed — and naming it
+        // does not print the credential it carries.
+        match TailscaleProvider::map_egress_added(
+            routed(
+                r#"{"event":"egress:proxyResult","data":{"address":"127.0.0.1:41642","credential":"CONNECT-SECRET","requestId":"r8"}}"#,
+                "r8",
+            )
+            .await,
+        ) {
+            Err(NetworkError::SidecarError(message)) => {
+                assert!(message.contains("unexpected egress:add reply"), "{message}");
+                assert!(!message.contains("CONNECT-SECRET"), "{message}");
+            }
+            other => panic!("want an unexpected-reply error, got {other:?}"),
+        }
     }
 }

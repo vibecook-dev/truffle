@@ -11,6 +11,9 @@ use tokio::task::AbortHandle;
 use truffle_core::network::tailscale::TailscaleProvider;
 use truffle_core::Node;
 
+use crate::egress::{
+    NapiBoundEgress, NapiEgressRoute, NapiEgressRouteInfo, NapiHttpProxyConfig, NapiLoopbackConfig,
+};
 use crate::file_transfer::NapiFileTransfer;
 use crate::proxy::NapiProxy;
 use crate::quic::{NapiQuicConnection, NapiQuicListener};
@@ -585,6 +588,85 @@ impl NapiNode {
     pub fn proxy(&self) -> Result<NapiProxy> {
         let node = self.require_node()?;
         Ok(NapiProxy::new(node))
+    }
+
+    // -- Egress (RFC 026) ----------------------------------------------------
+    //
+    // The mirror of `proxy()`: other processes on this host reach the tailnet
+    // THROUGH this node. Every listener is 127.0.0.1; every method rejects on
+    // a sidecar older than protocol 7.
+
+    /// The node's loopback SOCKS5 proxy onto the tailnet (RFC 026 E1):
+    /// `proxyUsername` / `proxyCredential` authenticate. With the credential
+    /// it dials anything the node can, so hand it only to what may act as
+    /// this node. The LocalAPI credential is not included.
+    #[napi]
+    pub async fn loopback(&self) -> Result<NapiLoopbackConfig> {
+        let node = self.require_node()?;
+        node.loopback()
+            .await
+            .map(NapiLoopbackConfig::from)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// As `loopback()`, with the LocalAPI credential. That LocalAPI is
+    /// read-write (preferences, logout): ask only when a caller needs it.
+    #[napi]
+    pub async fn loopback_with_local_api(&self) -> Result<NapiLoopbackConfig> {
+        let node = self.require_node()?;
+        node.loopback_with_local_api()
+            .await
+            .map(NapiLoopbackConfig::from)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Bind a loopback egress route to a fixed tailnet target (RFC 026 E2).
+    ///
+    /// Any local process can use this unauthenticated route as this node.
+    /// The destination must enforce its own application authorization.
+    /// Connect to the answer's `listen`; every connection is re-admitted
+    /// (the target must still be an admitted node) and spliced raw, so a
+    /// WebSocket upgrade passes intact. A target that is not a node of this
+    /// tailnet, or whose owner the gates refuse, rejects with the sidecar's
+    /// code in the message (`TARGET_NOT_PEER`, `LOGIN_REFUSED`, …).
+    #[napi]
+    pub async fn egress_add(&self, route: NapiEgressRoute) -> Result<NapiBoundEgress> {
+        let node = self.require_node()?;
+        node.egress_add(route.into())
+            .await
+            .map(NapiBoundEgress::from)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Remove an egress route; its live connections close with it.
+    #[napi]
+    pub async fn egress_remove(&self, id: String) -> Result<()> {
+        let node = self.require_node()?;
+        node.egress_remove(&id)
+            .await
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// The live egress routes, sorted by id.
+    #[napi]
+    pub async fn egress_list(&self) -> Result<Vec<NapiEgressRouteInfo>> {
+        let node = self.require_node()?;
+        node.egress_list()
+            .await
+            .map(|routes| routes.into_iter().map(NapiEgressRouteInfo::from).collect())
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// The node's loopback HTTP CONNECT proxy (RFC 026 E3), for clients that
+    /// cannot speak SOCKS5 (a browser answers its Basic challenge): CONNECT
+    /// only, to nodes of this tailnet only.
+    #[napi]
+    pub async fn egress_http_proxy(&self) -> Result<NapiHttpProxyConfig> {
+        let node = self.require_node()?;
+        node.egress_http_proxy()
+            .await
+            .map(NapiHttpProxyConfig::from)
+            .map_err(|e| Error::from_reason(e.to_string()))
     }
 
     /// Get a `NapiSyncedStore` handle for synchronized state operations.

@@ -463,12 +463,12 @@ func TestShouldWrapTLS(t *testing.T) {
 // protocolVersion so the core gates capabilities by sidecar version instead of
 // treating this sidecar as v1. The core reads it off the "running" status/started
 // event (protocol.rs StatusEventData.protocol_version, camelCase, integer).
-// The pin is deliberate: v5 = loginName (RFC 025 §3.3); v6 = authenticated UDP.
+// The pin is deliberate: v5 = loginName; v6 = authenticated UDP; v7 = egress.
 // Update this test AND provider.rs capability gates when bumping the version.
-// Login gating requires v5; authenticated UDP requires v6.
+// Login gating still requires v5; authenticated UDP still requires v6.
 func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
-	if sidecarProtocolVersion != 6 {
-		t.Fatalf("sidecarProtocolVersion = %d, want 6 (authenticated UDP relay)", sidecarProtocolVersion)
+	if sidecarProtocolVersion != 7 {
+		t.Fatalf("sidecarProtocolVersion = %d, want 7 (RFC 026 egress commands)", sidecarProtocolVersion)
 	}
 
 	var buf bytes.Buffer
@@ -476,7 +476,7 @@ func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
 	s.sendStatus("running", "host", "host.tail.ts.net", "100.64.0.1", "", "")
 
 	// The core matches the camelCase key exactly, as a JSON integer.
-	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":6`)) {
+	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":7`)) {
 		t.Errorf("status payload missing protocolVersion on the wire: %s", strings.TrimSpace(buf.String()))
 	}
 

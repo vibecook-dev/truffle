@@ -121,10 +121,11 @@ type dialResultData struct {
 // errors that terminate them; v5 = loginName on peers and status (RFC 025):
 // every peer row and the node's own status carry the owner's tailnet login, so
 // a login-gated core can filter Layer 3 by it; v6 = authenticated UDP relay
-// capabilities, binding IDs, and registration acknowledgement. An absent
-// value makes the core treat the sidecar as v1.
+// capabilities, binding IDs, and registration acknowledgement; v7 = RFC 026
+// egress commands (tsnet:loopback, egress:add/remove/list, egress:proxy).
+// An absent value makes the core treat the sidecar as v1.
 // Bump on any addition to the command surface the core must not send blind.
-const sidecarProtocolVersion = 6
+const sidecarProtocolVersion = 7
 
 type statusData struct {
 	State       string `json:"state"`
@@ -694,6 +695,14 @@ type shim struct {
 	// past a minute (RFC 023 §7 identity headers).
 	identityCacheMu sync.Mutex
 	identityCache   map[string]cachedIdentity
+
+	// egressRoutes tracks E2 routes created via egress:add, keyed by id (a
+	// route with no listener is a placeholder for an add still in flight);
+	// egressProxy is the lifecycle's E3 CONNECT proxy, nil until egress:proxy
+	// asks for it (RFC 026). Both are torn down by stopEgress on tsnet:stop.
+	egressMu     sync.Mutex
+	egressRoutes map[string]*egressRoute
+	egressProxy  *egressHTTPProxy
 }
 
 // cachedIdentity is one identityCache slot.
@@ -815,6 +824,7 @@ func main() {
 		udpRelays:        make(map[string]*udpRelay),
 		proxies:          make(map[string]*proxyEntry),
 		pendingProxyAdds: make(map[string]*pendingProxyAdd),
+		egressRoutes:     make(map[string]*egressRoute),
 		ctx:              ctx,
 		cancel:           cancel,
 	}
@@ -881,6 +891,16 @@ func main() {
 			s.handleProxyRemove(cmd.Data)
 		case "proxy:list":
 			s.handleProxyList(cmd.Data)
+		case "tsnet:loopback":
+			s.handleLoopback(cmd.Data)
+		case "egress:add":
+			s.handleEgressAdd(cmd.Data)
+		case "egress:remove":
+			s.handleEgressRemove(cmd.Data)
+		case "egress:list":
+			s.handleEgressList(cmd.Data)
+		case "egress:proxy":
+			s.handleEgressProxy(cmd.Data)
 		default:
 			s.sendError("UNKNOWN_CMD", fmt.Sprintf("unknown command: %s", cmd.Command))
 		}
@@ -1155,6 +1175,11 @@ func (s *shim) handleStop() {
 		debugf("shutting down proxy %s", entry.id)
 		entry.shutdown(2 * time.Second)
 	}
+
+	// RFC 026: egress routes and the CONNECT proxy die with the lifecycle
+	// (cancelled above, so an in-flight egress:add cannot install after
+	// this). The E1 loopback listener is tsnet's and closes with srv.Close.
+	s.stopEgress()
 
 	if srv := s.getServer(); srv != nil {
 		// Explicitly disconnect from the control plane before closing.

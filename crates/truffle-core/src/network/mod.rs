@@ -234,6 +234,61 @@ pub trait NetworkProvider: Send + Sync {
     fn proxy_runtime_errors(&self) -> Option<broadcast::Receiver<ProxyRuntimeError>> {
         None
     }
+
+    // ── Egress (RFC 026, optional, requires sidecar protocol 7) ──
+
+    /// The provider's loopback SOCKS5 proxy onto the network (RFC 026 E1).
+    /// `local_api` asks for the LocalAPI credential as well.
+    fn loopback(
+        &self,
+        _local_api: bool,
+    ) -> impl std::future::Future<Output = Result<crate::egress::LoopbackConfig, NetworkError>> + Send
+    {
+        std::future::ready(Err(NetworkError::Unsupported(
+            "loopback not supported by this provider".into(),
+        )))
+    }
+
+    /// Bind a loopback egress route to a fixed tailnet target (RFC 026 E2).
+    fn egress_add(
+        &self,
+        _route: crate::egress::EgressRoute,
+    ) -> impl std::future::Future<Output = Result<crate::egress::BoundEgress, NetworkError>> + Send
+    {
+        std::future::ready(Err(NetworkError::Unsupported(
+            "egress_add not supported by this provider".into(),
+        )))
+    }
+
+    /// Remove an egress route, closing its live connections (RFC 026 E2).
+    fn egress_remove(
+        &self,
+        _id: &str,
+    ) -> impl std::future::Future<Output = Result<(), NetworkError>> + Send {
+        std::future::ready(Err(NetworkError::Unsupported(
+            "egress_remove not supported by this provider".into(),
+        )))
+    }
+
+    /// List the live egress routes (RFC 026 E2).
+    fn egress_list(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<crate::egress::EgressRouteInfo>, NetworkError>>
+           + Send {
+        std::future::ready(Err(NetworkError::Unsupported(
+            "egress_list not supported by this provider".into(),
+        )))
+    }
+
+    /// The provider's loopback HTTP CONNECT proxy (RFC 026 E3).
+    fn egress_http_proxy(
+        &self,
+    ) -> impl std::future::Future<Output = Result<crate::egress::HttpProxyConfig, NetworkError>> + Send
+    {
+        std::future::ready(Err(NetworkError::Unsupported(
+            "egress_http_proxy not supported by this provider".into(),
+        )))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -767,4 +822,16 @@ pub enum NetworkError {
     /// A reverse-proxy operation failed.
     #[error("proxy error: {0}")]
     ProxyError(String),
+
+    /// An egress operation was refused or failed (RFC 026). `code` is the
+    /// sidecar's stable reason — `TARGET_NOT_PEER`, `LOGIN_REFUSED`,
+    /// `LOGIN_UNKNOWN`, `INVALID_TARGET`, `EGRESS_EXISTS`, `NOT_FOUND`, … —
+    /// and `message` says why for a human.
+    #[error("egress error [{code}]: {message}")]
+    EgressError {
+        /// The sidecar's stable failure code.
+        code: String,
+        /// Human-readable detail.
+        message: String,
+    },
 }

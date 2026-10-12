@@ -125,6 +125,25 @@ pub(crate) enum SidecarInternalEvent {
         code: String,
         message: String,
     },
+    /// The node's loopback proxy (RFC 026 E1). Its data's `Debug` redacts
+    /// both credentials.
+    Loopback(LoopbackEventData),
+    /// An egress route was bound (RFC 026 E2).
+    EgressAdded { id: String, listen: String },
+    /// An egress route was removed (RFC 026 E2).
+    EgressRemoved { id: String },
+    /// The live egress routes (RFC 026 E2).
+    EgressList { routes: Vec<EgressRouteEventData> },
+    /// The node's CONNECT proxy (RFC 026 E3). Its data's `Debug` redacts
+    /// the credential.
+    EgressProxy(EgressProxyEventData),
+    /// An egress command failed, or (with an id and no `requestId` on the
+    /// wire) a route refused or could not dial an accepted connection.
+    EgressError {
+        id: String,
+        code: String,
+        message: String,
+    },
     /// Sidecar process exited unexpectedly.
     ProcessExited { exit_code: Option<i32> },
 }
@@ -359,13 +378,8 @@ impl GoSidecar {
                                 if line.trim().is_empty() {
                                     continue;
                                 }
-                                match serde_json::from_str::<SidecarEvent>(&line) {
-                                    Ok(event) => {
-                                        Self::dispatch_event(event, &pending_replies, &event_tx);
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("failed to parse sidecar event: {e}, line: {line}");
-                                    }
+                                if let Some(event) = Self::parse_stdout_event(&line) {
+                                    Self::dispatch_event(event, &pending_replies, &event_tx);
                                 }
                             }
                             Ok(None) => {
@@ -381,6 +395,23 @@ impl GoSidecar {
                 }
             }
         });
+    }
+
+    fn parse_stdout_event(line: &str) -> Option<SidecarEvent> {
+        match serde_json::from_str(line) {
+            Ok(event) => Some(event),
+            Err(error) => {
+                // Both the payload and serde's Display can quote credentials.
+                // Keep useful parse coordinates without including input values.
+                tracing::warn!(
+                    category = ?error.classify(),
+                    line = error.line(),
+                    column = error.column(),
+                    "failed to parse sidecar event"
+                );
+                None
+            }
+        }
     }
 
     /// Route one parsed event: TEE it into a registered reply slot when its
@@ -578,6 +609,37 @@ impl GoSidecar {
             event_type::PROXY_ERROR => serde_json::from_value::<ProxyErrorEventData>(event.data)
                 .ok()
                 .map(|d| SidecarInternalEvent::ProxyError {
+                    id: d.id,
+                    code: d.code,
+                    message: d.message,
+                }),
+            event_type::LOOPBACK_RESULT => serde_json::from_value::<LoopbackEventData>(event.data)
+                .ok()
+                .map(SidecarInternalEvent::Loopback),
+            event_type::EGRESS_ADDED => serde_json::from_value::<EgressAddedEventData>(event.data)
+                .ok()
+                .map(|d| SidecarInternalEvent::EgressAdded {
+                    id: d.id,
+                    listen: d.listen,
+                }),
+            event_type::EGRESS_REMOVED => {
+                serde_json::from_value::<EgressRemovedEventData>(event.data)
+                    .ok()
+                    .map(|d| SidecarInternalEvent::EgressRemoved { id: d.id })
+            }
+            event_type::EGRESS_LIST_RESULT => {
+                serde_json::from_value::<EgressListEventData>(event.data)
+                    .ok()
+                    .map(|d| SidecarInternalEvent::EgressList { routes: d.routes })
+            }
+            event_type::EGRESS_PROXY_RESULT => {
+                serde_json::from_value::<EgressProxyEventData>(event.data)
+                    .ok()
+                    .map(SidecarInternalEvent::EgressProxy)
+            }
+            event_type::EGRESS_ERROR => serde_json::from_value::<EgressErrorEventData>(event.data)
+                .ok()
+                .map(|d| SidecarInternalEvent::EgressError {
                     id: d.id,
                     code: d.code,
                     message: d.message,
@@ -810,6 +872,21 @@ impl GoSidecar {
         .await
     }
 
+    /// Send one RFC 026 egress command (`tsnet:loopback`, `egress:*`). Every
+    /// payload carries its `requestId`; the caller registers the reply slot
+    /// first.
+    pub async fn send_egress<T: serde::Serialize>(
+        &self,
+        command: &'static str,
+        data: &T,
+    ) -> Result<(), NetworkError> {
+        self.send_command(SidecarCommand {
+            command,
+            data: Some(serde_json::to_value(data)?),
+        })
+        .await
+    }
+
     /// Subscribe to sidecar internal events.
     pub fn subscribe(&self) -> broadcast::Receiver<SidecarInternalEvent> {
         self.event_tx.subscribe()
@@ -863,5 +940,65 @@ mod config_debug_tests {
         assert!(!dbg.contains("SECRET123"));
         assert!(!dbg.contains("deadbeef"));
         assert!(dbg.contains("[REDACTED]"));
+    }
+}
+
+#[cfg(test)]
+mod stdout_log_tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::Mutex as StdMutex;
+
+    #[derive(Clone)]
+    struct Capture(Arc<StdMutex<Vec<u8>>>);
+
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn malformed_stdout_never_logs_credentials() {
+        let output = Arc::new(StdMutex::new(Vec::new()));
+        let sink = output.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || Capture(sink.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            for line in [
+                r#"{"event":"tsnet:loopbackResult","data":{"proxyCredential":"PROXY-SECRET","localAPICredential":"LOCALAPI-SECRET""#,
+                r#"{"event":"egress:proxyResult","data":{"credential":"CONNECT-SECRET""#,
+                // Serde's Display can quote the invalid input, even if the
+                // log message stops including the original line explicitly.
+                r#""ROOT-CREDENTIAL""#,
+            ] {
+                assert!(GoSidecar::parse_stdout_event(line).is_none());
+            }
+            assert!(GoSidecar::parse_stdout_event(
+                r#"{"event":"tsnet:loopbackResult","data":{"proxyCredential":"VALID-SECRET"}}"#
+            )
+            .is_some());
+        });
+        let logged = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(logged.contains("failed to parse sidecar event"));
+        for secret in [
+            "PROXY-SECRET",
+            "LOCALAPI-SECRET",
+            "CONNECT-SECRET",
+            "ROOT-CREDENTIAL",
+            "VALID-SECRET",
+        ] {
+            assert!(
+                !logged.contains(secret),
+                "credential leaked into stdout diagnostics: {logged}"
+            );
+        }
     }
 }
