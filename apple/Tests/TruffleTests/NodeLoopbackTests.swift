@@ -3,6 +3,41 @@ import Testing
 
 @testable import Truffle
 
+/// Observe the session listener independently from the backend's running
+/// status: MeshNode.start deliberately returns before listener supervision.
+private struct ListenerReadyBackend: NetworkBackend {
+    let inner: LoopbackBackend
+    var listenDelay: Duration = .zero
+    let sessionReady = Mailbox<Void>()
+
+    func start() async throws { try await inner.start() }
+    func stop() async { await inner.stop() }
+    func status() async throws -> BackendStatus { try await inner.status() }
+    func events() async -> AsyncStream<BackendEvent> { await inner.events() }
+    func dial(host: String, port: UInt16) async throws -> any MeshConnection {
+        try await inner.dial(host: host, port: port)
+    }
+    func listen(port: UInt16) async throws -> any MeshListener {
+        if port == SessionLimits.sessionPort {
+            try await Task.sleep(for: listenDelay)
+        }
+        let listener = try await inner.listen(port: port)
+        if port == SessionLimits.sessionPort { await sessionReady.put(()) }
+        return listener
+    }
+    func whoIs(remoteEndpoint: String) async throws -> AuthenticatedPeer {
+        try await inner.whoIs(remoteEndpoint: remoteEndpoint)
+    }
+    func makeURLSession(configuration: URLSessionConfiguration) async throws -> URLSession {
+        try await inner.makeURLSession(configuration: configuration)
+    }
+    func waitUntilListening() async throws {
+        try await withDeadline(.seconds(2), label: "test session listener") {
+            guard await sessionReady.take() != nil else { throw MeshError.stopped }
+        }
+    }
+}
+
 /// A frame transport whose endpoints silently drop outgoing Pong frames —
 /// simulates a peer that stops answering keepalives (heartbeat tests).
 struct PongDroppingTransport: FrameTransport {
@@ -66,14 +101,22 @@ struct PongDroppingTransport: FrameTransport {
         let backend = await network.join(
             tailscaleId: tailscaleId, hostname: hostname, hidden: hidden,
             loginName: loginName)
+        let readyBackend = ListenerReadyBackend(inner: backend)
         let dir = tempDir()
         let node = try await MeshNode.start(
             MeshConfiguration(
                 appId: appId, deviceName: deviceName, stateDirectory: dir,
                 auth: .existingState, loginAllow: loginAllow),
-            backend: backend,
+            backend: readyBackend,
             frameTransport: LengthPrefixFrameTransport(),
             identityPolicy: identityPolicy)
+        do {
+            try await readyBackend.waitUntilListening()
+        } catch {
+            await node.stop()
+            try? FileManager.default.removeItem(at: dir)
+            throw error
+        }
         return (node, dir)
     }
 
@@ -587,21 +630,30 @@ struct PongDroppingTransport: FrameTransport {
         deviceName: String,
         loginName: String? = nil,
         displayName: String? = nil,
-        loginAllow: [String] = []
+        loginAllow: [String] = [],
+        listenDelay: Duration = .zero
     ) async throws -> (MeshNode, URL) {
         let hostname = Hostname.tailscaleHostname(
             appId: try AppId(parsing: "demo"), deviceName: DeviceName(deviceName))
         let backend = await network.join(
             tailscaleId: tailscaleId, hostname: hostname, loginName: loginName,
             displayName: displayName)
+        let readyBackend = ListenerReadyBackend(inner: backend, listenDelay: listenDelay)
         let dir = tempDir()
         let node = try await MeshNode.start(
             MeshConfiguration(
                 appId: "demo", deviceName: deviceName, stateDirectory: dir,
                 auth: .existingState, loginAllow: loginAllow),
-            backend: backend,
+            backend: readyBackend,
             frameTransport: LengthPrefixFrameTransport(),
             identityPolicy: .failClosed)
+        do {
+            try await readyBackend.waitUntilListening()
+        } catch {
+            await node.stop()
+            try? FileManager.default.removeItem(at: dir)
+            throw error
+        }
         return (node, dir)
     }
 
@@ -975,11 +1027,13 @@ struct PongDroppingTransport: FrameTransport {
 
     /// MEDIUM-2: the dialer must be able to tell a gate from a broken pipe.
     /// The refusal reaches the dialing side as the close code the gate sent.
-    @Test func aRefusedDialerSeesTheCloseCodeNotAProtocolViolation() async throws {
+    @Test(arguments: [Duration.zero, .milliseconds(50)])
+    func aRefusedDialerSeesTheCloseCodeNotAProtocolViolation(listenDelay: Duration) async throws {
         let network = LoopbackNetwork()
         let (alice, dirA) = try await startNode(
             network: network, tailscaleId: "ts-a", deviceName: "Alice",
-            loginName: "alice@corp.com", loginAllow: ["*@corp.com"])
+            loginName: "alice@corp.com", loginAllow: ["*@corp.com"],
+            listenDelay: listenDelay)
         let (bob, dirB) = try await startNode(
             network: network, tailscaleId: "ts-b", deviceName: "Bob",
             loginName: "mallory@evil.com")
