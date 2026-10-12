@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.16](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.15...truffle-v0.7.16) (2026-10-12)
+
+
+### Features
+
+* **egress:** add node-scoped SOCKS5, routes, and CONNECT ([#208](https://github.com/vibecook-dev/truffle/issues/208)) ([ad024c6](https://github.com/vibecook-dev/truffle/commit/ad024c69c5ba067632ed39c4acaff0992fb7b19a))
+
 ## [0.7.15](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.14...truffle-v0.7.15) (2026-10-12)
 
 
