@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.17](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.16...truffle-v0.7.17) (2026-10-15)
+
+
+### Bug Fixes
+
+* **sidecar:** WebSocket upgrades keep the route's target path and query ([#210](https://github.com/vibecook-dev/truffle/issues/210)) ([7b66411](https://github.com/vibecook-dev/truffle/commit/7b66411ac9c991c42a686bb7457308c7ce216bef))
+
 ## [0.7.16](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.15...truffle-v0.7.16) (2026-10-12)
 
 
