@@ -551,11 +551,12 @@ func (p *pendingProxyAdd) abort() {
 // boundRoute is a validated, ready-to-serve mount. v1 single-target configs
 // become one "/" route so a single handler path serves both generations.
 type boundRoute struct {
-	prefix      string
-	allow       []string
-	handler     http.Handler
-	target      *url.URL // nil for dir routes (no WebSocket dispatch)
-	stripPrefix bool
+	prefix  string
+	allow   []string
+	handler http.Handler
+	target  *url.URL // nil for dir routes (no WebSocket dispatch)
+	// Hijacked upgrades must apply the same target path/query rewrite as HTTP.
+	rewriteRequest func(*http.Request)
 }
 
 type proxyAddFailure struct {
@@ -2127,10 +2128,12 @@ func (s *shim) bindProxyRoutes(data proxyAddData) (routes []boundRoute, resource
 				message: fmt.Sprintf("target %q is not loopback; a non-loopback target makes this node a pivot into its network — set allowNonLoopback to opt in (RFC 023 §9.3)", data.TargetHost),
 			}
 		}
+		proxy := s.buildReverseProxy(data.ID, targetURL, "")
 		routes = append(routes, boundRoute{
-			prefix:  "/",
-			handler: s.buildReverseProxy(data.ID, targetURL, ""),
-			target:  targetURL,
+			prefix:         "/",
+			handler:        proxy,
+			target:         targetURL,
+			rewriteRequest: proxy.Director,
 		})
 	} else {
 		for _, rt := range data.Routes {
@@ -2155,12 +2158,13 @@ func (s *shim) bindProxyRoutes(data proxyAddData) (routes []boundRoute, resource
 				if rt.StripPrefix {
 					strip = rt.Prefix
 				}
+				proxy := s.buildReverseProxy(data.ID, u, strip)
 				routes = append(routes, boundRoute{
-					prefix:      rt.Prefix,
-					allow:       rt.Allow,
-					handler:     s.buildReverseProxy(data.ID, u, strip),
-					target:      u,
-					stripPrefix: rt.StripPrefix,
+					prefix:         rt.Prefix,
+					allow:          rt.Allow,
+					handler:        proxy,
+					target:         u,
+					rewriteRequest: proxy.Director,
 				})
 			case rt.Dir != "":
 				if !filepath.IsAbs(rt.Dir) {
@@ -2342,9 +2346,7 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 		// WebSocket upgrades bypass ReverseProxy via hijack — only for URL
 		// targets (an upgrade against a static dir just gets the file 404s).
 		if route.target != nil && isProxyWebSocketRequest(r) {
-			if route.stripPrefix {
-				r.URL.Path = stripPathPrefix(r.URL.Path, route.prefix)
-			}
+			route.rewriteRequest(r)
 			s.proxyMu.Lock()
 			entry := s.proxies[data.ID]
 			s.proxyMu.Unlock()
