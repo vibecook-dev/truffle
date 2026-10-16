@@ -17,8 +17,9 @@ use crate::transport::WsConfig;
 
 use super::reconnect::ReconnectBackoff;
 use super::{
-    format_peer_ref, parse_peer_ref, preferred_connection_direction, should_replace_connection,
-    ConnectionDirection, PeerEvent, PeerIdentity, PeerRegistry, PeerRegistryOptions, SessionError,
+    format_peer_ref, install_decision, parse_peer_ref, preferred_connection_direction,
+    ConnectionDirection, InstallDecision, PeerEvent, PeerIdentity, PeerRegistry,
+    PeerRegistryOptions, SessionError,
 };
 
 // ---------------------------------------------------------------------------
@@ -1373,16 +1374,25 @@ fn test_rfc022_cross_dials_choose_the_same_physical_connection() {
         preferred_connection_direction("beta", "alpha"),
         Some(ConnectionDirection::Inbound)
     );
-    assert!(should_replace_connection(
-        ConnectionDirection::Inbound,
-        ConnectionDirection::Outbound,
-        Some(ConnectionDirection::Outbound),
-    ));
-    assert!(!should_replace_connection(
-        ConnectionDirection::Inbound,
-        ConnectionDirection::Outbound,
-        Some(ConnectionDirection::Inbound),
-    ));
+    let young = Some((ConnectionDirection::Inbound, Duration::from_millis(50)));
+    // The preferred side replaces the other one...
+    assert_eq!(
+        install_decision(
+            young,
+            ConnectionDirection::Outbound,
+            Some(ConnectionDirection::Outbound),
+        ),
+        InstallDecision::Install
+    );
+    // ...and the non-preferred outbound twin is refused.
+    assert_eq!(
+        install_decision(
+            young,
+            ConnectionDirection::Outbound,
+            Some(ConnectionDirection::Inbound),
+        ),
+        InstallDecision::Refuse
+    );
 }
 
 #[tokio::test]
