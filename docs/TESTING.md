@@ -3,7 +3,10 @@
 This guide covers Truffle's local and CI test suites, against either mocks
 (no setup) or a real Tailscale network (one-time setup). The local harness is
 specified in [RFC 019](rfcs/019-local-testing-and-benchmarking.md), and the CI
-automation in [RFC 020](rfcs/020-ci-testing.md).
+automation in [RFC 020](rfcs/020-ci-testing.md). Benchmarks (the
+`truffle-bench` engine and CLI, and the truffle bench app) are specified in
+[RFC 027](rfcs/027-benchmark-hub.md) and documented in
+[benchmark/README.md](../benchmark/README.md).
 
 ---
 
@@ -11,11 +14,11 @@ automation in [RFC 020](rfcs/020-ci-testing.md).
 
 | You want to... | Command |
 |---|---|
-| Run all unit tests (no network) | `cargo test --locked --workspace` |
+| Run all unit tests (no network) | `just test`, or `env TRUFFLE_TEST_AUTHKEY= TS_AUTHKEY= TRUFFLE_BENCH_AUTH_KEY= cargo test --locked --workspace --exclude truffle-bench-app` (empty keys keep `.env`'s key out, so live tests skip) |
 | Run real-network integration tests | `TRUFFLE_TEST_AUTHKEY=tskey-... cargo test -p truffle-core` |
 | Run the ignored transport stress suite | `cargo test --locked -p truffle-core --test integration_transport -- --ignored --test-threads=1` |
-| Run micro benchmarks (no network) | `cargo bench -p truffle-core` |
-| Run macro benchmarks against a real tailnet | `cargo run -p truffle-bench --release -- file-transfer` |
+| Run micro benchmarks (no network) | `pnpm bench:micro` (criterion, two benches) |
+| Run the benchmark suite against a real tailnet | `cargo run --locked -p truffle-bench --release -- suite --profile smoke --pair` |
 
 Without an auth key, real-network tests print `[skip] ...: TRUFFLE_TEST_AUTHKEY not set` and pass — you can contribute to 95% of the codebase without any Tailscale setup.
 
@@ -98,6 +101,7 @@ All variables read by tests and benchmarks. Defaults shown.
 | `TRUFFLE_TEST_EPHEMERAL` | `true` | Register nodes as ephemeral |
 | `TRUFFLE_TEST_LOG` | `truffle_core=info` | `tracing_subscriber` filter |
 | `TRUFFLE_TEST_STATE_ROOT` | `$TMPDIR` | Root for per-run node state dirs |
+| `TRUFFLE_BENCH_AUTH_KEY` | _(unset)_ | Preferred key for `truffle-bench` and the app's test sign-in; `truffle-bench` falls back to `TRUFFLE_TEST_AUTHKEY`, then `TS_AUTHKEY`. The legacy `transport` subcommand ignores it: it reads only `TRUFFLE_TEST_AUTHKEY`, then `TS_AUTHKEY`, and has no `--auth-key-file` |
 
 ---
 
@@ -118,8 +122,9 @@ All variables read by tests and benchmarks. Defaults shown.
 ### Running
 
 ```bash
-# Fast: unit + integration (integrations skip without a key)
-cargo test --locked --workspace
+# Fast: unit + integration (integrations skip without a key).
+# truffle-bench-app is the GUI benchmark app; it stays out, as in CI.
+cargo test --locked --workspace --exclude truffle-bench-app
 
 # Heavy loopback transport stress suite (serial to reduce flakiness)
 cargo test --locked -p truffle-core --test integration_transport \
@@ -172,54 +177,76 @@ diagnostic listing what each node's `peers()` returned.
 
 ## Benchmarks
 
-### Tier 1 — Micro benchmarks (criterion)
+[benchmark/README.md](../benchmark/README.md) is the full guide: the CLI, the
+desktop app, every workload, the methodology and the report format. This
+section covers what you need from a test-focused workflow.
 
-No Tailscale. Runs on every dev machine, every CI run.
+### Micro benchmarks (criterion)
+
+No Tailscale. Two benches in `crates/truffle-core/benches/`:
+
+- `envelope.rs` — JSON codec encode/decode throughput
+- `chunk_hash.rs` — SHA-256 throughput (full buffer + streamed). It measures
+  the `sha2` crate, i.e. the hashing ceiling for file transfer, not truffle code.
 
 ```bash
-cargo bench -p truffle-core                 # all three
-cargo bench -p truffle-core --bench envelope
+pnpm bench:micro                     # or: just bench-micro (both benches)
+CRITERION_HOME="$PWD/target/criterion" cargo bench --locked -p truffle-core --bench envelope
 ```
 
-Files:
-- `benches/envelope.rs` — JSON codec encode/decode throughput
-- `benches/chunk_hash.rs` — sha2-256 throughput (full buffer + streamed)
-
-Output lands in `target/criterion/`. Each bench run prints percentile
-lines like:
+`CRITERION_HOME` keeps output in this repo's `target/criterion/` even when your
+cargo target dir is shared or redirected (bench binaries run from
+`crates/truffle-core`, so the path must be absolute). Each bench prints lines like:
 
 ```
 envelope/decode/262144  time: [40.8 µs 40.9 µs 41.0 µs]
                         thrpt: [5.96 GiB/s 5.97 GiB/s 5.98 GiB/s]
 ```
 
-### Tier 2 — Macro benchmarks (truffle-bench)
+### Real-network benchmarks (truffle-bench)
 
-Real Tailscale pair. Requires `TRUFFLE_TEST_AUTHKEY`.
+One engine, `truffle-bench` (crate at `benchmark/engine`), drives every
+two-node workload: `path`, `tcp`, `udp`, `quic`, `ws`, `file-transfer`,
+`synced-store`, `http`, `video` and `egress`.
 
 ```bash
-# File transfer — throughput for various payload sizes
-cargo run -p truffle-bench --release -- file-transfer --size 10M --iterations 5
+# Every workload at its defaults, on two hubs in one process (needs a key)
+cargo run --locked -p truffle-bench --release -- suite --profile standard --pair
 
-# SyncedStore convergence — B1 sequential (alpha writes, beta catches up)
-cargo run -p truffle-bench --release -- synced-store \
-    --scenario b1-sequential --ops 1000
+# One workload on a same-process pair, with parameter overrides (needs a key)
+cargo run --locked -p truffle-bench --release -- pair tcp --param streams=4
 
-# SyncedStore convergence — B2 concurrent (both write, both converge)
-cargo run -p truffle-bench --release -- synced-store \
-    --scenario b2-concurrent --ops 500
+# Two machines, no key needed: a responder on B, then a run from A.
+# `serve` names itself <hostname>-cli; `truffle-bench peers` lists what A sees.
+cargo run --locked -p truffle-bench --release -- serve                    # on B
+cargo run --locked -p truffle-bench --release -- run --peer mac-b-cli tcp # on A
 
-# Request/reply RTT — fires N round trips, reports p50/p95/p99/p999
-cargo run -p truffle-bench --release -- request-reply \
-    --count 500 --payload-bytes 1024
+# Print summaries of any reports (v1, v2, v3, tsnet-bench; files, dirs or zips)
+cargo run --locked -p truffle-bench --release -- report target/bench-results
 ```
 
-Or: `just bench-macro` runs the default matrix.
+Or: `pnpm bench:suite`, `pnpm bench:pair <workload>`, `just bench-macro
+[profile]`, `just bench-one <workload> …`, `just bench-serve`. Suite profiles
+are `smoke`, `standard`, `full` and `nightly`.
 
-Each run writes a JSON report to `target/bench-results/{timestamp}-{workload}.json`
-with per-iteration numbers, percentiles, and the current git SHA. Keep
-these around to spot regressions on your own machine — absolute numbers
-aren't comparable across machines.
+Auth: `serve`, `peers` and `run` need no key — without one they print a login
+URL and you sign in with your own Tailscale account. `pair` and `suite --pair`
+require a key: `--auth-key-file <path>`, else `TRUFFLE_BENCH_AUTH_KEY`, else
+`TRUFFLE_TEST_AUTHKEY`, else `TS_AUTHKEY` (with a warning). Keys are never
+accepted as command-line values. The legacy `transport` subcommand reads only
+`TRUFFLE_TEST_AUTHKEY`, then `TS_AUTHKEY`.
+
+`run`, `pair` and `suite` write one v3 JSON report per run to `--out-dir` (default
+`target/bench-results/`, relative to the current directory), named
+`<timestamp>-<workload>-<run_id>.json`, so repeated runs never overwrite each
+other. Each report records both builds, the path (direct or relayed) and a
+`compare_key`; compare only runs with the same key, and never debug builds
+against release builds. Same-process numbers measure the bridges and netstack,
+not a link.
+
+The legacy `transport` subcommand (schema 2, byte-compatible with
+`tsnet-bench`) is unchanged; see
+[tailscale-performance.md](tailscale-performance.md).
 
 ---
 
@@ -236,7 +263,7 @@ Enables `.githooks/pre-commit`, which runs on every commit:
 3. Rustfmt on staged `.rs` files
 4. Prettier on staged TypeScript files
 5. `truffle` meta-crate doctest (if relevant files changed)
-6. TypeScript build (if packages/ files changed)
+6. TypeScript build (if packages/ or benchmark/app files changed)
 7. **Secret scan** — blocks commits containing `tskey-` patterns
 
 Skip once with `git commit --no-verify`. If the secret scanner flags a
@@ -257,13 +284,17 @@ see each other within 45 s. Usual causes:
 - Auth key was revoked, wasn't reusable, or expired.
 - Tailscale control plane is slow (rare); re-run.
 
-**`TRUFFLE_TEST_AUTHKEY is not set` (from `truffle-bench`)** — unlike tests,
-the benchmark crate errors out rather than silently skipping. Set the key
-or add it to `.env`.
+**No auth key (from `truffle-bench pair` / `suite --pair`)** — unlike tests,
+these commands error out rather than silently skipping, because a pair of
+throwaway nodes needs a key. Set `TRUFFLE_BENCH_AUTH_KEY` or
+`TRUFFLE_TEST_AUTHKEY` (shell or `.env`), or pass `--auth-key-file`.
+`serve`, `peers` and `run` never need a key: without one they print a login URL
+and wait for you to sign in.
 
 **Benchmarks are wildly noisy** — expected on a shared dev machine. Close
-other apps, disable background sync, and look at *relative* changes, not
-absolute numbers. Dedicated hardware is a Phase-2 concern (RFC 020).
+other apps, plug laptops in, disable background sync, and look at *relative*
+changes between runs with the same `compare_key`, not absolute numbers. See
+the methodology in [benchmark/README.md](../benchmark/README.md).
 
 **Integration tests leak Tailscale devices** — they shouldn't:
 `ephemeral=true` + short test lifetime means Tailscale removes them within
@@ -287,8 +318,8 @@ The harness runs in GitHub Actions too. See
 | Workflow | Trigger | What it runs |
 |---|---|---|
 | `ci.yml` | PR + push to main | locked dependency graph, release metadata, unit tests, warnings-as-errors, fmt, Linux transport stress, bench compile-check |
-| `integration-tests.yml` | PR + push to main | real-network tests; only fork PRs may skip without the secret |
-| `benchmarks.yml` | nightly cron (06:00 UTC) + manual | credential preflight, macro bench suite, uploads JSON artefacts |
+| `integration-tests.yml` | PR + push to main | real-network tests (truffle-core, plus `truffle-bench`'s `live_pair`); only fork PRs may skip without the secret |
+| `benchmarks.yml` | nightly cron (06:00 UTC) + manual | credential preflight, `truffle-bench suite --profile nightly --pair`, legacy `transport` TCP/QUIC, uploads JSON artefacts |
 
 ### One-time setup: configure the `TRUFFLE_TEST_AUTHKEY` secret
 
@@ -330,23 +361,24 @@ long-term replacement for the reusable repository secret.
 
 ### Nightly benchmarks
 
-The `benchmarks.yml` workflow runs every night at 06:00 UTC with default
-parameters (10MB file transfer × 5, 1000 SyncedStore ops, 500 request/reply
-round trips). Results go to the workflow's **Artefacts** section as a
-JSON bundle, retained 30 days.
+The `benchmarks.yml` workflow runs every night at 06:00 UTC:
+`truffle-bench suite --profile nightly --pair` (the `full` profile without the
+UDP payload sweep or video over TCP, every duration capped at 10 s), then the legacy
+`transport` TCP and QUIC runs. Every item writes a JSON report; the step
+summary lists each one's status and headline numbers, and the reports go to
+the workflow's **Artefacts** section (`bench-results-<run id>`, retained 30
+days). The truffle bench app imports the downloaded `.zip` directly.
 
-Before compiling and running that matrix, CI runs a three-minute real-tailnet
+Before compiling and running the suite, CI runs a three-minute real-tailnet
 identity test. A missing, expired, revoked, or mis-scoped key therefore fails
 quickly with a focused error instead of wasting the whole benchmark job.
 
-To run on-demand with custom parameters:
+To run on demand:
 - Actions → **Benchmarks (nightly + on-demand)** → **Run workflow**
-- Tweak `file_transfer_size` / `synced_store_ops` / `request_reply_count`
+- Pick a `profile`: `smoke`, `standard`, `full` or `nightly` (default)
 
-For absolute performance numbers or regression alerts on PRs,
-[RFC 023](rfcs/020-ci-testing.md#9-follow-ups-deferred) proposes a
-dedicated self-hosted runner + `benchmark-action/github-action-benchmark`
-integration.
+Hosted-runner numbers are directional (±20-40%) and every suite report is
+`same-process`. A dedicated runner is a future option.
 
 ---
 
@@ -354,5 +386,6 @@ integration.
 
 - [RFC 019 — Local Testing and Benchmarking Harness](rfcs/019-local-testing-and-benchmarking.md)
 - [RFC 020 — CI Testing Harness](rfcs/020-ci-testing.md)
+- [RFC 027 — Benchmark hub](rfcs/027-benchmark-hub.md) and [benchmark/README.md](../benchmark/README.md)
 - [RFC 012 — Layered architecture](rfcs/012-layered-architecture-redesign.md)
 - [RFC 016 — SyncedStore](rfcs/016-synced-store-and-request-reply.md)

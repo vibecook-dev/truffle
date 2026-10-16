@@ -46,6 +46,21 @@ builds release assets *after* the release commit, so a version-keyed artifact
 could never be hashable at its own tag. See `apple/Vendor/README.md` for the
 provenance record and the procedure for replacing it.
 
+### The benchmark hub is not released
+
+`benchmark/` (RFC 027) holds the `truffle-bench` engine crate, the
+`truffle-bench-app` Tauri crate and the private `@vibecook/truffle-bench-app`
+frontend. All three are unpublished, keep their own static versions, carry no
+`x-release-please-version` marker and are not in `extra-files`.
+
+`release-please-config.json` sets `"exclude-paths": ["benchmark"]` on the `.`
+package. Release Please drops a commit only when **every** file it touches is
+under `benchmark/`, and PRs are squash-merged. So a hub PR that also touches
+anything outside `benchmark/` (Cargo.toml, lockfiles, workflows, scripts, docs)
+must use a non-releasing type — `chore(bench):`, `ci:`, `build:` or `docs:` —
+never `feat:` or `fix:`. A real library change (for example a truffle-core
+addition the hub needs) ships as its own `feat(core):`/`fix(core):` PR.
+
 ## Normal release
 
 1. Merge conventional commits to `main`.
@@ -120,8 +135,8 @@ pnpm run build
 pnpm run test
 cargo fmt --all -- --check
 TRUFFLE_SIDECAR_SKIP_DOWNLOAD=1 cargo clippy --locked --workspace --all-targets \
-  --exclude truffle-tauri-plugin --exclude truffle-napi -- -D warnings
-TRUFFLE_SIDECAR_SKIP_DOWNLOAD=1 cargo test --locked --workspace
+  --exclude truffle-tauri-plugin --exclude truffle-napi --exclude truffle-bench-app -- -D warnings
+TRUFFLE_SIDECAR_SKIP_DOWNLOAD=1 cargo test --locked --workspace --exclude truffle-bench-app
 ```
 
 The `TRUFFLE_SIDECAR_SKIP_DOWNLOAD=1` on the last two lines is not optional on a

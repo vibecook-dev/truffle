@@ -10,6 +10,15 @@
 > SyncedStore testing/benchmarking sections are still current — it uses
 > last-write-wins device slices, not a CRDT.
 
+> **Superseded in part (2026-10-16): §10.2 → [RFC 027](027-benchmark-hub.md).**
+> The Tier-2 macro benchmarks are now the RFC 027 benchmark hub. `truffle-bench`
+> moved to `benchmark/engine` (package name kept) and became a library plus a
+> CLI; its `file-transfer`, `synced-store` and `request-reply` subcommands were
+> replaced by `truffle-bench pair <workload>` and `suite --profile <p>`
+> (request/reply is now the `ws` workload). `transport` remains as a legacy
+> subcommand. The §12 file table and §13.4 below describe the original plan and
+> are not updated. Current docs: [benchmark/README.md](../../benchmark/README.md).
+
 ---
 
 ## 1. Problem Statement

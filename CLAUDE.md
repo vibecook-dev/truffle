@@ -34,12 +34,14 @@ Key principles:
 | `truffle` | Thin re-export crate |
 | `truffle-napi` | NAPI-RS bridge for Node.js |
 | `truffle-tauri-plugin` | Tauri v2 desktop plugin |
+| `truffle-bench` (`benchmark/engine`) | Benchmark engine (lib) + CLI (bin): workloads, peer control protocol, v3 reports, suites (RFC 027). `publish = false` |
+| `truffle-bench-app` (`benchmark/app/src-tauri`) | Tauri v2 shell of the "truffle bench" desktop app; frontend is `@vibecook/truffle-bench-app` (`benchmark/app`, React + Vite, private). `publish = false` |
 
 ## Build & Test
 
 ```bash
-cargo build --workspace
-cargo test --workspace        # ~199 tests, all in truffle-core
+cargo build                   # default members only (no GUI crates)
+cargo test --workspace --exclude truffle-bench-app
 ```
 
 ## Pre-commit Hook (one-time setup per clone)
@@ -69,7 +71,25 @@ Skip with `git commit --no-verify` when you need to (rare).
 - **Wire protocol**: Envelope with namespace + msg_type + JSON payload over WebSocket
 - **Windows TUI**: Must filter `KeyEventKind::Press` — crossterm emits Press+Release on Windows
 - **Tests**: Use `MockNetworkProvider` + `make_test_node()` pattern; mock can't do real WS between nodes
-- **CI excludes**: truffle-tauri-plugin and truffle-napi from `cargo test` (need platform-specific tooling)
+- **CI excludes**: truffle-tauri-plugin, truffle-napi and truffle-bench-app from clippy, doc, nextest and doctests (need platform-specific tooling); all three are also in `deny.toml` `[graph] exclude`. Add `--exclude truffle-bench-app` to any new `--workspace` command
+
+## Benchmarks
+
+Everything lives under `benchmark/` or is linked from [benchmark/README.md](benchmark/README.md) (RFC 027):
+- `benchmark/engine` — `truffle-bench` engine + CLI: `serve`, `peers`, `run`, `pair`, `suite`, `report`, legacy `transport`
+- `benchmark/app` — the truffle bench desktop app (Tauri v2); `benchmark/schema` — generated v3 report schema + fixtures (`UPDATE_SCHEMA=1` regenerates)
+- Linked, not moved: criterion benches in `crates/truffle-core/benches`, `packages/sidecar-slim/cmd/tsnet-bench`, `examples/quic-streams` `bench`
+
+```bash
+pnpm bench:micro                                                          # criterion
+cargo run --locked -p truffle-bench --release -- suite --profile smoke --pair   # needs an auth key
+cargo run --locked -p truffle-bench --release -- serve                    # responder; login URL without a key
+pnpm --filter @vibecook/truffle-bench-app app:dev                         # the app (profile "dev")
+```
+
+- Keys: `--auth-key-file`, `TRUFFLE_BENCH_AUTH_KEY`, `TRUFFLE_TEST_AUTHKEY`, `TS_AUTHKEY` — never argv; `pair`/`suite --pair` require one
+- **Commit types**: release-please ignores a commit only if *every* file is under `benchmark/` (`exclude-paths`). Hub changes that touch anything else use `chore(bench):`, `ci:`, `build:` or `docs:` — never `feat:`/`fix:`. Library changes the hub needs ship separately as `feat(core):`
+- Nightly: `benchmarks.yml` (`suite --profile nightly --pair`); PR: `integration-tests.yml` runs `-p truffle-bench --tests` (`live_pair`)
 
 ## RFCs
 
@@ -79,3 +99,4 @@ RFCs live in `docs/rfcs/`. Key ones:
 - **014**: File transfer in core (not Layer 7)
 - **015**: NAPI-RS and Tauri plugin rewrite
 - **016**: SyncedStore + request/reply (Phase 1-2 done, Phase 3 persistence pending)
+- **027**: Benchmark hub (`benchmark/`: engine, CLI, desktop app)

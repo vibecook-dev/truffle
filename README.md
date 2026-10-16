@@ -128,6 +128,8 @@ truffle watch --json              # stream mesh events as JSONL
 | [`truffle-tauri-plugin`](crates/truffle-tauri-plugin) | Tauri v2 desktop plugin |
 | [`sidecar-slim`](packages/sidecar-slim) | Go sidecar embedding tsnet |
 | [Truffle Swift](apple/) | Apple-native SPM package (RFC 024) — wire-compatible mesh core + SwiftUI helpers |
+| [`truffle-bench`](benchmark/engine) | Benchmark engine + CLI (RFC 027): every two-node workload, suites, reports. Not published |
+| [truffle bench](benchmark/app) | Tauri desktop app that benchmarks your own machines against each other (crate `truffle-bench-app`). Not published |
 
 Messaging prefers explicit wire types: `peer.sendJson` / `peer.sendBytes` (and `mesh.broadcastJson` / `broadcastBytes`) over the legacy content-sniffing `send` / `broadcast`.
 
@@ -149,6 +151,7 @@ Swift: [`apple/Examples/MeshChatDemo`](apple/Examples/MeshChatDemo) — iOS Swif
 - **HTTP serving guide:** [docs/guide/serving-http.md](docs/guide/serving-http.md)
 - **API stability:** [docs/API-STABILITY.md](docs/API-STABILITY.md)
 - **Testing:** [docs/TESTING.md](docs/TESTING.md)
+- **Benchmarks:** [benchmark/README.md](benchmark/README.md)
 - **Releasing:** [docs/RELEASING.md](docs/RELEASING.md)
 - **RFCs:** [docs/rfcs/](docs/rfcs/) · Swift: [RFC 024](docs/rfcs/024-truffle-swift.md)
 
@@ -156,10 +159,20 @@ Swift: [`apple/Examples/MeshChatDemo`](apple/Examples/MeshChatDemo) — iOS Swif
 
 ```bash
 pnpm install
-cargo build --locked --workspace --exclude truffle-tauri-plugin --exclude truffle-napi
-cargo test --locked --workspace --exclude truffle-tauri-plugin --exclude truffle-napi
+cargo build --locked --workspace --exclude truffle-tauri-plugin --exclude truffle-napi --exclude truffle-bench-app
+cargo test --locked --workspace --exclude truffle-tauri-plugin --exclude truffle-napi --exclude truffle-bench-app
 pnpm run build
 pnpm run test
+```
+
+A plain `cargo build` builds only the default members (no GUI crates).
+Benchmarks — criterion micro benches, the `truffle-bench` CLI and the desktop
+app — are covered in [benchmark/README.md](benchmark/README.md):
+
+```bash
+pnpm bench:micro                                           # criterion, no network
+cargo run --locked -p truffle-bench --release -- suite --profile smoke --pair   # needs an auth key
+pnpm --filter @vibecook/truffle-bench-app app:dev          # the desktop app
 ```
 
 Swift package (macOS / Xcode toolchain):

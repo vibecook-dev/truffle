@@ -4,6 +4,15 @@
 **Author:** James + Claude
 **Date:** 2026-04-21
 
+> **Superseded in part (2026-10-16): §3 (benchmark non-goals) and §6.2 →
+> [RFC 027](027-benchmark-hub.md) §9.2.** `benchmarks.yml` now runs
+> `truffle-bench suite --profile <smoke|standard|full|nightly> --pair` plus the
+> legacy `transport` runs, with a single `profile` dispatch input. The
+> "RFC 023 self-hosted runner" mentioned below never happened (RFC 023 became
+> HTTP serving); a dedicated runner remains a future option. The follow-up RFC
+> numbers 021–024 in this document were never used for those topics. Current
+> docs: [benchmark/README.md](../../benchmark/README.md).
+
 ---
 
 ## 1. Problem Statement
