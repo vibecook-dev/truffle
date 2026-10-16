@@ -108,7 +108,7 @@ func (s *shim) handleListenPacket(data json.RawMessage) {
 			s.udpRelayMu.Unlock()
 		}()
 		fail := func(err error) { s.sendErrorFor("LISTEN_PACKET_ERROR", err.Error(), d.RequestID) }
-		lc, err := srv.LocalClient()
+		lc, err := s.localClientFor(srv)
 		if err != nil {
 			fail(err)
 			return

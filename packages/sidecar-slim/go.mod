@@ -2,7 +2,10 @@ module github.com/vibecook-dev/truffle/packages/sidecar-slim
 
 go 1.27.2
 
-require tailscale.com v1.104.1
+require (
+	gvisor.dev/gvisor v0.0.0-20260915211658-a6f909f08a72
+	tailscale.com v1.104.1
+)
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
@@ -53,5 +56,4 @@ require (
 	golang.org/x/time v0.16.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard/windows v1.0.1 // indirect
-	gvisor.dev/gvisor v0.0.0-20260915211658-a6f909f08a72 // indirect
 )
