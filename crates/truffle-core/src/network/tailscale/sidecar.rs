@@ -1162,3 +1162,43 @@ mod pid_tests {
         assert_eq!(slot.load(Ordering::Relaxed), 0);
     }
 }
+
+/// The exact wire lines the sidecar emits for the node-status conditions
+/// that `status_events()` reports.
+#[cfg(test)]
+mod status_wire_tests {
+    use super::*;
+
+    fn map_line(line: &str) -> Option<SidecarInternalEvent> {
+        GoSidecar::map_event(GoSidecar::parse_stdout_event(line)?)
+    }
+
+    #[test]
+    fn needs_approval_line_maps_to_its_event() {
+        // sendEvent("tsnet:needsApproval", nil) omits `data` entirely.
+        assert!(matches!(
+            map_line(r#"{"event":"tsnet:needsApproval"}"#),
+            Some(SidecarInternalEvent::NeedsApproval)
+        ));
+    }
+
+    #[test]
+    fn follow_up_running_status_carries_the_login() {
+        // The protocol-8 follow-up: sendStatus("running", …, login) — no
+        // nodeId, which the provider must not clear.
+        let line = r#"{"event":"tsnet:status","data":{"state":"running","hostname":"truffle-app-dev","dnsName":"truffle-app-dev.tailnet.ts.net","tailscaleIP":"100.64.0.7","loginName":"alice@example.com","protocolVersion":8}}"#;
+        match map_line(line) {
+            Some(SidecarInternalEvent::Started {
+                login_name,
+                node_id,
+                protocol_version,
+                ..
+            }) => {
+                assert_eq!(login_name.as_deref(), Some("alice@example.com"));
+                assert_eq!(node_id, "");
+                assert_eq!(protocol_version, Some(8));
+            }
+            other => panic!("unexpected mapping: {other:?}"),
+        }
+    }
+}

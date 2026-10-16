@@ -57,7 +57,9 @@ use crate::envelope::{Envelope, EnvelopeError};
 use crate::file_transfer::{self, FileTransferState};
 use crate::identity::{self, AppId, DeviceId, DeviceName};
 use crate::network::tailscale::{TailscaleConfig, TailscaleProvider};
-use crate::network::{DialOpts, HealthInfo, ListenOpts, NetworkProvider, NodeIdentity, PingResult};
+use crate::network::{
+    DialOpts, HealthInfo, ListenOpts, NetworkProvider, NetworkStatusEvent, NodeIdentity, PingResult,
+};
 use crate::session::{PeerEvent, PeerRegistry, PeerState};
 use crate::transport::quic::{QuicConnection, QuicListener};
 use crate::transport::websocket::WebSocketTransport;
@@ -868,6 +870,19 @@ impl<N: NetworkProvider + 'static> Node<N> {
         self.session.on_peer_change()
     }
 
+    /// Subscribe to changes in this node's own network status: device
+    /// approval pending, its own login learned after start, and more in
+    /// later versions (see [`NetworkStatusEvent`], which is
+    /// `#[non_exhaustive]`).
+    ///
+    /// Only events raised after this call are delivered. Conditions raised
+    /// while `build()` was still waiting for the network, such as
+    /// [`NetworkStatusEvent::NeedsApproval`], reach the
+    /// [`NodeBuilder::on_network_status`] hook instead.
+    pub fn on_network_status(&self) -> broadcast::Receiver<NetworkStatusEvent> {
+        self.network.status_events()
+    }
+
     /// Resolve a query to a public [`Peer`] handle view (RFC 022).
     ///
     /// - Not found → `Ok(None)` after optional wait
@@ -1619,6 +1634,29 @@ pub struct NodeBuilder {
     /// RFC 025 §3.1: `loginName` globs of the tailnet users whose nodes may
     /// be peers. Empty = the whole tailnet.
     login_allow: Vec<String>,
+    /// Receives the node's own network status changes from the start of
+    /// `build()` (see [`NodeBuilder::on_network_status`]).
+    on_network_status: Option<NetworkStatusHandler>,
+}
+
+/// A [`NodeBuilder::on_network_status`] handler.
+type NetworkStatusHandler = Arc<dyn Fn(NetworkStatusEvent) + Send + Sync>;
+
+/// Forward `rx` to `handler` until the provider's status channel closes
+/// (the provider is dropped) or the task is aborted.
+fn spawn_status_forwarder(
+    mut rx: broadcast::Receiver<NetworkStatusEvent>,
+    handler: NetworkStatusHandler,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => handler(event),
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
 }
 
 /// Manual `Debug`: `auth_key` is a tailnet credential and must never reach
@@ -1638,6 +1676,7 @@ impl std::fmt::Debug for NodeBuilder {
             .field("idle_timeout_secs", &self.idle_timeout_secs)
             .field("eager_identity", &self.eager_identity)
             .field("login_allow", &self.login_allow)
+            .field("on_network_status", &self.on_network_status.is_some())
             .finish()
     }
 }
@@ -1740,6 +1779,7 @@ impl Default for NodeBuilder {
             idle_timeout_secs: None,
             eager_identity: true,
             login_allow: Vec::new(),
+            on_network_status: None,
         }
     }
 }
@@ -1873,6 +1913,49 @@ impl NodeBuilder {
         self
     }
 
+    /// Call `handler` with this node's own network status changes
+    /// ([`NetworkStatusEvent`]) from the moment `build()` starts the
+    /// network until the node is dropped — including the conditions that
+    /// keep `build()` waiting.
+    ///
+    /// The one to handle today is [`NetworkStatusEvent::NeedsApproval`]: the
+    /// tailnet has device approval on and an admin has not approved this
+    /// device yet. `build()` keeps waiting (and succeeds once the device is
+    /// approved, or fails after 5 minutes with an error that names the
+    /// approval), so show something like "approve this device in the
+    /// Tailscale admin console" meanwhile. [`NetworkStatusEvent::LoginKnown`]
+    /// reports the node's own login, which after a fast restart can arrive
+    /// after `build()` returned.
+    ///
+    /// The handler runs on a tokio task; keep it short and non-blocking.
+    /// Works with both [`build`](Self::build) and
+    /// [`build_with_auth_handler`](Self::build_with_auth_handler).
+    ///
+    /// ```rust,no_run
+    /// # use truffle_core::{Node, network::{tailscale::TailscaleProvider, NetworkStatusEvent}};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let node = Node::<TailscaleProvider>::builder()
+    ///     .app_id("playground")?
+    ///     .sidecar_path("/opt/truffle/sidecar")
+    ///     .on_network_status(|event| match event {
+    ///         NetworkStatusEvent::NeedsApproval => {
+    ///             eprintln!("Approve this device in the Tailscale admin console.")
+    ///         }
+    ///         _ => {}
+    ///     })
+    ///     .build()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn on_network_status(
+        mut self,
+        handler: impl Fn(NetworkStatusEvent) + Send + Sync + 'static,
+    ) -> Self {
+        self.on_network_status = Some(Arc::new(handler));
+        self
+    }
+
     /// Resolve RFC 017 identity values and the Tailscale config.
     ///
     /// Shared between [`build()`](Self::build) and
@@ -2003,7 +2086,18 @@ impl NodeBuilder {
         let state_dir = PathBuf::from(&config.state_dir);
 
         let mut provider = TailscaleProvider::new(config);
-        provider.start().await.map_err(NodeError::Network)?;
+        // Subscribe before start() so conditions that keep it waiting
+        // (device approval) reach the hook.
+        let status_task = self
+            .on_network_status
+            .clone()
+            .map(|handler| spawn_status_forwarder(provider.status_events(), handler));
+        if let Err(e) = provider.start().await {
+            if let Some(task) = status_task {
+                task.abort();
+            }
+            return Err(NodeError::Network(e));
+        }
 
         let network = Arc::new(provider);
 
@@ -2062,8 +2156,13 @@ impl NodeBuilder {
 
         let mut provider = TailscaleProvider::new(config);
 
-        // 2. Subscribe to peer events BEFORE start() so we capture auth URLs.
+        // 2. Subscribe to peer events BEFORE start() so we capture auth URLs
+        //    (and to status events, for the on_network_status hook).
         let mut auth_rx = provider.peer_events();
+        let status_task = self
+            .on_network_status
+            .clone()
+            .map(|handler| spawn_status_forwarder(provider.status_events(), handler));
 
         // 3. Spawn a task that forwards AuthRequired events to the callback.
         let auth_task = tokio::spawn(async move {
@@ -2086,6 +2185,11 @@ impl NodeBuilder {
         // 5. Cancel the auth forwarding task — auth is done.
         auth_task.abort();
 
+        if start_result.is_err() {
+            if let Some(task) = status_task {
+                task.abort();
+            }
+        }
         start_result?;
 
         let network = Arc::new(provider);
@@ -3642,5 +3746,94 @@ mod tests {
             p.login_name, None,
             "RFC 025 §3.6: an absent Layer 3 login projects as None, never fabricated"
         );
+    }
+}
+
+/// `NodeBuilder::on_network_status` end to end: a scripted stand-in for the
+/// sidecar keeps `build()` waiting on device approval, then answers the
+/// commands `build()` sends, and the hook must see the approval while
+/// `build()` is still waiting.
+#[cfg(all(test, unix))]
+mod network_status_hook_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex as StdMutex;
+
+    /// Approval wait, then running; answers every `tsnet:listen` with its
+    /// `tsnet:listening` (echoing the requestId) and ignores the rest.
+    const SCRIPT: &str = r#"#!/bin/sh
+read start
+echo '{"event":"tsnet:needsApproval"}'
+sleep 0.3
+echo '{"event":"tsnet:status","data":{"state":"running","hostname":"truffle-playground-dev","dnsName":"truffle-playground-dev.tailnet.ts.net","tailscaleIP":"100.64.0.9","nodeId":"nSELF","protocolVersion":8}}'
+sleep 0.3
+echo '{"event":"tsnet:status","data":{"state":"running","hostname":"truffle-playground-dev","dnsName":"truffle-playground-dev.tailnet.ts.net","tailscaleIP":"100.64.0.9","loginName":"alice@example.com","protocolVersion":8}}'
+while read line; do
+  case "$line" in
+    *'"tsnet:listen"'*)
+      rid=$(printf '%s' "$line" | sed -n 's/.*"requestId":"\([^"]*\)".*/\1/p')
+      port=$(printf '%s' "$line" | sed -n 's/.*"port":\([0-9]*\).*/\1/p')
+      echo "{\"event\":\"tsnet:listening\",\"data\":{\"port\":$port,\"requestId\":\"$rid\"}}"
+      ;;
+  esac
+done
+"#;
+
+    #[tokio::test]
+    async fn hook_sees_needs_approval_during_build_and_the_late_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let sidecar = dir.path().join("fake-sidecar.sh");
+        std::fs::write(&sidecar, SCRIPT).unwrap();
+        std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let seen: Arc<StdMutex<Vec<NetworkStatusEvent>>> = Arc::default();
+        let sink = seen.clone();
+        let node = tokio::time::timeout(
+            Duration::from_secs(20),
+            Node::<TailscaleProvider>::builder()
+                .app_id("playground")
+                .unwrap()
+                .device_name("dev")
+                .sidecar_path(&sidecar)
+                .state_dir(dir.path().join("state").to_str().unwrap())
+                .on_network_status(move |event| sink.lock().unwrap().push(event))
+                .build(),
+        )
+        .await
+        .expect("build must finish once the device is approved")
+        .expect("build");
+
+        // The approval was reported while build() waited.
+        assert_eq!(
+            seen.lock().unwrap().first(),
+            Some(&NetworkStatusEvent::NeedsApproval)
+        );
+
+        // The login arrives in the second running status, which may land
+        // after build() returned (a fast restart); the hook and
+        // local_info() both pick it up.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while node.local_info().login_name.is_none() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "local_info().login_name never filled"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            node.local_info().login_name.as_deref(),
+            Some("alice@example.com")
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            [
+                NetworkStatusEvent::NeedsApproval,
+                NetworkStatusEvent::LoginKnown {
+                    login_name: "alice@example.com".into()
+                }
+            ]
+        );
+        node.stop().await;
     }
 }
