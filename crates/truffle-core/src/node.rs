@@ -1505,6 +1505,32 @@ impl<N: NetworkProvider + 'static> Node<N> {
     }
 }
 
+impl Node<TailscaleProvider> {
+    /// The OS process id of this node's Go sidecar, the tsnet process that
+    /// carries all of the node's tailnet traffic.
+    ///
+    /// Use it to sample the sidecar's own CPU time and memory. When one
+    /// process runs several nodes, each node's sidecar is an identical child
+    /// of that process, so this is the only reliable way to tell them apart.
+    ///
+    /// Returns `None` before the node has started, after
+    /// [`stop`](Self::stop), once the sidecar has exited on its own
+    /// (noticed within about a second), and once its status can no longer be
+    /// checked (a few failed checks in a row). Lock-free and synchronous, so
+    /// it is cheap to poll.
+    ///
+    /// ```no_run
+    /// # async fn demo(node: &truffle_core::Node<truffle_core::network::tailscale::TailscaleProvider>) {
+    /// if let Some(pid) = node.sidecar_pid() {
+    ///     println!("sidecar pid: {pid}");
+    /// }
+    /// # }
+    /// ```
+    pub fn sidecar_pid(&self) -> Option<u32> {
+        self.network.sidecar_pid()
+    }
+}
+
 impl<N: NetworkProvider + 'static> Drop for Node<N> {
     fn drop(&mut self) {
         // Insurance for nodes dropped without stop(): cancelling is cheap,

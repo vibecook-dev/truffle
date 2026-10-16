@@ -8,6 +8,7 @@
 //! with no roots configured all incoming PULL_REQUESTs are denied.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -16,6 +17,7 @@ use tracing::{error, info, warn};
 
 use crate::network::NetworkProvider;
 use crate::node::Node;
+use crate::transport::{RawIncoming, RawListener};
 
 use super::types::{
     FileOffer, FileTransferEvent, FtMessage, OfferDecision, OfferResponder, OverwritePolicy,
@@ -446,32 +448,34 @@ async fn accept_and_receive<N: NetworkProvider + 'static>(
     }
 
     // Start TCP listener
-    let mut listener = node
-        .listen_tcp(0)
-        .await
-        .map_err(|e| TransferError::Node(format!("Failed to listen TCP: {e}")))?;
+    let listener = DataListener::open(node).await?;
 
     // Send ACCEPT
     let accept = FtMessage::Accept {
         token: token.to_string(),
-        tcp_port: listener.port,
+        tcp_port: listener.port(),
     };
-    let accept_payload = serde_json::to_value(&accept)
-        .map_err(|e| TransferError::Protocol(format!("Serialize error: {e}")))?;
-    node.send_typed(from, "ft", "accept", &accept_payload)
-        .await
-        .map_err(|e| TransferError::Node(format!("Failed to send ACCEPT: {e}")))?;
+    let sent = match serde_json::to_value(&accept) {
+        Ok(accept_payload) => node
+            .send_typed(from, "ft", "accept", &accept_payload)
+            .await
+            .map_err(|e| TransferError::Node(format!("Failed to send ACCEPT: {e}"))),
+        Err(e) => Err(TransferError::Protocol(format!("Serialize error: {e}"))),
+    };
+    if let Err(e) = sent {
+        listener.release().await;
+        return Err(e);
+    }
 
     info!(
-        port = listener.port,
+        port = listener.port(),
         "Sent ACCEPT, listening for TCP connection"
     );
 
-    // Wait for TCP connection with 30s timeout
-    let incoming = tokio::time::timeout(tokio::time::Duration::from_secs(30), listener.accept())
-        .await
-        .map_err(|_| TransferError::Timeout)?
-        .ok_or_else(|| TransferError::Protocol("Listener closed before accepting".to_string()))?;
+    // Wait up to 30s for the sender's TCP connection (connections from any
+    // other node are dropped); the listener's tsnet port is released as soon
+    // as the wait ends, whatever its outcome.
+    let incoming = accept_data_connection(listener, from, DATA_CONNECT_TIMEOUT).await?;
 
     let mut stream = incoming.stream;
 
@@ -811,6 +815,149 @@ async fn handle_pull_request<N: NetworkProvider + 'static>(
     });
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Data-connection listener helpers
+// ---------------------------------------------------------------------------
+
+/// How long a receiving side waits for the peer's TCP data connection after
+/// sending ACCEPT.
+pub(crate) const DATA_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A per-transfer data listener that releases its tsnet port on every path.
+///
+/// Each transfer listens on a fresh ephemeral port for exactly one
+/// connection. Dropping a [`RawListener`] stops local delivery but leaves the
+/// tsnet port bound in the sidecar (see [`Node::unlisten_tcp`]), which would
+/// cost a long-lived node one bound port per received file. So every path
+/// the transfer controls calls [`release`](Self::release), and when the
+/// transfer's future is dropped instead (a caller's `select!` or `timeout`
+/// around [`pull_file`](super::FileTransfer::pull_file) while it waits for
+/// the data connection), `Drop` hands the release to a tracked node task.
+pub(crate) struct DataListener<N: NetworkProvider + 'static> {
+    listener: RawListener,
+    network: Arc<N>,
+    tracker: tokio_util::task::TaskTracker,
+    /// Cleared by `release`, so `Drop` does not release the port again.
+    armed: bool,
+}
+
+impl<N: NetworkProvider + 'static> DataListener<N> {
+    /// Listen on a fresh ephemeral port for one transfer's data connection.
+    pub(crate) async fn open(node: &Node<N>) -> Result<Self, TransferError> {
+        let listener = node
+            .listen_tcp(0)
+            .await
+            .map_err(|e| TransferError::Node(format!("Failed to listen TCP: {e}")))?;
+        Ok(Self {
+            listener,
+            network: node.network.clone(),
+            tracker: node.tasks.tracker.clone(),
+            armed: true,
+        })
+    }
+
+    /// The port to advertise in ACCEPT.
+    pub(crate) fn port(&self) -> u16 {
+        self.listener.port
+    }
+
+    /// Stop listening and release the tsnet port.
+    ///
+    /// Best effort: a failure (for example, the node is stopping) is logged
+    /// and otherwise ignored, because the transfer's own outcome is what
+    /// matters. Streams already accepted are unaffected.
+    pub(crate) async fn release(mut self) {
+        self.armed = false;
+        let port = self.port();
+        if let Err(e) = self.network.unlisten_tcp(port).await {
+            warn!(port, "Failed to release file-transfer listener: {e}");
+        }
+    }
+}
+
+impl<N: NetworkProvider + 'static> Drop for DataListener<N> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let port = self.port();
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            // Only reachable when the runtime itself is gone, and the
+            // sidecar's listeners go with the node that runtime drove.
+            warn!(
+                port,
+                "File-transfer listener dropped outside a runtime; not released"
+            );
+            return;
+        };
+        let network = self.network.clone();
+        self.tracker.spawn_on(
+            async move {
+                if let Err(e) = network.unlisten_tcp(port).await {
+                    warn!(
+                        port,
+                        "Failed to release abandoned file-transfer listener: {e}"
+                    );
+                }
+            },
+            &runtime,
+        );
+    }
+}
+
+/// Wait up to `timeout` for `expected_peer`'s single data connection on a
+/// per-transfer `listener`, then release the listener's port whatever the
+/// outcome (connection, timeout, or a closed listener).
+///
+/// `expected_peer` is the Tailscale stable id of the peer the ACCEPT went to
+/// (the WhoIs-verified [`NamespacedMessage::from`](crate::node::NamespacedMessage::from)
+/// of its OFFER). A connection whose Tailscale-authenticated identity names
+/// a different node is dropped and the wait goes on, so another tailnet node
+/// that finds the port during the ACCEPT window can neither take the
+/// transfer's slot nor feed it a stream. A connection without an identity
+/// (a provider or sidecar that supplies none) is accepted as before; the
+/// SHA-256 checks on the header and the content still apply to it.
+pub(crate) async fn accept_data_connection<N: NetworkProvider + 'static>(
+    mut listener: DataListener<N>,
+    expected_peer: &str,
+    timeout: Duration,
+) -> Result<RawIncoming, TransferError> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let accepted = loop {
+        let incoming = match tokio::time::timeout_at(deadline, listener.listener.accept()).await {
+            Err(_) => break Err(TransferError::Timeout),
+            Ok(None) => {
+                break Err(TransferError::Protocol(
+                    "Listener closed before accepting".to_string(),
+                ))
+            }
+            Ok(Some(incoming)) => incoming,
+        };
+        match foreign_node_id(&incoming, expected_peer) {
+            Some(node_id) => warn!(
+                port = listener.port(),
+                expected = expected_peer,
+                connected = node_id,
+                remote_addr = incoming.remote_addr.as_str(),
+                "Dropped a file-transfer data connection from a peer other than the sender"
+            ),
+            None => break Ok(incoming),
+        }
+    };
+    listener.release().await;
+    accepted
+}
+
+/// The Tailscale-authenticated node id of `incoming` when one is known and it
+/// is not `expected_peer`.
+fn foreign_node_id<'a>(incoming: &'a RawIncoming, expected_peer: &str) -> Option<&'a str> {
+    incoming
+        .remote_identity
+        .as_ref()
+        .and_then(|identity| identity.node_id.as_deref())
+        .filter(|node_id| !node_id.is_empty() && *node_id != expected_peer)
 }
 
 // ---------------------------------------------------------------------------
@@ -1158,6 +1305,8 @@ mod tests {
         local_addr: PeerAddr,
         peer_event_tx: tokio::sync::broadcast::Sender<NetworkPeerEvent>,
         mock_peers: Arc<tokio::sync::RwLock<Vec<NetworkPeer>>>,
+        /// Ports passed to `unlisten_tcp`, in call order.
+        unlistened: Arc<std::sync::Mutex<Vec<u16>>>,
     }
 
     impl MockNetworkProvider {
@@ -1181,6 +1330,7 @@ mod tests {
                 },
                 peer_event_tx,
                 mock_peers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+                unlistened: Arc::new(std::sync::Mutex::new(Vec::new())),
             }
         }
 
@@ -1220,10 +1370,34 @@ mod tests {
         ) -> Result<tokio::net::TcpStream, NetworkError> {
             Err(NetworkError::DialFailed("mock".into()))
         }
-        async fn listen_tcp(&self, _port: u16) -> Result<NetworkTcpListener, NetworkError> {
-            Err(NetworkError::ListenFailed("mock".into()))
+        /// A real loopback listener, so the per-transfer listener lifecycle
+        /// (accept, then release) is testable without a tailnet.
+        async fn listen_tcp(&self, port: u16) -> Result<NetworkTcpListener, NetworkError> {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+                .await
+                .map_err(|e| NetworkError::ListenFailed(format!("mock listen :{port}: {e}")))?;
+            let actual_port = listener.local_addr().unwrap().port();
+            let (tx, rx) = mpsc::channel::<IncomingConnection>(8);
+            tokio::spawn(async move {
+                while let Ok((stream, addr)) = listener.accept().await {
+                    let conn = IncomingConnection {
+                        stream,
+                        remote_addr: addr.to_string(),
+                        remote_identity: String::new(),
+                        port: actual_port,
+                    };
+                    if tx.send(conn).await.is_err() {
+                        break;
+                    }
+                }
+            });
+            Ok(NetworkTcpListener {
+                port: actual_port,
+                incoming: rx,
+            })
         }
-        async fn unlisten_tcp(&self, _port: u16) -> Result<(), NetworkError> {
+        async fn unlisten_tcp(&self, port: u16) -> Result<(), NetworkError> {
+            self.unlistened.lock().unwrap().push(port);
             Ok(())
         }
         async fn bind_udp(&self, _port: u16) -> Result<NetworkUdpSocket, NetworkError> {
@@ -1429,6 +1603,221 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, TransferError::Rejected(_)), "{err}");
+    }
+
+    // ── Per-transfer listener release (RFC 027 §5.1) ───────────────────
+
+    #[tokio::test]
+    async fn data_connection_releases_port_after_accept() {
+        let (node, _peer_events) = make_test_node("node-c", random_port().await).await;
+        let listener = DataListener::open(&node).await.unwrap();
+        let port = listener.port();
+
+        let client = tokio::spawn(async move {
+            tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap()
+        });
+        // The mock supplies no identity, so the connection is accepted
+        // whoever the expected peer is.
+        let incoming = accept_data_connection(listener, "peer-x", Duration::from_secs(5))
+            .await
+            .expect("the connection must be accepted");
+        let mut client = client.await.unwrap();
+
+        assert_eq!(node.network.unlistened.lock().unwrap().clone(), vec![port]);
+        // Released once: the explicit release disarms the drop guard.
+        tokio::task::yield_now().await;
+        assert_eq!(node.network.unlistened.lock().unwrap().clone(), vec![port]);
+
+        // The accepted stream outlives the released listener.
+        let mut stream = incoming.stream;
+        stream.write_all(b"ok").await.unwrap();
+        let mut buf = [0u8; 2];
+        client.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ok");
+    }
+
+    #[tokio::test]
+    async fn data_connection_releases_port_on_timeout() {
+        let (node, _peer_events) = make_test_node("node-d", random_port().await).await;
+        let listener = DataListener::open(&node).await.unwrap();
+        let port = listener.port();
+
+        let Err(err) = accept_data_connection(listener, "peer-x", Duration::from_millis(50)).await
+        else {
+            panic!("nobody connected, so the wait must time out");
+        };
+        assert!(matches!(err, TransferError::Timeout), "{err}");
+        assert_eq!(node.network.unlistened.lock().unwrap().clone(), vec![port]);
+    }
+
+    #[tokio::test]
+    async fn abandoned_data_listener_still_releases_its_port() {
+        // A caller's select!/timeout drops the transfer future while it waits
+        // for the data connection: the drop guard must release the port.
+        let (node, _peer_events) = make_test_node("node-f", random_port().await).await;
+        let listener = DataListener::open(&node).await.unwrap();
+        let port = listener.port();
+
+        let wait = accept_data_connection(listener, "peer-x", Duration::from_secs(30));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), wait)
+                .await
+                .is_err(),
+            "nobody connected, so the outer timeout fires first"
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while node.network.unlistened.lock().unwrap().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "abandoned listener never released"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(node.network.unlistened.lock().unwrap().clone(), vec![port]);
+    }
+
+    /// A connected loopback pair: (the side a listener hands out, the dialler).
+    async fn tcp_pair() -> (tokio::net::TcpStream, tokio::net::TcpStream) {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dial = tokio::net::TcpStream::connect(l.local_addr().unwrap());
+        let (accepted, dialled) = tokio::join!(l.accept(), dial);
+        (accepted.unwrap().0, dialled.unwrap())
+    }
+
+    fn incoming_from(
+        stream: tokio::net::TcpStream,
+        remote_addr: &str,
+        node_id: Option<&str>,
+    ) -> RawIncoming {
+        RawIncoming {
+            stream,
+            remote_addr: remote_addr.to_string(),
+            remote_identity: Some(TailscalePeerIdentity {
+                node_id: node_id.map(str::to_string),
+                ..Default::default()
+            }),
+        }
+    }
+
+    /// A data listener fed by hand, so tests control each connection's
+    /// Tailscale identity (the mock provider supplies none).
+    fn scripted_listener(
+        node: &Node<MockNetworkProvider>,
+        port: u16,
+    ) -> (DataListener<MockNetworkProvider>, mpsc::Sender<RawIncoming>) {
+        let (tx, rx) = mpsc::channel(8);
+        let listener = DataListener {
+            listener: RawListener::new(rx, port),
+            network: node.network.clone(),
+            tracker: node.tasks.tracker.clone(),
+            armed: true,
+        };
+        (listener, tx)
+    }
+
+    #[tokio::test]
+    async fn data_connection_from_another_node_is_dropped() {
+        let (node, _peer_events) = make_test_node("node-g", random_port().await).await;
+        let (listener, tx) = scripted_listener(&node, 40001);
+
+        // A scanning tailnet node gets in first, then the real sender.
+        let (intruder, mut intruder_client) = tcp_pair().await;
+        let (sender, _sender_client) = tcp_pair().await;
+        tx.send(incoming_from(
+            intruder,
+            "100.64.0.66:5000",
+            Some("nINTRUDER"),
+        ))
+        .await
+        .unwrap();
+        tx.send(incoming_from(sender, "100.64.0.7:5000", Some("nSENDER")))
+            .await
+            .unwrap();
+
+        let incoming = accept_data_connection(listener, "nSENDER", Duration::from_secs(5))
+            .await
+            .expect("the sender's connection must be accepted");
+        assert_eq!(incoming.remote_addr, "100.64.0.7:5000");
+        assert_eq!(node.network.unlistened.lock().unwrap().clone(), vec![40001]);
+
+        // The intruder's connection was closed, not handed to the transfer.
+        let mut buf = [0u8; 1];
+        let n = tokio::time::timeout(Duration::from_secs(5), intruder_client.read(&mut buf))
+            .await
+            .expect("the intruder's stream must be closed")
+            .unwrap_or(0);
+        assert_eq!(n, 0);
+    }
+
+    #[tokio::test]
+    async fn only_foreign_data_connections_time_out() {
+        let (node, _peer_events) = make_test_node("node-h", random_port().await).await;
+        let (listener, tx) = scripted_listener(&node, 40002);
+        let (intruder, _intruder_client) = tcp_pair().await;
+        tx.send(incoming_from(
+            intruder,
+            "100.64.0.66:5000",
+            Some("nINTRUDER"),
+        ))
+        .await
+        .unwrap();
+
+        let Err(err) =
+            accept_data_connection(listener, "nSENDER", Duration::from_millis(100)).await
+        else {
+            panic!("a foreign connection must not satisfy the wait");
+        };
+        assert!(matches!(err, TransferError::Timeout), "{err}");
+        assert_eq!(node.network.unlistened.lock().unwrap().clone(), vec![40002]);
+    }
+
+    #[tokio::test]
+    async fn data_connection_without_a_node_id_is_accepted() {
+        // Identity present but carrying no node id (or an empty one): there
+        // is nothing to compare, so the connection is not refused.
+        let (node, _peer_events) = make_test_node("node-i", random_port().await).await;
+        let (listener, tx) = scripted_listener(&node, 40003);
+        let (stream, _client) = tcp_pair().await;
+        tx.send(incoming_from(stream, "100.64.0.7:5000", Some("")))
+            .await
+            .unwrap();
+
+        let incoming = accept_data_connection(listener, "nSENDER", Duration::from_secs(5))
+            .await
+            .expect("an identity without a node id must be accepted");
+        assert_eq!(incoming.remote_addr, "100.64.0.7:5000");
+    }
+
+    #[tokio::test]
+    async fn accept_and_receive_releases_port_when_accept_send_fails() {
+        // No session to "peer-x" exists, so sending ACCEPT fails after the
+        // listener is already open: that path must release it too.
+        let (node, _peer_events) = make_test_node("node-e", random_port().await).await;
+        let dir = tempfile::tempdir().unwrap();
+        let save_dir = format!("{}/", dir.path().display());
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(16);
+
+        let err = accept_and_receive(
+            &node,
+            "peer-x",
+            "f.bin",
+            4,
+            &"0".repeat(64),
+            "tok-accept",
+            &save_dir,
+            &event_tx,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TransferError::Node(_)), "{err}");
+        assert_eq!(
+            node.network.unlistened.lock().unwrap().len(),
+            1,
+            "the listener opened for the ACCEPT must be released"
+        );
     }
 
     // ── Property + concurrency tests (review: fuzzing / exhaustion) ────

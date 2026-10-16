@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -212,6 +213,10 @@ impl Drop for ReplyGuard {
     }
 }
 
+/// Consecutive failed status checks (`try_wait` errors, one per second)
+/// after which the process watcher stops watching the sidecar child.
+const MAX_STATUS_CHECK_ERRORS: u32 = 3;
+
 /// Manages the Go sidecar child process.
 ///
 /// Handles spawning, command sending via stdin, event reading from stdout,
@@ -227,14 +232,25 @@ pub(crate) struct GoSidecar {
     shutdown: Arc<Notify>,
     /// Handle to the child process (for kill on drop).
     child: Arc<Mutex<Option<Child>>>,
+    /// Owner-supplied slot holding the child's pid while it runs (0 = none).
+    pid_slot: Arc<AtomicU32>,
+    /// The child's pid as captured at spawn (0 if the OS reported none).
+    pid: u32,
 }
 
 impl GoSidecar {
     /// Spawn a new Go sidecar process.
     ///
     /// Returns the sidecar handle and a broadcast receiver for internal events.
+    ///
+    /// `pid_slot` receives the child's process id at spawn and is reset to 0
+    /// when the process is seen to exit, when [`shutdown`](Self::shutdown)
+    /// kills it, or when this handle is dropped (`kill_on_drop`). The reset
+    /// only applies while the slot still holds this child's pid, so a slot
+    /// reused by a later sidecar is never cleared by an earlier one.
     pub async fn spawn(
         config: SidecarConfig,
+        pid_slot: Arc<AtomicU32>,
     ) -> Result<(Self, broadcast::Receiver<SidecarInternalEvent>), NetworkError> {
         let (event_tx, event_rx) = broadcast::channel(256);
         let (stdin_tx, stdin_rx) = mpsc::channel::<String>(64);
@@ -243,6 +259,8 @@ impl GoSidecar {
 
         // Spawn the child process
         let child = Self::spawn_child(&config)?;
+        let pid = child.id().unwrap_or(0);
+        pid_slot.store(pid, Ordering::Relaxed);
         let child = Arc::new(Mutex::new(Some(child)));
 
         let sidecar = GoSidecar {
@@ -251,6 +269,8 @@ impl GoSidecar {
             pending_replies: pending_replies.clone(),
             shutdown: shutdown.clone(),
             child: child.clone(),
+            pid_slot: pid_slot.clone(),
+            pid,
         };
 
         // Take stdout/stdin from child before spawning tasks
@@ -302,9 +322,33 @@ impl GoSidecar {
         }
 
         // Spawn process watcher task
-        Self::spawn_process_watcher(child.clone(), event_tx, shutdown);
+        Self::spawn_process_watcher(child.clone(), event_tx, shutdown, pid_slot, pid);
 
         Ok((sidecar, event_rx))
+    }
+
+    /// Reset `pid_slot` to 0 if it still holds `pid`.
+    fn clear_pid(pid_slot: &AtomicU32, pid: u32) {
+        if pid != 0 {
+            let _ = pid_slot.compare_exchange(pid, 0, Ordering::Relaxed, Ordering::Relaxed);
+        }
+    }
+
+    /// Record one failed status check (`try_wait` error) of the child and
+    /// say whether the process watcher should give up.
+    ///
+    /// A single error may be transient, so the watcher keeps polling until
+    /// [`MAX_STATUS_CHECK_ERRORS`] fail in a row. Then the child's state can
+    /// no longer be known (typically it was reaped behind our back, which
+    /// `ECHILD` reports), so the pid slot is cleared: reporting a pid nobody
+    /// watches any more would hand samplers a dead or reused process.
+    fn status_check_failed(consecutive_errors: &mut u32, pid_slot: &AtomicU32, pid: u32) -> bool {
+        *consecutive_errors += 1;
+        if *consecutive_errors < MAX_STATUS_CHECK_ERRORS {
+            return false;
+        }
+        Self::clear_pid(pid_slot, pid);
+        true
     }
 
     fn spawn_child(config: &SidecarConfig) -> Result<Child, NetworkError> {
@@ -462,11 +506,20 @@ impl GoSidecar {
         child: Arc<Mutex<Option<Child>>>,
         event_tx: broadcast::Sender<SidecarInternalEvent>,
         shutdown: Arc<Notify>,
+        pid_slot: Arc<AtomicU32>,
+        pid: u32,
     ) {
         tokio::spawn(async move {
+            // One shutdown waiter for the task's whole life, registered up
+            // front: a fresh `notified()` per iteration would miss a
+            // `notify_waiters()` landing while the loop body runs.
+            let shutdown_signal = shutdown.notified();
+            tokio::pin!(shutdown_signal);
+            shutdown_signal.as_mut().enable();
+            let mut consecutive_errors = 0;
             loop {
                 tokio::select! {
-                    _ = shutdown.notified() => {
+                    _ = &mut shutdown_signal => {
                         tracing::debug!("process watcher shutting down");
                         return;
                     }
@@ -477,16 +530,25 @@ impl GoSidecar {
                                 Ok(Some(status)) => {
                                     let exit_code = status.code();
                                     tracing::warn!("sidecar process exited with code: {exit_code:?}");
+                                    Self::clear_pid(&pid_slot, pid);
                                     let _ = event_tx.send(SidecarInternalEvent::ProcessExited { exit_code });
                                     *guard = None;
                                     return;
                                 }
                                 Ok(None) => {
                                     // Still running, continue polling
+                                    consecutive_errors = 0;
                                 }
                                 Err(e) => {
-                                    tracing::error!("failed to check sidecar process status: {e}");
-                                    return;
+                                    if Self::status_check_failed(&mut consecutive_errors, &pid_slot, pid) {
+                                        tracing::error!(
+                                            "failed to check sidecar process status \
+                                             {consecutive_errors} times in a row, no longer \
+                                             watching it: {e}"
+                                        );
+                                        return;
+                                    }
+                                    tracing::warn!("failed to check sidecar process status: {e}");
                                 }
                             }
                         } else {
@@ -910,12 +972,16 @@ impl GoSidecar {
             let _ = child.kill().await;
             *guard = None;
         }
+        Self::clear_pid(&self.pid_slot, self.pid);
     }
 }
 
 impl Drop for GoSidecar {
     fn drop(&mut self) {
         self.shutdown.notify_waiters();
+        // The watcher task releases the last `Child` handle once notified,
+        // and `kill_on_drop` ends the process with it.
+        Self::clear_pid(&self.pid_slot, self.pid);
     }
 }
 
@@ -1000,5 +1066,99 @@ mod stdout_log_tests {
                 "credential leaked into stdout diagnostics: {logged}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod status_check_tests {
+    use super::*;
+
+    #[test]
+    fn watcher_gives_up_and_clears_pid_after_repeated_status_errors() {
+        let slot = AtomicU32::new(4242);
+        let mut errors = 0;
+        for _ in 1..MAX_STATUS_CHECK_ERRORS {
+            assert!(
+                !GoSidecar::status_check_failed(&mut errors, &slot, 4242),
+                "a transient error must not stop the watcher"
+            );
+            assert_eq!(slot.load(Ordering::Relaxed), 4242, "still watched");
+        }
+        assert!(GoSidecar::status_check_failed(&mut errors, &slot, 4242));
+        assert_eq!(
+            slot.load(Ordering::Relaxed),
+            0,
+            "an unwatched pid must not keep being reported"
+        );
+    }
+
+    #[test]
+    fn giving_up_on_an_older_child_keeps_the_newer_pid() {
+        let slot = AtomicU32::new(7);
+        let mut errors = MAX_STATUS_CHECK_ERRORS - 1;
+        assert!(GoSidecar::status_check_failed(&mut errors, &slot, 4242));
+        assert_eq!(slot.load(Ordering::Relaxed), 7);
+    }
+}
+
+/// The pid slot's lifecycle, driven by stand-in child processes (`cat`
+/// lives until killed; `true` exits at once) rather than a real sidecar.
+#[cfg(all(test, unix))]
+mod pid_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn config(binary: &str) -> SidecarConfig {
+        SidecarConfig {
+            binary_path: PathBuf::from(binary),
+            hostname: "truffle-test-pid".to_string(),
+            state_dir: "unused".to_string(),
+            auth_key: None,
+            bridge_port: 0,
+            session_token_hex: String::new(),
+            ephemeral: None,
+            tags: None,
+            idle_timeout_secs: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn pid_slot_holds_child_pid_until_shutdown() {
+        let slot = Arc::new(AtomicU32::new(0));
+        let (sidecar, _events) = GoSidecar::spawn(config("cat"), slot.clone()).await.unwrap();
+        let pid = slot.load(Ordering::Relaxed);
+        assert_ne!(pid, 0, "a running child must publish its pid");
+        assert_eq!(pid, sidecar.pid);
+
+        sidecar.shutdown().await;
+        assert_eq!(slot.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn pid_slot_clears_when_child_exits() {
+        let slot = Arc::new(AtomicU32::new(0));
+        let (_sidecar, _events) = GoSidecar::spawn(config("true"), slot.clone())
+            .await
+            .unwrap();
+        // The process watcher polls once per second.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while slot.load(Ordering::Relaxed) != 0 {
+            assert!(Instant::now() < deadline, "exited child still reported");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_an_older_sidecar_keeps_the_newer_pid() {
+        let slot = Arc::new(AtomicU32::new(0));
+        let (first, _first_events) = GoSidecar::spawn(config("cat"), slot.clone()).await.unwrap();
+        let (second, _second_events) = GoSidecar::spawn(config("cat"), slot.clone()).await.unwrap();
+        assert_eq!(slot.load(Ordering::Relaxed), second.pid);
+
+        drop(first);
+        assert_eq!(slot.load(Ordering::Relaxed), second.pid);
+
+        drop(second);
+        assert_eq!(slot.load(Ordering::Relaxed), 0);
     }
 }

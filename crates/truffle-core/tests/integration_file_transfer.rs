@@ -17,6 +17,31 @@ fn make_payload(size: usize) -> Vec<u8> {
     (0..size).map(|i| ((i * 7 + 13) % 256) as u8).collect()
 }
 
+/// Print a send's phase timings and check they are sane: every phase took
+/// time, and the disjoint phases fit inside the end-to-end figure.
+///
+/// `ack_ok` is printed, not asserted: a missing ACK is a reported outcome
+/// (the bridge may close before the byte propagates), not a failure.
+fn check_timings(result: &truffle_core::TransferResult) {
+    let t = result.timings;
+    eprintln!(
+        "  timings: hash {:.4}s, negotiate {:.4}s, transfer {:.4}s, ack_ok {} (elapsed {:.4}s)",
+        t.hash_secs, t.negotiate_secs, t.transfer_secs, t.ack_ok, result.elapsed_secs
+    );
+    assert!(t.hash_secs > 0.0, "hashing takes time: {t:?}");
+    assert!(
+        t.negotiate_secs > 0.0,
+        "the OFFER round trip takes time: {t:?}"
+    );
+    assert!(t.transfer_secs > 0.0, "the data transfer takes time: {t:?}");
+    let phases = t.hash_secs + t.negotiate_secs + t.transfer_secs;
+    assert!(
+        phases <= result.elapsed_secs + 1e-6,
+        "phases ({phases}s) must fit inside elapsed ({}s)",
+        result.elapsed_secs
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Test 1: Small file (64KB) — round-trip integrity
 // ---------------------------------------------------------------------------
@@ -68,6 +93,7 @@ async fn test_transfer_64kb_file() {
         result.bytes_transferred, result.elapsed_secs, result.sha256
     );
     assert_eq!(result.bytes_transferred, content.len() as u64);
+    check_timings(&result);
 
     let received_path = dst_dir.path().join(&file_name);
     let received = common::wait_for(WAIT_FOR_FILE, || async {
@@ -81,7 +107,15 @@ async fn test_transfer_64kb_file() {
         "received file must match sent content byte-for-byte"
     );
 
+    // Each running node reports its own sidecar child; none once stopped.
+    let (alpha, beta) = (pair.alpha.clone(), pair.beta.clone());
+    let alpha_pid = alpha.sidecar_pid().expect("running node has a sidecar pid");
+    let beta_pid = beta.sidecar_pid().expect("running node has a sidecar pid");
+    assert_ne!(alpha_pid, beta_pid, "each node runs its own sidecar");
+
     pair.stop().await;
+    assert_eq!(alpha.sidecar_pid(), None, "stopped node reports no pid");
+    assert_eq!(beta.sidecar_pid(), None, "stopped node reports no pid");
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +167,7 @@ async fn test_transfer_1mb_file() {
         (result.bytes_transferred as f64 / result.elapsed_secs.max(0.001)) / 1_000_000.0
     );
     assert_eq!(result.bytes_transferred, content.len() as u64);
+    check_timings(&result);
 
     let received_path = dst_dir.path().join(&file_name);
     let received = common::wait_for(WAIT_FOR_FILE, || async {

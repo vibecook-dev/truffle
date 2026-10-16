@@ -68,6 +68,13 @@ pub mod session;
 pub mod synced_store;
 pub mod transport;
 
+/// The version of this `truffle-core` build (its `Cargo.toml` package
+/// version, e.g. `"0.7.17"`).
+///
+/// Lets applications and tools record exactly which library they ran
+/// against, for example in benchmark reports or diagnostics.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 // Re-export the main public types for convenience.
 pub use egress::{
     BoundEgress, EgressRoute, EgressRouteInfo, HttpProxyConfig, LoopbackConfig,
@@ -76,7 +83,7 @@ pub use egress::{
 pub use envelope::Envelope;
 pub use file_transfer::{
     FileOffer, FileTransfer, FileTransferEvent, FtMessage, OfferDecision, OfferResponder,
-    TransferDirection, TransferError, TransferProgress, TransferResult,
+    TransferDirection, TransferError, TransferProgress, TransferResult, TransferTimings,
 };
 pub use identity::{slug, tailscale_hostname, AppId, DeviceId, DeviceName, IdentityError};
 pub use node::{NamespacedMessage, Node, NodeBuilder, NodeError, Peer};

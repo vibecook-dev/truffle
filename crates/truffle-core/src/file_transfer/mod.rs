@@ -427,6 +427,11 @@ async fn pull_file<N: NetworkProvider + 'static>(
 
     tracing::info!(peer = peer_id, path = remote_path, "Sending PULL_REQUEST");
 
+    // Negotiation: PULL_REQUEST sent → the serving peer's TCP connection
+    // accepted (includes that peer hashing the file before its OFFER, and our
+    // own sidecar's per-connection accept handoff, which a push counts in
+    // `transfer_secs` instead; see `TransferTimings`).
+    let negotiate_start = Instant::now();
     let (offer_sha256, offer_size, offer_token, file_name) = crate::request_reply::send_and_wait(
         node,
         peer_id,
@@ -476,33 +481,39 @@ async fn pull_file<N: NetworkProvider + 'static>(
     }
 
     // 3. Start TCP listener, then send ACCEPT with our port
-    let mut listener = node
-        .listen_tcp(0)
-        .await
-        .map_err(|e| TransferError::Node(format!("Failed to listen TCP: {e}")))?;
+    let listener = receiver::DataListener::open(node).await?;
 
     let accept = FtMessage::Accept {
         token: offer_token,
-        tcp_port: listener.port,
+        tcp_port: listener.port(),
     };
 
-    let accept_payload = serde_json::to_value(&accept)
-        .map_err(|e| TransferError::Protocol(format!("Failed to serialize accept: {e}")))?;
-
-    node.send_typed(peer_id, "ft", "accept", &accept_payload)
-        .await
-        .map_err(|e| TransferError::Node(e.to_string()))?;
+    let sent = match serde_json::to_value(&accept) {
+        Ok(accept_payload) => node
+            .send_typed(peer_id, "ft", "accept", &accept_payload)
+            .await
+            .map_err(|e| TransferError::Node(e.to_string())),
+        Err(e) => Err(TransferError::Protocol(format!(
+            "Failed to serialize accept: {e}"
+        ))),
+    };
+    if let Err(e) = sent {
+        listener.release().await;
+        return Err(e);
+    }
 
     tracing::info!(
-        port = listener.port,
+        port = listener.port(),
         "Sent ACCEPT, listening for TCP connection"
     );
 
-    // 4. Accept incoming TCP connection with timeout
-    let incoming = tokio::time::timeout(tokio::time::Duration::from_secs(30), listener.accept())
-        .await
-        .map_err(|_| TransferError::Timeout)?
-        .ok_or_else(|| TransferError::Protocol("Listener closed before accepting".to_string()))?;
+    // 4. Accept the serving peer's TCP connection with timeout (connections
+    // from any other node are dropped; the listener's tsnet port is released
+    // whatever the outcome, even if this future is dropped mid-wait)
+    let incoming =
+        receiver::accept_data_connection(listener, peer_id, receiver::DATA_CONNECT_TIMEOUT).await?;
+    let negotiate_secs = negotiate_start.elapsed().as_secs_f64();
+    let transfer_start = Instant::now();
 
     let mut stream = incoming.stream;
     tracing::info!("TCP connection accepted from peer");
@@ -603,6 +614,7 @@ async fn pull_file<N: NetworkProvider + 'static>(
 
     // 7. Send ACK
     stream.write_all(&[0x01]).await?;
+    let transfer_secs = transfer_start.elapsed().as_secs_f64();
 
     let elapsed = start.elapsed().as_secs_f64();
     tracing::info!(
@@ -626,5 +638,13 @@ async fn pull_file<N: NetworkProvider + 'static>(
         bytes_transferred: file_size,
         sha256: actual_sha,
         elapsed_secs: elapsed,
+        // The puller hashes inline while receiving, so nothing is hashed up
+        // front; the ACK is ours to write, and writing it succeeded.
+        timings: TransferTimings {
+            hash_secs: 0.0,
+            negotiate_secs,
+            transfer_secs,
+            ack_ok: true,
+        },
     })
 }
