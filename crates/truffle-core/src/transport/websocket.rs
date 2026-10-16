@@ -39,7 +39,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::stream::SplitSink;
 use futures_util::stream::SplitStream;
@@ -594,6 +594,10 @@ impl<N: NetworkProvider + 'static> StreamTransport for WebSocketTransport<N> {
                         // Clone the bridge-provided WhoIs identity before
                         // `incoming.stream` is moved into the WS upgrade below.
                         let authenticated_identity = incoming.remote_identity.clone();
+                        // The identity (and login) the hello is checked
+                        // against is as old as this connection: the session
+                        // compares it with a later Layer 3 departure.
+                        let accepted_at = Instant::now();
                         let allow_unverified_loopback = trust_mode
                             == crate::network::NetworkTrust::UnverifiedLoopback
                             && incoming
@@ -723,7 +727,7 @@ impl<N: NetworkProvider + 'static> StreamTransport for WebSocketTransport<N> {
                                 "ws: accepted connection (hello exchanged)"
                             );
 
-                            let stream = WsFramedStream::new(
+                            let mut stream = WsFramedStream::new(
                                 ws,
                                 remote_identity.tailscale_id.clone(),
                                 Some(remote_identity),
@@ -731,6 +735,7 @@ impl<N: NetworkProvider + 'static> StreamTransport for WebSocketTransport<N> {
                                 ping_interval,
                                 pong_timeout,
                             );
+                            stream.admitted_at = accepted_at;
 
                             if tx.send(stream).await.is_err() {
                                 tracing::debug!("ws: listener channel closed");
@@ -783,6 +788,11 @@ pub struct WsFramedStream {
     last_pong: Arc<AtomicU64>,
     /// Flag indicating the connection has been closed.
     closed: Arc<AtomicBool>,
+    /// How old the evidence that admitted the remote is: for an accepted
+    /// stream, when the listener took the connection (with the WhoIs
+    /// identity its hello was checked against); for a dialed one, when the
+    /// hello completed. See [`Self::admitted_at`].
+    admitted_at: Instant,
 }
 
 impl std::fmt::Debug for WsFramedStream {
@@ -852,7 +862,17 @@ impl WsFramedStream {
             heartbeat_handle: Some(heartbeat_handle),
             last_pong,
             closed,
+            admitted_at: Instant::now(),
         }
+    }
+
+    /// When the remote's admission was checked: for an accepted stream, the
+    /// moment the listener took the TCP connection and the bridge's WhoIs
+    /// identity that the hello (and any RFC 025 login gate) was verified
+    /// against. The session refuses to install a stream whose admission
+    /// predates a Layer 3 departure of that peer.
+    pub(crate) fn admitted_at(&self) -> Instant {
+        self.admitted_at
     }
 
     /// Get the remote peer's Tailscale stable ID (from the hello envelope).
