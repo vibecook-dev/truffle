@@ -1,6 +1,6 @@
 # RFC 027: Benchmark hub — one engine, one app, every number truffle can produce
 
-**Status**: Implemented on `feat/benchmark-hub` (not yet merged); r3 records the amendments found while building and reviewing, see §14
+**Status**: Implemented on `feat/benchmark-hub` (not yet merged); r3 records the amendments found while building and reviewing, r4 those that followed the core fixes, see §14
 **Author**: James Yong + Claude
 **Date**: 2026-10-16
 **Depends on**: RFC 012 (layers), RFC 014 (file transfer), RFC 016 (SyncedStore, request/reply), RFC 019 (local testing and benchmarking; this supersedes its §10.2), RFC 021 (raw TCP/UDP/QUIC), RFC 023 (HTTP serving), RFC 025 (login-scoped nodes), RFC 026 (egress)
@@ -137,7 +137,7 @@ benchmark/
 | `TransferResult` gains `pub timings: TransferTimings { pub hash_secs: f64, pub negotiate_secs: f64 /* OFFER sent → TCP stream open */, pub transfer_secs: f64 /* first payload write → ACK read */, pub ack_ok: bool }` | An honest wire throughput figure. Progress events are throttled to 4/s and measured at the sender's socket buffer. |
 | `receiver::accept_and_receive` calls `node.unlisten_tcp(port)` after accept | Today a long-lived hub leaks one tsnet listener per received file. |
 
-All other core shortcomings stay out of v1 and become notes or planned items: the dropped `tsnet:needsApproval` event, the private sidecar protocol version, disco-only ping, `MaxIdleConnsPerHost`, and QUIC datagrams.
+All other core shortcomings stay out of v1 and become notes or planned items: the dropped `tsnet:needsApproval` event, the private sidecar protocol version, disco-only ping, `MaxIdleConnsPerHost`, and QUIC datagrams. (r4: core has since forwarded `needsApproval` and raised the proxy's idle pool, see §14 #20–#22.)
 
 ### 5.2 Constants, errors
 
@@ -311,12 +311,12 @@ pub struct PeerHello {
 
 1. **Admission.**
    - `prepare`, `start`, `clock`, `finish` and `cancel` require admission.
-   - The sender is looked up with `node.peer(&msg.from, Some(5_000))`. If not found, the reply is `code: peer-not-found`, which is retryable.
+   - The sender is looked up with `node.peer(&msg.from, Some(5_000))`. If not found, the reply is `code: peer-not-found`, which is retryable (the initiator re-sends `prepare` every 1 s within its timeout, §14 #24).
    - A peer is admitted iff one of these holds:
      - `allow_other_logins`
      - both `login_name`s are `Some`, equal ignoring case, and not `"tagged-devices"`
      - both are `"tagged-devices"` and `allow_tagged`
-   - `None` on either side is refused, with `code: login-refused`.
+   - `None` on either side is refused, with `code: login-refused`; while the hub still looks for its own login after a fast restart, it first waits up to 10 s for it (§14 #24).
    - `finish`, `cancel`, `start` and ticks are honoured only from the tailscale_id that prepared the run.
    - Every `bench.ws` message, SyncedStore `PeerUpdated` and file offer is ignored unless it comes from that run's initiator.
 2. **Validation.** `params.validate()` runs again; the responder never trusts the initiator's bounds. `run_id` must match `^[A-Za-z0-9-]{1,64}$`, otherwise `code: invalid-params`. Run state is keyed by `(peer tailscale_id, run_id)`. `run_id` never appears in a filesystem path. `run_tag` is 64 random bits from the OS RNG, chosen by the responder.
@@ -410,7 +410,7 @@ pub struct PathSnapshot { at: String, connection: Option<String>, rtt_ms: Option
 pub enum HubEvent { Node(NodeState), Peers { peers: Vec<BenchPeer> },
     RemoteRun { run_id: String, peer: String, peer_id: String, workload: String,
                 state: String /* prepared|finished|cancelled|expired */ } }
-pub struct NodeState { state: String /* idle|starting|needs-login|running|stopping|stopped|error */,
+pub struct NodeState { state: String /* idle|starting|needs-login|needs-approval|running|stopping|stopped|error */,
     auth_url: Option<String>, error: Option<AppError>, local: Option<LocalInfo>,
     tailscale_hostname: Option<String>, since_ms: u64 }
 pub struct ActiveRun { run_id, suite_id: Option<String>, workload, peer_name, started_at, last: Option<Progress> }
@@ -624,7 +624,7 @@ pub struct WorkloadOutput { summary: Vec<SummaryItem>, results: serde_json::Valu
 - Sample 0 is reported as `first_rtt_ms` and excluded from the distribution.
 - Records `connection` per sample, plus `transitions`.
 - Also reports `hub_start_ms`, `discovery_ms` (this peer) and `ws_connect_ms` (the time to the first `hello.ack` when the peer was not ws_connected).
-- Summary keys: `rtt_min_ms`, `rtt_p50_ms`, `rtt_max_ms`, `loss_pct`.
+- Summary keys: `rtt_p50_ms`, `rtt_min_ms`, `rtt_max_ms`, `loss_pct`.
 - Series: `rtt_ms`.
 
 **tcp throughput**
@@ -774,7 +774,7 @@ pub struct WorkloadOutput { summary: Vec<SummaryItem>, results: serde_json::Valu
 - Summary keys: `req_per_sec`, `latency_p50_ms`, `latency_p99_ms`, `error_pct`.
 - Series: `req_per_sec`.
 - Notes:
-  - "proxy keepalive above concurrency 2 includes upstream reconnects (Go MaxIdleConnsPerHost = 2)"
+  - proxy keep-alive, when the server saw more upstream connections than workers: "the sidecar's proxy reconnected upstream: N upstream connections for W keep-alive workers (sidecars before protocol 8 keep only 2 idle connections per host)"; without server stats, above 2 workers: "proxy keepalive above concurrency 2 includes upstream reconnects on sidecars before protocol 8 (Go MaxIdleConnsPerHost = 2)" (§14 #22)
   - "new: one WhoIs per request on both paths"
 
 **video** (the frame model)
@@ -838,7 +838,7 @@ RFC 018's CrdtDoc/Loro was removed on 2026-07-07. `synced-store` is last-write-w
 - `QuicConnection` stats (rtt, cwnd, lost)
 - JS binding lane (NAPI)
 - Swift plane (RFC 024) peers
-- tsnet ceiling: an in-sidecar `bench:*` command (protocol v8); use `tsnet-bench` meanwhile
+- tsnet ceiling: an in-sidecar `bench:*` command (a later sidecar protocol); use `tsnet-bench` meanwhile
 - A latency waterfall (TSMP/ICMP ping; core pins disco today)
 - HTTP with `tls: true` (handshake time, first-cert time)
 - `pull_file`
@@ -847,7 +847,6 @@ RFC 018's CrdtDoc/Loro was removed on 2026-07-07. `synced-store` is last-write-w
 - Broadcast fan-out (needs ≥ 3 nodes)
 - Live camera (WebCodecs)
 - Taildrop comparison
-- `tsnet:needsApproval` surfaced by core
 - Video ramp
 
 ## 9. Housekeeping
@@ -1039,7 +1038,12 @@ JS calls `invoke(cmd, { req })`. Commands that stream also take `onProgress` (ca
   - shows the URL with Open and Copy buttons
   - a 5:00 countdown
   - "This adds a device called <tailscale_hostname> to your tailnet."
-  - after 30 s with the URL opened: "If your tailnet requires device approval, approve <tailscale_hostname> in the admin console", with an "Open admin console" button
+  - after 30 s with the URL opened: "If your tailnet requires device approval, approve <tailscale_hostname> in the admin console", with an "Open admin console" button (the fallback for when no approval event arrives: hubs on cores before `NodeBuilder::on_network_status` dropped it)
+- **`needs-approval`** (every sidecar sends `tsnet:needsApproval`, since RFC 008 phase 2; core now forwards it as `NetworkStatusEvent::NeedsApproval` through `NodeBuilder::on_network_status`, where it used to drop it):
+  - "Approve this device": "Your tailnet requires device approval. Approve <tailscale_hostname> in the Tailscale admin console, under Machines."
+  - primary button "Open admin console" (`open_url` `https://login.tailscale.com/admin/machines`)
+  - the time waited; the node continues on its own once approved (core's start fails after 5 minutes with an error that names the approval)
+  - "An auth key created as pre-approved skips this step", and Cancel
 - **`error`:** the error message and "Try again".
 - **"Use an auth key"** disclosure: "A key makes this a tagged device. It only matches peers that also use a key, unless both accept other accounts."
 
@@ -1244,9 +1248,18 @@ It asserts `ok` and 12 iterations. `integration-tests.yml` keeps `-p truffle-ben
 ## 13. Open questions
 - **App icon:** the placeholder is described in §11.5. James decides the final icon.
 - **CI job:** whether to add a path-filtered macOS CI job that builds the app.
-- **Core follow-ups:** forward `needsApproval`, expose the sidecar protocol version, add TSMP/ICMP ping, sidecar `MaxIdleConnsPerHost`.
+- **Core follow-ups, done in r4** (§14 #20–#24): `needsApproval` forwarded (`NetworkStatusEvent`), the sidecar proxy's upstream keep-alive pool, the late login (sidecar protocol 8), session restart handling and shared dials, the ~41 ms per new connection (LocalAPI `OmitAuth`) and the 30 s TIME_WAIT dial stall.
+- **Core follow-ups, still open:**
+  - Layer 3's event processor drops sidecar events on `Lagged` and never resyncs (a 256-slot channel; ~75–95 events lost at start with ~10 peers), so a node can learn of a peer ~30 s late (seen in both builds in the restart scenario; §14 #24 makes the run wait instead of fail);
+  - expose the sidecar protocol version (the engine cannot tell an old sidecar, so it waits 5 s on core before its LocalAPI login fallback);
+  - TSMP/ICMP ping;
+  - the ~5 s first WebSocket dial when both hubs dial at once (crossing WireGuard handshakes; only the lower id should dial at once);
+  - `ft.done` ~100 ms late (the sleep in `file_transfer/receiver.rs`) and ~28 ms `negotiate_ms`;
+  - the remaining ~1 s stall on a TIME_WAIT collision: 0.8–0.9 % of new connections at ~410–450 per second, each exactly one 1.00 s SYN retransmit (three HTTP new-connection runs, same host, 2026-10-16). About 450 4-tuples sit in a 1 s TIME_WAIT over the 49,536-port source range, so the rate grows linearly with the connection rate (~2 % at 1k/s); at ~450/s the stalls are ~90 % of the mean request time. Removable by accepting through a gVisor listener;
+  - `on_network_status` in the NAPI and Tauri bindings;
+  - a per-instance id in the session hello (exact restart detection instead of the standby heuristic).
 
-## 14. Amendments found while building (r3)
+## 14. Amendments found while building (r3, r4)
 
 | # | Amendment | Why |
 |---|---|---|
@@ -1264,8 +1277,13 @@ It asserts `ok` and 12 iterations. `integration-tests.yml` keeps `-p truffle-ben
 | 12 | `hello` is re-sent every 5 s (`HELLO_RESEND`) within its 30 s timeout until answered. | `hello` is idempotent, and a message written into a WebSocket that died with a restarted peer is lost without an error (seen live: "no hello.ack within 30 s"); the re-send goes out on the redialled connection. |
 | 13 | `pair` says hello one direction at a time (initiator → responder, then back), each up to 3 attempts 1 s apart. | Both hubs' hello caches are already dialling each other at that moment, so two more simultaneous dials only add collisions; a stuck "connection already in progress" dial can outlast one attempt's deadline. |
 | 14 | `path_label` (§7.4) uses the **relayed** share (DERP plus peer relay) for the 1 % / 99 % thresholds; `derp_share` stays DERP only. With fewer than `PATH_BYTES_MIN` (256 KiB) of usermetrics bytes, or without usermetrics, the label comes from the ping samples (`before`, the timeline, `after`) with a "path label from ping samples; …" note and `derp_share: null`. `unknown` means only that no sample named a path. | A peer-relayed run is not direct. Tiny runs move mostly pings and control traffic: a same-host `path` run with 148 B of DERP delta was labelled `relay` or `mixed` while every ping said direct at 0.27 ms. |
-| 11 | Hello re-sends with the same id every 5 s inside its 30 s deadline; sends also retry `SendFailed`; `Pair::start` exchanges hellos one direction at a time. | A peer that restarted keeps a stale WebSocket on the other side until its 10 s ping clears it; reused device names hit the same race. |
-| 12 | When the sidecar's start event carries no login, the hub reads it from LocalAPI `/localapi/v0/status` (`User[Self.UserID].LoginName`) and re-admits peers when it arrives. | Fast restarts from saved state reported no login, so every same-account peer was refused. Core fix proposed, not done. |
-| 13 | Below 256 KiB of usermetrics delta, `path_label` uses the ping samples and `derp_share` is null. | A few hundred stray bytes decided the label of short runs. |
-| 14 | `Hub::set_report_hook` runs before a report is saved; `BenchPeer.same_host`, `RunSummary.flags` and `ActiveRun.suite_*` were added. | The app sets `app_foreground_pct` without rewriting files and stops guessing flags. |
-| 15 | Per-mode fixtures (`report-<mode>.json`, 19 modes) plus an app registry contract test. | One fixture per workload could not catch drift in mode-specific results. |
+| 15 | Hello re-sends with the same id every 5 s inside its 30 s deadline; sends also retry `SendFailed`; `Pair::start` exchanges hellos one direction at a time. | A peer that restarted keeps a stale WebSocket on the other side until its 10 s ping clears it; reused device names hit the same race. |
+| 16 | When the sidecar's start event carries no login, the hub reads it from LocalAPI `/localapi/v0/status` (`User[Self.UserID].LoginName`) and re-admits peers when it arrives. | Fast restarts from saved state reported no login, so every same-account peer was refused. Core fixed it in r4 (#21). |
+| 17 | Below 256 KiB of usermetrics delta, `path_label` uses the ping samples and `derp_share` is null. | A few hundred stray bytes decided the label of short runs. |
+| 18 | `Hub::set_report_hook` runs before a report is saved; `BenchPeer.same_host`, `RunSummary.flags` and `ActiveRun.suite_*` were added. | The app sets `app_foreground_pct` without rewriting files and stops guessing flags. |
+| 19 | Per-mode fixtures (`report-<mode>.json`, 19 modes) plus an app registry contract test. | One fixture per workload could not catch drift in mode-specific results. |
+| 20 | `NodeState.state` gains `needs-approval` (§7.1). The hub enters it from `NodeBuilder::on_network_status` (`NetworkStatusEvent::NeedsApproval`) while `build()` waits, never over `running` or `stopped`; the app shows the approval step (§11.3), the CLI prints the admin console link. | Core now forwards the `tsnet:needsApproval` event that sidecars have always sent (it used to drop it); before, sign-in could only hint at approval after 30 s, which stays as the fallback when no approval event arrives. |
+| 21 | Amendments 3, 11, 12, 13, 15 and 16 stay, as defence in depth for peers on older cores. Core now shares one bounded dial per peer among its callers, installs a re-dialled connection from a restarted peer on the accepting side, and re-sends the login once the netmap names it (sidecar protocol 8, `NetworkStatusEvent::LoginKnown`). The hub waits for that event for 5 s before it asks the LocalAPI, and a send whose dial core cancelled at shutdown is not retried. | The workarounds treated core bugs that are now fixed at the root; against this core they fire only on a genuine failure. |
+| 22 | The http proxy keep-alive note follows what the peer's server saw: "the sidecar's proxy reconnected upstream: N upstream connections for W keep-alive workers …" when N > W; without server stats, the old note above 2 workers, now naming sidecars before protocol 8. | Protocol-8 sidecars keep 64 idle upstream connections per host (Go's default was 2), so the unconditional note became wrong. |
+| 23 | `RunSummary.mode`; summary labels in one "RTT …" style; `schema/fixtures/live-keys.json` generated from each workload's declared live keys, and `live_pair` fails on an undeclared key; the path summary leads with `rtt_p50_ms`, then min, max and loss (§8.2). | The Benchmark view shows a run in the form's mode, and the app's live keys can no longer drift from the engine's. |
+| 24 | Rule 1 waits before it refuses: when admission fails while the hub still looks for its own login, the responder waits up to 10 s (`OWN_LOGIN_WAIT`) for it. The initiator re-sends a `prepare` refused with `peer-not-found` every 1 s within its 30 s timeout. | The restart scenario on this core: a run reached `prepare` ~0.1 s before the restarted responder learned its login ("an unknown account … does not accept runs"), and a responder whose Layer 3 missed the initiator's join refused with "retry in a moment", which nothing did. |
