@@ -1,0 +1,359 @@
+/* truffle bench, app chrome: title strip, rail, host, tool layout.
+   Adapted from career/home/styles: desktop.css (.desktop-titlebar), home.css (.home, .rail*,
+   .host, .readonly-bar), base.css (.topbar, .divider, .main, .pane, .pane-head). */
+
+/* ------------------------------------------------------------ frame */
+.app {
+  height: 100%;
+  display: grid;
+  grid-template-rows: var(--titlebar-h) minmax(0, 1fr);
+}
+.app-body {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: var(--rail-w) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+.app.rail-compact {
+  --rail-w: 60px;
+}
+
+/* ------------------------------------------------------------ title strip (desktop.css .desktop-titlebar)
+   Tauri drags on mousedown whose target carries data-tauri-drag-region, so the strip and its
+   title span both carry it; -webkit-app-region does nothing in Tauri. */
+.titlestrip {
+  position: relative;
+  z-index: 45;
+  height: var(--titlebar-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 96px;
+  background: var(--ground);
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-3);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+.titlestrip .ts-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.titlestrip .ts-right {
+  position: absolute;
+  right: 16px;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  pointer-events: none;
+}
+.ts-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+/* ------------------------------------------------------------ rail (home.css .rail*) */
+.rail {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  background: var(--ground);
+  border-right: 1px solid var(--rule);
+}
+.rail-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+  padding: 0 18px;
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--rule);
+}
+.rail-brand .jy-mark {
+  flex: none;
+}
+.rail-brand .rb-name {
+  font-weight: 500;
+  font-size: 16px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.rail-scroll {
+  overflow: auto;
+  padding: 12px 8px 20px;
+  display: grid;
+  gap: 18px;
+  align-content: start;
+}
+.rail-group {
+  display: grid;
+  gap: 1px;
+}
+.rg-label {
+  padding: 0 10px 6px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+.rail-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 36px;
+  padding: 0 10px;
+  color: var(--ink-2);
+  text-decoration: none;
+  transition: background-color var(--duration-tick) var(--easing-standard);
+}
+.rail-item:hover {
+  background: var(--ground-sunken);
+  color: var(--ink);
+}
+.rail-item.active {
+  background: var(--ground-sunken);
+  color: var(--ink);
+  font-weight: 500;
+}
+.rail-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  background: var(--ink);
+}
+.ri-icon {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  color: inherit;
+}
+.ri-icon svg {
+  display: block;
+}
+.ri-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* .ri-dot: a 7 px square; filled = a result, half = running, dashed = planned, redline = failed,
+   an ink-2 outline = cancelled */
+.ri-dot {
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--ink-3);
+}
+.ri-dot.live {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+.ri-dot.running {
+  border-color: var(--ink);
+  background: linear-gradient(90deg, var(--ink) 50%, transparent 50%);
+}
+.ri-dot.failed {
+  background: var(--redline);
+  border-color: var(--redline);
+}
+.ri-dot.cancelled {
+  border-color: var(--ink-2);
+}
+.ri-dot.planned {
+  border-style: dashed;
+}
+.rail-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 48px;
+  padding: 6px 8px 6px 18px;
+  border-top: 1px solid var(--rule);
+}
+.rf-state {
+  display: grid;
+  gap: 0;
+  min-width: 0;
+}
+.rf-state .rf-line {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* compact rail: icons only (home.css :98-107) */
+.rail.compact .rail-brand {
+  justify-content: center;
+  padding: 0;
+}
+.rail.compact .rb-name,
+.rail.compact .ri-label,
+.rail.compact .rg-label,
+.rail.compact .rf-state {
+  display: none;
+}
+.rail.compact .rail-scroll {
+  padding: 12px 6px 20px;
+  gap: 10px;
+}
+.rail.compact .rail-group {
+  border-top: 1px solid var(--rule);
+  padding-top: 10px;
+}
+.rail.compact .rail-group.first {
+  border-top: 0;
+  padding-top: 0;
+}
+.rail.compact .rail-item {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  padding: 0;
+}
+.rail.compact .ri-dot {
+  position: absolute;
+  top: 7px;
+  right: 9px;
+  width: 5px;
+  height: 5px;
+}
+.rail.compact .rail-foot {
+  justify-content: center;
+  padding: 6px;
+}
+.rail.compact .rail-foot .rf-square {
+  display: inline-flex;
+}
+.rf-square {
+  display: none;
+}
+
+/* ------------------------------------------------------------ host */
+.host {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  background: var(--ground);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.host > .host-view {
+  min-height: 0;
+  min-width: 0;
+}
+.host.scroll > .host-view {
+  overflow: auto;
+}
+/* home.css .readonly-bar: a quiet strip above the page */
+.build-bar {
+  padding: 8px 24px;
+  background: var(--ground-sunken);
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-2);
+}
+
+/* ------------------------------------------------------------ tool layout (base.css .topbar/.main/.pane) */
+.tool {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--ground);
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+.topbar .group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  min-width: 0;
+}
+.divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--rule);
+  margin: 4px 8px;
+  flex: none;
+}
+.main {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr) 340px;
+  min-height: 0;
+}
+.pane {
+  min-height: 0;
+  overflow: auto;
+  background: var(--ground);
+}
+.pane.left {
+  border-right: 1px solid var(--rule);
+}
+.pane.right {
+  border-left: 1px solid var(--rule);
+}
+.pane.centre {
+  background: var(--ground);
+}
+.pane-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 45px;
+  padding: 14px 16px 10px;
+  background: var(--ground);
+  border-bottom: 1px solid var(--rule);
+}
+.pane-body {
+  padding: 16px;
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+}
+@media (max-width: 1240px) {
+  .main {
+    grid-template-columns: 256px minmax(0, 1fr) 300px;
+  }
+}
+@media (max-width: 1100px) {
+  .main {
+    grid-template-columns: 256px minmax(0, 1fr);
+  }
+  .main > .pane.right {
+    grid-column: 1 / -1;
+    border-left: 0;
+    border-top: 1px solid var(--rule);
+  }
+  .tool {
+    overflow: auto;
+  }
+}

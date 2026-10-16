@@ -1,0 +1,7 @@
+{
+  "count": 100,
+  "mode": "burst",
+  "payload_bytes": 64,
+  "warmup_count": 5,
+  "workload": "synced-store"
+}

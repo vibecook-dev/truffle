@@ -1,0 +1,10 @@
+{
+  "concurrency": 1,
+  "count": 500,
+  "duration_secs": 10,
+  "mode": "rr",
+  "payload_bytes": 64,
+  "rate_per_sec": null,
+  "warmup_count": 10,
+  "workload": "ws"
+}

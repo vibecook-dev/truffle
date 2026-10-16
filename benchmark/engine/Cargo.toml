@@ -1,0 +1,50 @@
+[package]
+name = "truffle-bench"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Benchmark engine for truffle: two-node workloads, peer control protocol, reports and statistics (RFC 027)"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "truffle_bench"
+path = "src/lib.rs"
+
+[[bin]]
+name = "truffle-bench"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+truffle-core = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "fs", "io-util", "sync", "net", "signal"] }
+tokio-util.workspace = true
+futures.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dotenvy.workspace = true
+tempfile.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+hex.workspace = true
+base64.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+hostname.workspace = true
+getrandom.workspace = true
+zip.workspace = true
+sysinfo = { workspace = true, features = ["disk"] }
+fd-lock.workspace = true
+machine-uid.workspace = true
+socket2.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

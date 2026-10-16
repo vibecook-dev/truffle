@@ -1,12 +1,15 @@
 name: Benchmarks (nightly + on-demand)
 
-# Runs the tier-2 macro benchmarks from RFC 019 against a real Tailscale
-# tailnet, uploads JSON reports as artefacts. Triggered nightly on a cron
-# and manually via the Actions UI.
+# Runs the RFC 027 benchmark suite (`truffle-bench suite --profile <p> --pair`)
+# against a real Tailscale tailnet, plus the legacy `transport` TCP/QUIC runs,
+# and uploads the JSON reports as artefacts. Triggered nightly on a cron and
+# manually via the Actions UI. Reports import into the truffle bench app
+# (History → Import reports accepts the downloaded artefact .zip).
 #
-# Numbers collected here are *directional* on hosted runners due to
-# noisy-neighbor variance (±20-40%). For absolute numbers, RFC 023 will
-# add a dedicated self-hosted runner.
+# Both hubs of a pair run on one hosted runner, so every suite report has topology
+# `same-process`: it measures the bridges and netstack, not a link. Numbers are
+# *directional* (noisy neighbours, ±20-40%). A dedicated runner is a future
+# option; see benchmark/README.md for methodology.
 
 on:
   schedule:
@@ -14,18 +17,16 @@ on:
     - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
-      file_transfer_size:
-        description: 'File transfer payload size (e.g. 1M, 10M, 100M)'
+      profile:
+        description: 'Suite profile (benchmark/README.md lists the contents)'
+        type: choice
         required: false
-        default: '10M'
-      synced_store_ops:
-        description: 'SyncedStore operation count'
-        required: false
-        default: '1000'
-      request_reply_count:
-        description: 'Request/reply round trip count'
-        required: false
-        default: '500'
+        default: nightly
+        options:
+          - smoke
+          - standard
+          - full
+          - nightly
 
 permissions:
   contents: read
@@ -73,36 +74,20 @@ jobs:
         run: cargo test --locked -p truffle-core --test integration_eager_identity -- --nocapture
 
       - name: Build truffle-bench in release mode
+        id: build
         run: cargo build --locked -p truffle-bench --release
 
-      - name: File transfer
-        run: |
-          SIZE="${{ github.event.inputs.file_transfer_size || '10M' }}"
-          cargo run --locked -p truffle-bench --release -- \
-            file-transfer --size "$SIZE" --iterations 5 --warmup 1
+      # Exits non-zero if any suite item is not `ok`; every item still writes
+      # its own v3 report into target/bench-results/.
+      - name: Benchmark suite (${{ inputs.profile || 'nightly' }})
+        env:
+          PROFILE: ${{ inputs.profile || 'nightly' }}
+        run: cargo run --locked -p truffle-bench --release -- suite --profile "$PROFILE" --pair
 
-      - name: SyncedStore B1 (sequential)
-        run: |
-          OPS="${{ github.event.inputs.synced_store_ops || '1000' }}"
-          cargo run --locked -p truffle-bench --release -- \
-            synced-store --scenario b1-sequential --ops "$OPS"
-
-      - name: SyncedStore B2 (concurrent)
-        run: |
-          OPS="${{ github.event.inputs.synced_store_ops || '1000' }}"
-          # Halve B2 ops vs B1 — both sides write concurrently so we double
-          # the combined workload anyway.
-          B2_OPS="$(((OPS + 1) / 2))"
-          cargo run --locked -p truffle-bench --release -- \
-            synced-store --scenario b2-concurrent --ops "$B2_OPS"
-
-      - name: Request/reply RTT
-        run: |
-          COUNT="${{ github.event.inputs.request_reply_count || '500' }}"
-          cargo run --locked -p truffle-bench --release -- \
-            request-reply --count "$COUNT" --payload-bytes 1024
-
-      - name: Raw TCP and QUIC (same-host smoke and overhead)
+      # Legacy schema-2 transport runs, byte-compatible with tsnet-bench. They
+      # still run when a suite item failed, so the baseline is never lost.
+      - name: Raw TCP and QUIC (legacy transport, same-host)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           cargo run --locked -p truffle-bench --release -- transport --protocol tcp --bytes 1048576 --iterations 5 --warmup 1
           cargo run --locked -p truffle-bench --release -- transport --protocol quic --bytes 1048576 --iterations 5 --warmup 1 --concurrency 2
@@ -110,28 +95,39 @@ jobs:
       - name: Summarise results
         if: always()
         run: |
-          echo "## Bench results" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          if [ -d target/bench-results ]; then
+          {
+            echo "## Bench results"
+            echo '```'
+            found=0
             for f in target/bench-results/*.json; do
               [ -f "$f" ] || continue
-              echo "── $(basename "$f") ──" >> $GITHUB_STEP_SUMMARY
-              if command -v jq >/dev/null 2>&1; then
+              found=1
+              if ! command -v jq >/dev/null 2>&1; then
+                echo "── $(basename "$f") ──"
+                cat "$f"
+                echo ""
+              elif jq -e '.schema_version == 3' "$f" >/dev/null 2>&1; then
+                jq -r '
+                  "\(.workload) \(.status) \(.label)",
+                  (.summary[]? | "  \(.label): \(.value) \(.unit)"),
+                  (if .error then "  error: \(.error)" else empty end)
+                ' "$f"
+              else
+                echo "── $(basename "$f") ──"
                 jq -r '
                   "workload: \(.workload)",
                   "git_sha:  \(.git_sha // "n/a")",
                   "params:   \(.params | tostring)",
                   "results:  \(.results | tostring)"
-                ' "$f" >> $GITHUB_STEP_SUMMARY
-              else
-                cat "$f" >> $GITHUB_STEP_SUMMARY
+                ' "$f"
+                echo ""
               fi
-              echo "" >> $GITHUB_STEP_SUMMARY
             done
-          else
-            echo "(no results written — all benches failed)" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo '```' >> $GITHUB_STEP_SUMMARY
+            if [ "$found" = "0" ]; then
+              echo "(no results written — all benches failed)"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload bench results
         if: always()

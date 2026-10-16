@@ -1,0 +1,430 @@
+{
+  "compare_key": "fde1d47e4062f973",
+  "duration_ms": 14212,
+  "error": null,
+  "error_code": null,
+  "finished_at": "2026-10-16T08:00:14.212Z",
+  "git_dirty": false,
+  "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+  "label": "Path · 20 pings · 250 ms apart",
+  "local": {
+    "app_foreground_pct": null,
+    "arch": "aarch64",
+    "build_profile": "release",
+    "device_name": "studio-cli",
+    "git_dirty": false,
+    "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "host_fingerprint": "0f1e2d3c4b5a6978",
+    "host_fingerprint_weak": false,
+    "logical_cpus": 12,
+    "on_battery": false,
+    "os": "macos",
+    "rustc": "rustc 1.91.0 (f8297e351 2025-10-28)",
+    "sidecar_path": "crates/truffle-core/tests/test-sidecar",
+    "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+    "tailscale_ip": "100.64.0.1",
+    "tool": "truffle-bench-cli",
+    "tool_version": "0.1.0",
+    "truffle_version": "0.7.17"
+  },
+  "methodology": "v3",
+  "network": {
+    "after": {
+      "at": "2026-10-16T08:00:00.000Z",
+      "connection": "direct",
+      "endpoint": "192.0.2.10:41641",
+      "error": null,
+      "rtt_ms": 3.3
+    },
+    "before": {
+      "at": "2026-10-16T08:00:00.000Z",
+      "connection": "direct",
+      "endpoint": "192.0.2.10:41641",
+      "error": null,
+      "rtt_ms": 3.1
+    },
+    "clock": null,
+    "derp_share": 1.0685840327416905e-6,
+    "loaded_rtt_ms": null,
+    "path_bytes": {
+      "derp": 1240,
+      "direct": 1160412880,
+      "peer_relay": 0
+    },
+    "path_label": "direct",
+    "path_timeline": [],
+    "settle_ms": 412,
+    "topology": "separate-hosts"
+  },
+  "notes": [],
+  "overlapping_runs": 0,
+  "params": {
+    "count": 20,
+    "interval_ms": 250,
+    "workload": "path"
+  },
+  "peer": {
+    "app_foreground_pct": null,
+    "arch": "aarch64",
+    "build_profile": "release",
+    "device_name": "laptop",
+    "git_dirty": null,
+    "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "host_fingerprint": "a1b2c3d4e5f60718",
+    "host_fingerprint_weak": false,
+    "logical_cpus": 12,
+    "on_battery": null,
+    "os": "macos",
+    "rustc": null,
+    "sidecar_path": null,
+    "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+    "tailscale_ip": "100.64.0.2",
+    "tool": "truffle-bench-app",
+    "tool_version": "0.1.0",
+    "truffle_version": "0.7.17"
+  },
+  "resources": {
+    "combined": null,
+    "local": {
+      "cpu_ms": 812.0,
+      "cpu_ms_per_mb": 0.71,
+      "cpu_pct_avg": 8.12,
+      "cpu_pct_max": 10.15,
+      "rss_mb_max": 48.2,
+      "sidecar_cpu_ms": 1299.2,
+      "sidecar_cpu_ms_per_mb": 1.136,
+      "sidecar_cpu_pct_avg": 12.992,
+      "sidecar_cpu_pct_max": 16.240000000000002,
+      "sidecar_rss_mb_max": 61.9
+    },
+    "peer": {
+      "cpu_ms": 1044.0,
+      "cpu_ms_per_mb": 0.92,
+      "cpu_pct_avg": 10.44,
+      "cpu_pct_max": 13.05,
+      "rss_mb_max": 48.2,
+      "sidecar_cpu_ms": 1670.4,
+      "sidecar_cpu_ms_per_mb": 1.4720000000000002,
+      "sidecar_cpu_pct_avg": 16.704,
+      "sidecar_cpu_pct_max": 20.880000000000003,
+      "sidecar_rss_mb_max": 61.9
+    }
+  },
+  "results": {
+    "connections": {
+      "direct": 19
+    },
+    "discovery_ms": 140,
+    "first_rtt_ms": 3.41,
+    "hub_start_ms": 2310,
+    "loss_pct": 5.263157894736842,
+    "lost": 1,
+    "rtt_ms": {
+      "lost": 1,
+      "max": 1.5,
+      "mean": 1.2583333333333333,
+      "min": 1.17,
+      "p50": 1.24,
+      "p90": 1.5,
+      "p95": null,
+      "p99": null,
+      "p999": null,
+      "samples": 19,
+      "stddev": 0.08800066844665912
+    },
+    "samples": [
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 0,
+        "rtt_ms": 3.41,
+        "t_ms": 420.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 1,
+        "rtt_ms": 1.22,
+        "t_ms": 670.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 2,
+        "rtt_ms": 1.18,
+        "t_ms": 920.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 3,
+        "rtt_ms": 1.31,
+        "t_ms": 1170.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 4,
+        "rtt_ms": 1.19,
+        "t_ms": 1420.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 5,
+        "rtt_ms": 1.25,
+        "t_ms": 1670.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 6,
+        "rtt_ms": 1.42,
+        "t_ms": 1920.0
+      },
+      {
+        "connection": null,
+        "endpoint": null,
+        "error": "ping timed out after 5 s",
+        "i": 7,
+        "rtt_ms": null,
+        "t_ms": 2170.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 8,
+        "rtt_ms": 1.17,
+        "t_ms": 2420.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 9,
+        "rtt_ms": 1.28,
+        "t_ms": 2670.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 10,
+        "rtt_ms": 1.33,
+        "t_ms": 2920.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 11,
+        "rtt_ms": 1.21,
+        "t_ms": 3170.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 12,
+        "rtt_ms": 1.19,
+        "t_ms": 3420.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 13,
+        "rtt_ms": 1.24,
+        "t_ms": 3670.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 14,
+        "rtt_ms": 1.5,
+        "t_ms": 3920.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 15,
+        "rtt_ms": 1.23,
+        "t_ms": 4170.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 16,
+        "rtt_ms": 1.2,
+        "t_ms": 4420.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 17,
+        "rtt_ms": 1.26,
+        "t_ms": 4670.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 18,
+        "rtt_ms": 1.18,
+        "t_ms": 4920.0
+      },
+      {
+        "connection": "direct",
+        "endpoint": "192.0.2.10:41641",
+        "error": null,
+        "i": 19,
+        "rtt_ms": 1.29,
+        "t_ms": 5170.0
+      }
+    ],
+    "sent": 20,
+    "transitions": [],
+    "ws_connect_ms": 85
+  },
+  "run_id": "example-path-ok",
+  "schema_version": 3,
+  "series": [
+    {
+      "key": "rtt_ms",
+      "label": "RTT",
+      "points": [
+        [
+          420.0,
+          3.41
+        ],
+        [
+          670.0,
+          1.22
+        ],
+        [
+          920.0,
+          1.18
+        ],
+        [
+          1170.0,
+          1.31
+        ],
+        [
+          1420.0,
+          1.19
+        ],
+        [
+          1670.0,
+          1.25
+        ],
+        [
+          1920.0,
+          1.42
+        ],
+        [
+          2420.0,
+          1.17
+        ],
+        [
+          2670.0,
+          1.28
+        ],
+        [
+          2920.0,
+          1.33
+        ],
+        [
+          3170.0,
+          1.21
+        ],
+        [
+          3420.0,
+          1.19
+        ],
+        [
+          3670.0,
+          1.24
+        ],
+        [
+          3920.0,
+          1.5
+        ],
+        [
+          4170.0,
+          1.23
+        ],
+        [
+          4420.0,
+          1.2
+        ],
+        [
+          4670.0,
+          1.26
+        ],
+        [
+          4920.0,
+          1.18
+        ],
+        [
+          5170.0,
+          1.29
+        ]
+      ],
+      "unit": "ms",
+      "warmup_ms": 420.0
+    }
+  ],
+  "started_at": "2026-10-16T08:00:00.000Z",
+  "status": "ok",
+  "suite_id": null,
+  "summary": [
+    {
+      "better": "lower",
+      "key": "rtt_min_ms",
+      "label": "RTT min",
+      "uncertainty": null,
+      "unit": "ms",
+      "value": 1.17
+    },
+    {
+      "better": "lower",
+      "key": "rtt_p50_ms",
+      "label": "RTT p50",
+      "uncertainty": null,
+      "unit": "ms",
+      "value": 1.24
+    },
+    {
+      "better": "lower",
+      "key": "rtt_max_ms",
+      "label": "RTT max",
+      "uncertainty": null,
+      "unit": "ms",
+      "value": 1.5
+    },
+    {
+      "better": "lower",
+      "key": "loss_pct",
+      "label": "Loss",
+      "uncertainty": null,
+      "unit": "%",
+      "value": 5.263157894736842
+    }
+  ],
+  "tool": "truffle-bench-cli",
+  "tool_version": "0.1.0",
+  "truffle_version": "0.7.17",
+  "workload": "path"
+}

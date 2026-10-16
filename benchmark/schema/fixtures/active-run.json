@@ -1,0 +1,28 @@
+{
+  "last": {
+    "fraction": 0.4300000071525574,
+    "message": null,
+    "phase": "running",
+    "run_id": "2f0c7a1e-5b3d-4c8a-9e6f-1a2b3c4d5e6f",
+    "samples": [
+      {
+        "key": "goodput_mbps",
+        "value": 912.4
+      },
+      {
+        "key": "sent_mbps",
+        "value": 930.2
+      }
+    ],
+    "suite_id": "6a1d2c3b-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+    "t_ms": 5250
+  },
+  "peer_name": "laptop",
+  "run_id": "2f0c7a1e-5b3d-4c8a-9e6f-1a2b3c4d5e6f",
+  "started_at": "2026-10-16T08:00:00.000Z",
+  "suite_id": "6a1d2c3b-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+  "suite_index": 1,
+  "suite_profile": "smoke",
+  "suite_total": 10,
+  "workload": "tcp"
+}

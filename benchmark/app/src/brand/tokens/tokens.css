@@ -1,0 +1,113 @@
+/* James Yong identity: tokens. Generated from tokens.json. Light by default, dark by system preference or data-theme="dark". */
+@font-face { font-family: 'Jost'; src: url(../fonts/Jost-Variable.woff2) format('woff2'); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Jost'; src: url(../fonts/Jost-Italic-Variable.woff2) format('woff2'); font-weight: 100 900; font-style: italic; font-display: swap; }
+@font-face { font-family: 'DM Mono'; src: url(../fonts/DMMono-Light.woff2) format('woff2'); font-weight: 300; font-style: normal; font-display: swap; }
+@font-face { font-family: 'DM Mono'; src: url(../fonts/DMMono-Regular.woff2) format('woff2'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'DM Mono'; src: url(../fonts/DMMono-Medium.woff2) format('woff2'); font-weight: 500; font-style: normal; font-display: swap; }
+:root {
+  --ground: #fafaf7;
+  --ground-raised: #ffffff;
+  --ground-sunken: #f1f1ec;
+  --rule: #e3e3dd;
+  --rule-strong: #8a8a83;
+  --ink: #0a0a0a;
+  --ink-2: #3d3d39;
+  --ink-3: #6a6a64;
+  --on-ink: #fafaf7;
+  --blueline: #a4dded;
+  --blueline-ink: #176b82;
+  --blueline-wash: #e2f3f8;
+  --redline: #c23a22;
+  --focus: var(--blueline-ink);
+  --link: var(--ink);
+  --brand-ink: #0a0a0a;
+  --brand-paper: #fafaf7;
+  --brand-blue: #a4dded;
+  --focus-ring: 0 0 0 2px #fafaf7, 0 0 0 4px #176b82;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+  --space-9: 96px;
+  --space-10: 128px;
+  --radius-square: 0;
+  --radius-round: 9999px;
+  --stroke-hairline: 1px;
+  --stroke-strong: 2px;
+  --mark-xs: 16px;
+  --mark-sm: 24px;
+  --mark-md: 48px;
+  --mark-lg: 96px;
+  --duration-tick: 120ms;
+  --duration-step: 240ms;
+  --duration-reveal: 640ms;
+  --easing-settle: cubic-bezier(0.2, 0.7, 0.3, 1.157);
+  --easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --easing-exit: cubic-bezier(0.4, 0, 1, 1);
+  --font-sans: Jost, "Futura PT", Futura, "Century Gothic", system-ui, sans-serif;
+  --font-mono: "DM Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0a0a0a;
+    --ground-raised: #171716;
+    --ground-sunken: #121211;
+    --rule: #262624;
+    --rule-strong: #71716a;
+    --ink: #fafaf7;
+    --ink-2: #c9c9c2;
+    --ink-3: #97978f;
+    --on-ink: #0a0a0a;
+    --blueline: #3f7f92;
+    --blueline-ink: #a4dded;
+    --blueline-wash: #0f2a32;
+    --redline: #ff8a75;
+    --focus: var(--blueline-ink);
+    --link: var(--ink);
+    --brand-ink: #0a0a0a;
+    --brand-paper: #fafaf7;
+    --brand-blue: #a4dded;
+    --focus-ring: 0 0 0 2px #0a0a0a, 0 0 0 4px #a4dded;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #0a0a0a;
+  --ground-raised: #171716;
+  --ground-sunken: #121211;
+  --rule: #262624;
+  --rule-strong: #71716a;
+  --ink: #fafaf7;
+  --ink-2: #c9c9c2;
+  --ink-3: #97978f;
+  --on-ink: #0a0a0a;
+  --blueline: #3f7f92;
+  --blueline-ink: #a4dded;
+  --blueline-wash: #0f2a32;
+  --redline: #ff8a75;
+  --focus: var(--blueline-ink);
+  --link: var(--ink);
+  --brand-ink: #0a0a0a;
+  --brand-paper: #fafaf7;
+  --brand-blue: #a4dded;
+  --focus-ring: 0 0 0 2px #0a0a0a, 0 0 0 4px #a4dded;
+  color-scheme: dark;
+}
+body { background: var(--ground); color: var(--ink); font-family: var(--font-sans); }
+.display-xl { font-family: var(--font-sans); font-size: 96px; line-height: 96px; font-weight: 500; letter-spacing: -0.02em; }
+.display { font-family: var(--font-sans); font-size: 64px; line-height: 68px; font-weight: 500; letter-spacing: -0.015em; }
+.title { font-family: var(--font-sans); font-size: 40px; line-height: 48px; font-weight: 500; letter-spacing: -0.01em; }
+.heading { font-family: var(--font-sans); font-size: 28px; line-height: 36px; font-weight: 500; letter-spacing: 0; }
+.subheading { font-family: var(--font-sans); font-size: 20px; line-height: 28px; font-weight: 500; letter-spacing: 0; }
+.lead { font-family: var(--font-sans); font-size: 21px; line-height: 34px; font-weight: 400; letter-spacing: 0; }
+.body { font-family: var(--font-sans); font-size: 18px; line-height: 30px; font-weight: 400; letter-spacing: 0; }
+.small { font-family: var(--font-sans); font-size: 15px; line-height: 24px; font-weight: 400; letter-spacing: 0; }
+.label { font-family: var(--font-sans); font-size: 12px; line-height: 16px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; }
+.spec { font-family: var(--font-mono); font-size: 13px; line-height: 20px; font-weight: 400; letter-spacing: 0; }
+.annotation { font-family: var(--font-mono); font-size: 11px; line-height: 14px; font-weight: 400; letter-spacing: 0.02em; }
+.code { font-family: var(--font-mono); font-size: 14px; line-height: 22px; font-weight: 400; letter-spacing: 0; }

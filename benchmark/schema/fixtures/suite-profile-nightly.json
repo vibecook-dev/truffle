@@ -1,0 +1,304 @@
+{
+  "description": "Full without the UDP payload sweep or video over TCP, every duration capped at 10 s. Release builds only.",
+  "id": "nightly",
+  "items": [
+    {
+      "count": 20,
+      "interval_ms": 250,
+      "workload": "path"
+    },
+    {
+      "count": 200,
+      "direction": "upload",
+      "duration_secs": 10,
+      "mode": "throughput",
+      "nodelay": true,
+      "payload_bytes": 64,
+      "streams": 1,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "tcp"
+    },
+    {
+      "direction": "upload",
+      "duration_secs": 10,
+      "mode": "stream",
+      "payload_bytes": 1200,
+      "pps": 50,
+      "rate_mbps": 10.0,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "udp"
+    },
+    {
+      "count": 200,
+      "direction": "upload",
+      "duration_secs": 10,
+      "mode": "throughput",
+      "payload_bytes": 64,
+      "streams": 4,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "quic"
+    },
+    {
+      "concurrency": 1,
+      "count": 500,
+      "duration_secs": 10,
+      "mode": "rr",
+      "payload_bytes": 64,
+      "rate_per_sec": null,
+      "warmup_count": 10,
+      "workload": "ws"
+    },
+    {
+      "iterations": 3,
+      "size_bytes": 10485760,
+      "workload": "file-transfer"
+    },
+    {
+      "count": 100,
+      "mode": "pingpong",
+      "payload_bytes": 64,
+      "warmup_count": 5,
+      "workload": "synced-store"
+    },
+    {
+      "concurrency": 4,
+      "connection": "keepalive",
+      "duration_secs": 10,
+      "response_bytes": 1024,
+      "target": "proxy",
+      "warmup_secs": 1,
+      "workload": "http"
+    },
+    {
+      "bitrate_mbps": null,
+      "duration_secs": 10,
+      "fps": null,
+      "gop": 60,
+      "jitter_buffer_ms": 100,
+      "keyframe_ratio": 8,
+      "pacing": "paced",
+      "profile": "1080p30",
+      "transport": "udp",
+      "warmup_secs": 1,
+      "workload": "video"
+    },
+    {
+      "direction": "upload",
+      "duration_secs": 10,
+      "streams": 1,
+      "warmup_secs": 1,
+      "workload": "egress"
+    },
+    {
+      "count": 200,
+      "direction": "download",
+      "duration_secs": 10,
+      "mode": "throughput",
+      "nodelay": true,
+      "payload_bytes": 64,
+      "streams": 1,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "tcp"
+    },
+    {
+      "count": 200,
+      "direction": "bidirectional",
+      "duration_secs": 10,
+      "mode": "throughput",
+      "nodelay": true,
+      "payload_bytes": 64,
+      "streams": 1,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "tcp"
+    },
+    {
+      "count": 200,
+      "direction": "upload",
+      "duration_secs": 10,
+      "mode": "throughput",
+      "nodelay": true,
+      "payload_bytes": 64,
+      "streams": 4,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "tcp"
+    },
+    {
+      "count": 200,
+      "direction": "upload",
+      "duration_secs": 10,
+      "mode": "latency",
+      "nodelay": true,
+      "payload_bytes": 64,
+      "streams": 1,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "tcp"
+    },
+    {
+      "count": 200,
+      "direction": "upload",
+      "duration_secs": 10,
+      "mode": "latency",
+      "nodelay": false,
+      "payload_bytes": 64,
+      "streams": 1,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "tcp"
+    },
+    {
+      "count": 200,
+      "direction": "upload",
+      "duration_secs": 10,
+      "mode": "latency",
+      "nodelay": true,
+      "payload_bytes": 1024,
+      "streams": 1,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "tcp"
+    },
+    {
+      "count": 200,
+      "direction": "upload",
+      "duration_secs": 10,
+      "mode": "latency",
+      "nodelay": false,
+      "payload_bytes": 1024,
+      "streams": 1,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "tcp"
+    },
+    {
+      "count": 200,
+      "direction": "upload",
+      "duration_secs": 10,
+      "mode": "latency",
+      "nodelay": true,
+      "payload_bytes": 32768,
+      "streams": 1,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "tcp"
+    },
+    {
+      "count": 200,
+      "direction": "upload",
+      "duration_secs": 10,
+      "mode": "latency",
+      "nodelay": false,
+      "payload_bytes": 32768,
+      "streams": 1,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "tcp"
+    },
+    {
+      "direction": "upload",
+      "duration_secs": 10,
+      "mode": "echo",
+      "payload_bytes": 1200,
+      "pps": 50,
+      "rate_mbps": 10.0,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "udp"
+    },
+    {
+      "direction": "upload",
+      "duration_secs": 30,
+      "mode": "ramp",
+      "payload_bytes": 1200,
+      "pps": 50,
+      "rate_mbps": 50.0,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "udp"
+    },
+    {
+      "count": 200,
+      "direction": "upload",
+      "duration_secs": 10,
+      "mode": "latency",
+      "payload_bytes": 64,
+      "streams": 4,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "quic"
+    },
+    {
+      "concurrency": 1,
+      "count": 500,
+      "duration_secs": 10,
+      "mode": "stream",
+      "payload_bytes": 64,
+      "rate_per_sec": null,
+      "warmup_count": 10,
+      "workload": "ws"
+    },
+    {
+      "count": 100,
+      "mode": "burst",
+      "payload_bytes": 64,
+      "warmup_count": 5,
+      "workload": "synced-store"
+    },
+    {
+      "concurrency": 4,
+      "connection": "keepalive",
+      "duration_secs": 10,
+      "response_bytes": 1024,
+      "target": "direct",
+      "warmup_secs": 1,
+      "workload": "http"
+    },
+    {
+      "concurrency": 4,
+      "connection": "new",
+      "duration_secs": 10,
+      "response_bytes": 1024,
+      "target": "proxy",
+      "warmup_secs": 1,
+      "workload": "http"
+    },
+    {
+      "concurrency": 1,
+      "connection": "keepalive",
+      "duration_secs": 10,
+      "response_bytes": 1024,
+      "target": "proxy",
+      "warmup_secs": 1,
+      "workload": "http"
+    },
+    {
+      "concurrency": 2,
+      "connection": "keepalive",
+      "duration_secs": 10,
+      "response_bytes": 1024,
+      "target": "proxy",
+      "warmup_secs": 1,
+      "workload": "http"
+    },
+    {
+      "bitrate_mbps": null,
+      "duration_secs": 10,
+      "fps": null,
+      "gop": 60,
+      "jitter_buffer_ms": 100,
+      "keyframe_ratio": 8,
+      "pacing": "paced",
+      "profile": "1080p30",
+      "transport": "quic",
+      "warmup_secs": 1,
+      "workload": "video"
+    }
+  ],
+  "label": "Nightly"
+}

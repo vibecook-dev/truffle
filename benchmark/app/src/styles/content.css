@@ -1,0 +1,671 @@
+/* truffle bench, content pieces. Each block names the Home selector it was adapted from
+   (career/home/styles/home.css unless noted). */
+
+/* ------------------------------------------------------------ pages (.page-wrap, .page, .page-head, .sec) */
+.page-wrap {
+  padding: 32px 40px 96px;
+}
+.page {
+  position: relative;
+  max-width: 1120px;
+  margin: 0 auto;
+  display: grid;
+  gap: 32px;
+  grid-template-columns: minmax(0, 1fr);
+}
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px 32px;
+  flex-wrap: wrap;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--rule);
+}
+.ph-text {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  max-width: 760px;
+}
+/* a view title is .heading 28/36, smaller than Home's 40/48: one display size per view */
+.page-head h1 {
+  font-size: 28px;
+  line-height: 36px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-wrap: balance;
+}
+.lede {
+  font-size: 16px;
+  line-height: 26px;
+  color: var(--ink-2);
+  max-width: 64ch;
+}
+.ph-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.sec {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  align-content: start;
+  grid-template-columns: minmax(0, 1fr);
+}
+.sec-head {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 6px 14px;
+  flex-wrap: wrap;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--rule);
+}
+.sec-head h2 {
+  color: var(--ink);
+}
+.sec-meta {
+  min-width: 0;
+}
+.sec-actions {
+  /* small buttons sit in the head without making it taller than its neighbours */
+  position: absolute;
+  right: 0;
+  bottom: 4px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.sec.plain .sec-head {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+/* ------------------------------------------------------------ status: the mark's square says the state (.status, :136-161)
+   filled = live/done, outlined = waiting, half = running, dashed = planned,
+   redline = failed (always with its label), a flat line = offline */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.status i {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border: 1.5px solid currentColor;
+}
+.status.s-live i,
+.status.s-done i {
+  background: currentColor;
+}
+.status.s-done {
+  color: var(--ink-3);
+}
+.status.s-waiting i {
+  background: transparent;
+}
+.status.s-running {
+  color: var(--ink);
+}
+.status.s-running i {
+  background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+}
+.status.s-planned {
+  color: var(--ink-3);
+}
+.status.s-planned i {
+  border-style: dashed;
+  border-width: 1px;
+}
+.status.s-failed {
+  color: var(--redline);
+}
+.status.s-failed i {
+  background: currentColor;
+}
+.status.s-off {
+  color: var(--ink-3);
+}
+.status.s-off i {
+  height: 0;
+  border-width: 1px 0 0;
+  width: 9px;
+}
+
+/* ------------------------------------------------------------ notices (base.css .notice, :351-352) */
+.notice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 10px;
+  align-items: start;
+  border: 1px solid var(--rule-strong);
+  background: var(--ground-raised);
+  padding: 10px 12px;
+  color: var(--ink);
+}
+.notice > .icon {
+  margin-top: 2px;
+  color: var(--ink-2);
+}
+.notice .n-body {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.notice .n-title {
+  font-weight: 500;
+}
+.notice .n-text {
+  color: var(--ink-2);
+}
+.notice .n-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.notice.error {
+  border-color: var(--redline);
+  background: var(--redline-wash);
+}
+.notice.error > .icon {
+  color: var(--redline);
+}
+.notice.quiet {
+  border-color: var(--rule);
+  background: var(--ground-sunken);
+}
+
+/* ------------------------------------------------------------ empty states (.empty, :205) */
+.empty {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  padding: 24px;
+  border: 1px dashed var(--rule-strong);
+  color: var(--ink-2);
+}
+.empty .e-title {
+  color: var(--ink);
+  font-weight: 500;
+}
+.empty .e-text {
+  max-width: 64ch;
+}
+.empty .e-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+/* ------------------------------------------------------------ toast (base.css .toast, :500-513) */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 60;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 10px 14px;
+  background: var(--ink);
+  color: var(--on-ink);
+  border-left: 3px solid var(--rule-strong);
+  pointer-events: none;
+  animation: toast-in var(--duration-step) var(--easing-settle) both;
+}
+.toast.error {
+  border-left-color: var(--redline);
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+/* ------------------------------------------------------------ popover and menu (base.css :418-449) */
+.pop-anchor {
+  position: relative;
+}
+.popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  width: min(380px, calc(100vw - 32px));
+  max-height: min(70vh, 640px);
+  overflow: auto;
+  background: var(--ground-raised);
+  border: 1px solid var(--rule-strong);
+  padding: 12px;
+  display: grid;
+  gap: 12px;
+}
+.popover.left {
+  left: 0;
+  right: auto;
+}
+.menu-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+.menu-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+}
+.menu-item:hover {
+  background: var(--ground-sunken);
+}
+.menu-item[aria-current='true'] {
+  background: var(--blueline-wash);
+}
+
+/* ------------------------------------------------------------ tooltip: ground-raised, rule-strong edge, no shadow */
+.tip-anchor {
+  position: relative;
+  display: inline-flex;
+}
+.tip {
+  position: absolute;
+  z-index: 50;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 280px;
+  padding: 6px 8px;
+  background: var(--ground-raised);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 18px;
+  white-space: normal;
+  pointer-events: none;
+}
+.tip.below {
+  bottom: auto;
+  top: calc(100% + 6px);
+}
+
+/* ------------------------------------------------------------ tables (.token-table, :499-505) */
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--rule);
+  background: var(--ground-raised);
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  line-height: 20px;
+}
+.table th,
+.table td {
+  text-align: left;
+  vertical-align: middle;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+.table th {
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  background: var(--ground-sunken);
+  white-space: nowrap;
+}
+.table tr:last-child td {
+  border-bottom: 0;
+}
+.table td.num,
+.table th.num {
+  text-align: right;
+}
+.table td.num {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.table tbody tr.clickable {
+  cursor: pointer;
+  transition: background-color var(--duration-tick) var(--easing-standard);
+}
+.table tbody tr.clickable:hover {
+  background: var(--ground-sunken);
+}
+/* selected rows: blueline-wash with an inset bar (base.css .ol-row.selected) */
+.table tbody tr.selected {
+  background: var(--blueline-wash);
+  box-shadow: inset 2px 0 0 var(--blueline-ink);
+}
+.table tbody tr.dim td {
+  color: var(--ink-3);
+}
+.table.compact th,
+.table.compact td {
+  padding: 6px 10px;
+}
+.table.plain {
+  background: transparent;
+}
+
+/* ------------------------------------------------------------ facts (.tc-facts, :308-311) */
+.facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+}
+.facts > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--rule);
+}
+.facts > div:last-child {
+  border-bottom: 0;
+}
+.facts dt {
+  flex: none;
+  color: var(--ink-3);
+}
+.facts dd {
+  margin: 0;
+  text-align: right;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.facts dd.num {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+/* ------------------------------------------------------------ cards (.tool-card, :304-312; .card base.css :350) */
+.card {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  padding: 20px;
+  border: 1px solid var(--rule);
+  background: var(--ground-raised);
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+.card.planned {
+  background: transparent;
+  border: 1px dashed var(--rule-strong);
+}
+.card.failed {
+  box-shadow: inset 3px 0 0 var(--redline);
+}
+.card-head {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+.card-head h3 {
+  font-size: 18px;
+  line-height: 26px;
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+a.card,
+button.card {
+  color: var(--ink);
+  text-decoration: none;
+  text-align: left;
+  font: inherit;
+  transition: border-color var(--duration-tick) var(--easing-standard);
+}
+a.card:hover,
+button.card:hover {
+  border-color: var(--rule-strong);
+}
+/* a card whose title is its button: the button's ::after covers the card (a stretched link),
+   so the whole card clicks while its content stays readable */
+.card.linked {
+  position: relative;
+  transition: border-color var(--duration-tick) var(--easing-standard);
+}
+.card.linked:hover {
+  border-color: var(--rule-strong);
+}
+.card-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+.card-link::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+.card-link:focus-visible {
+  box-shadow: none;
+}
+.card-link:focus-visible::after {
+  box-shadow: var(--focus-ring);
+}
+
+/* fact card: a headline number, its sparkline and the facts behind it */
+.fact-card .fc-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 2px 12px;
+}
+.fact-card .fc-sub {
+  color: var(--ink-3);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ KPI: DM Mono 500 28/36 with the unit in ink-3 .annotation */
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  border: 1px solid var(--rule);
+  background: var(--ground-raised);
+}
+.kpi {
+  display: grid;
+  gap: 2px;
+  align-content: start;
+  padding: 12px 16px 14px;
+  min-width: 0;
+  border-left: 1px solid var(--rule);
+}
+.kpi:first-child {
+  border-left: 0;
+}
+.kpi .k-label {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.kpi .k-value {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.kpi .k-num {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 28px;
+  line-height: 36px;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.kpi .k-unit {
+  color: var(--ink-3);
+}
+.kpi .k-sub {
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.kpi.pending .k-num {
+  color: var(--ink-3);
+}
+.kpi.bad .k-num {
+  color: var(--redline);
+}
+.kpi.lg .k-num {
+  font-size: 40px;
+  line-height: 48px;
+}
+.kpi-inline {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.kpi-inline .k-num {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 24px;
+  line-height: 32px;
+}
+.kpi-inline .k-unit {
+  color: var(--ink-3);
+}
+
+/* ------------------------------------------------------------ meters (base.css .fit; home.css .charmeter) */
+.meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-3);
+  min-width: 0;
+}
+.meter .bar {
+  position: relative;
+  width: 96px;
+  height: 4px;
+  background: var(--rule);
+  overflow: hidden;
+  flex: none;
+}
+.meter .bar i {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--ink);
+}
+.meter.wide {
+  display: flex;
+}
+.meter.wide .bar {
+  flex: 1 1 auto;
+  width: auto;
+}
+.meter.bad .bar i {
+  background: var(--redline);
+}
+
+/* ------------------------------------------------------------ chips (.tool-chip, :165-176; square, never pills) */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--rule-strong);
+  background: var(--ground-raised);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.chip.planned,
+.chip.quiet {
+  border-style: dashed;
+  background: transparent;
+  color: var(--ink-3);
+}
+.chip.flag {
+  border-color: var(--rule);
+  background: var(--ground-sunken);
+}
+
+/* keyboard key: JY.Kbd carries its own style; this is the small inline version (base.css .kbd) */
+.kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-2);
+}
+
+/* dl rows of label + control, for settings and the sign-in form */
+.form-rows {
+  display: grid;
+}
+.form-row {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 8px 24px;
+  align-items: start;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.kpi-row.dense .kpi {
+  padding: 12px 12px 14px;
+}
+.kpi-row.dense .kpi .k-num {
+  font-size: 24px;
+  line-height: 36px;
+}
+.kpi-row.dense .kpi .k-value {
+  gap: 4px;
+}

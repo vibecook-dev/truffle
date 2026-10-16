@@ -1,0 +1,26 @@
+{
+  "auth_url": null,
+  "error": null,
+  "local": {
+    "app_id": "truffle-bench",
+    "device_id": "01JA7Q8Z3V5X2K9M4N6P8R0T1W",
+    "device_name": "studio",
+    "dns_name": "truffle-truffle-bench-studio.tail1234.ts.net.",
+    "health": {
+      "healthy": true,
+      "key_expiry": "2027-04-14T08:00:00Z",
+      "state": "Running",
+      "warnings": []
+    },
+    "hub_start_ms": 2310,
+    "login_name": "james@example.com",
+    "sidecar_path": "/Applications/truffle bench.app/Contents/MacOS/sidecar-slim",
+    "tailnet": "tail1234.ts.net",
+    "tailscale_hostname": "truffle-truffle-bench-studio",
+    "tailscale_id": "nSTUDIO1CNTRL",
+    "tailscale_ip": "100.64.0.1"
+  },
+  "since_ms": 1760601600000,
+  "state": "running",
+  "tailscale_hostname": "truffle-truffle-bench-studio"
+}

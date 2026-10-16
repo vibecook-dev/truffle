@@ -1,0 +1,1146 @@
+{
+  "compare_key": "a85babebfc7ac099",
+  "duration_ms": 14212,
+  "error": null,
+  "error_code": null,
+  "finished_at": "2026-10-16T08:00:14.212Z",
+  "git_dirty": false,
+  "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+  "label": "UDP ramp · upload · from 10 Mb/s · 1200 B · 10 s",
+  "local": {
+    "app_foreground_pct": null,
+    "arch": "aarch64",
+    "build_profile": "release",
+    "device_name": "studio-cli",
+    "git_dirty": false,
+    "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "host_fingerprint": "0f1e2d3c4b5a6978",
+    "host_fingerprint_weak": false,
+    "logical_cpus": 12,
+    "on_battery": false,
+    "os": "macos",
+    "rustc": "rustc 1.91.0 (f8297e351 2025-10-28)",
+    "sidecar_path": "crates/truffle-core/tests/test-sidecar",
+    "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+    "tailscale_ip": "100.64.0.1",
+    "tool": "truffle-bench-cli",
+    "tool_version": "0.1.0",
+    "truffle_version": "0.7.17"
+  },
+  "methodology": "v3",
+  "network": {
+    "after": {
+      "at": "2026-10-16T08:00:00.000Z",
+      "connection": "direct",
+      "endpoint": "192.0.2.10:41641",
+      "error": null,
+      "rtt_ms": 3.3
+    },
+    "before": {
+      "at": "2026-10-16T08:00:00.000Z",
+      "connection": "direct",
+      "endpoint": "192.0.2.10:41641",
+      "error": null,
+      "rtt_ms": 3.1
+    },
+    "clock": {
+      "after": {
+        "at_ns": 1760601610400000000,
+        "delay_ns": 824000,
+        "offset_ns": -1253300,
+        "samples": 16,
+        "uncertainty_ns": 412000
+      },
+      "before": {
+        "at_ns": 1760601600400000000,
+        "delay_ns": 824000,
+        "offset_ns": -1284310,
+        "samples": 16,
+        "uncertainty_ns": 412000
+      },
+      "drift_ppm": 3.101,
+      "uncertainty_ns": 412000
+    },
+    "derp_share": 1.0685840327416905e-6,
+    "loaded_rtt_ms": {
+      "lost": 0,
+      "max": 5.4,
+      "mean": 4.3999999999999995,
+      "min": 3.4,
+      "p50": 4.2,
+      "p90": null,
+      "p95": null,
+      "p99": null,
+      "p999": null,
+      "samples": 6,
+      "stddev": 0.7483314773547884
+    },
+    "path_bytes": {
+      "derp": 1240,
+      "direct": 1160412880,
+      "peer_relay": 0
+    },
+    "path_label": "direct",
+    "path_timeline": [
+      {
+        "connection": "direct",
+        "rtt_ms": 3.4,
+        "t_ms": 500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 3.8,
+        "t_ms": 1000
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 4.2,
+        "t_ms": 1500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 4.6,
+        "t_ms": 2000
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 5.0,
+        "t_ms": 2500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 5.4,
+        "t_ms": 3000
+      }
+    ],
+    "settle_ms": 412,
+    "topology": "separate-hosts"
+  },
+  "notes": [
+    "IPv4 only",
+    "loss is end to end, including loopback relay drops",
+    "loss locality is an approximation from usermetrics packet counts: other traffic on both sidecars counts too",
+    "ramp stopped: the run ended first"
+  ],
+  "overlapping_runs": 0,
+  "params": {
+    "direction": "upload",
+    "duration_secs": 10,
+    "mode": "ramp",
+    "payload_bytes": 1200,
+    "pps": 50,
+    "rate_mbps": 10.0,
+    "warmup_count": 10,
+    "warmup_secs": 1,
+    "workload": "udp"
+  },
+  "peer": {
+    "app_foreground_pct": null,
+    "arch": "aarch64",
+    "build_profile": "release",
+    "device_name": "laptop",
+    "git_dirty": null,
+    "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "host_fingerprint": "a1b2c3d4e5f60718",
+    "host_fingerprint_weak": false,
+    "logical_cpus": 12,
+    "on_battery": null,
+    "os": "macos",
+    "rustc": null,
+    "sidecar_path": null,
+    "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+    "tailscale_ip": "100.64.0.2",
+    "tool": "truffle-bench-app",
+    "tool_version": "0.1.0",
+    "truffle_version": "0.7.17"
+  },
+  "resources": {
+    "combined": null,
+    "local": {
+      "cpu_ms": 812.0,
+      "cpu_ms_per_mb": 0.71,
+      "cpu_pct_avg": 8.12,
+      "cpu_pct_max": 10.15,
+      "rss_mb_max": 48.2,
+      "sidecar_cpu_ms": 1299.2,
+      "sidecar_cpu_ms_per_mb": 1.136,
+      "sidecar_cpu_pct_avg": 12.992,
+      "sidecar_cpu_pct_max": 16.240000000000002,
+      "sidecar_rss_mb_max": 61.9
+    },
+    "peer": {
+      "cpu_ms": 1044.0,
+      "cpu_ms_per_mb": 0.92,
+      "cpu_pct_avg": 10.44,
+      "cpu_pct_max": 13.05,
+      "rss_mb_max": 48.2,
+      "sidecar_cpu_ms": 1670.4,
+      "sidecar_cpu_ms_per_mb": 1.4720000000000002,
+      "sidecar_cpu_pct_avg": 16.704,
+      "sidecar_cpu_pct_max": 20.880000000000003,
+      "sidecar_rss_mb_max": 61.9
+    }
+  },
+  "results": {
+    "bad_datagrams": 0,
+    "bucket_first_seq": [
+      0,
+      261,
+      521,
+      782,
+      1042,
+      1303,
+      1563,
+      1823,
+      2084,
+      2344,
+      2605,
+      2865,
+      3125,
+      3386,
+      3646,
+      3907,
+      4167,
+      4558,
+      4948,
+      5339,
+      5730,
+      6120,
+      6511,
+      6901,
+      7292,
+      7683,
+      8073,
+      8464,
+      8855,
+      9440,
+      10026,
+      10612,
+      11198,
+      11784,
+      12370,
+      12956,
+      13542,
+      14127,
+      14713,
+      15299,
+      15885,
+      16764,
+      17643,
+      18522
+    ],
+    "bucket_loss": [
+      {
+        "missing": 0,
+        "sent": 261
+      },
+      {
+        "missing": 0,
+        "sent": 260
+      },
+      {
+        "missing": 0,
+        "sent": 261
+      },
+      {
+        "missing": 0,
+        "sent": 260
+      },
+      {
+        "missing": 0,
+        "sent": 261
+      },
+      {
+        "missing": 0,
+        "sent": 260
+      },
+      {
+        "missing": 0,
+        "sent": 260
+      },
+      {
+        "missing": 0,
+        "sent": 261
+      },
+      {
+        "missing": 0,
+        "sent": 260
+      },
+      {
+        "missing": 0,
+        "sent": 261
+      },
+      {
+        "missing": 0,
+        "sent": 260
+      },
+      {
+        "missing": 0,
+        "sent": 260
+      },
+      {
+        "missing": 0,
+        "sent": 261
+      },
+      {
+        "missing": 0,
+        "sent": 260
+      },
+      {
+        "missing": 0,
+        "sent": 261
+      },
+      {
+        "missing": 0,
+        "sent": 260
+      },
+      {
+        "missing": 0,
+        "sent": 391
+      },
+      {
+        "missing": 0,
+        "sent": 390
+      },
+      {
+        "missing": 0,
+        "sent": 391
+      },
+      {
+        "missing": 0,
+        "sent": 391
+      },
+      {
+        "missing": 0,
+        "sent": 390
+      },
+      {
+        "missing": 0,
+        "sent": 391
+      },
+      {
+        "missing": 1,
+        "sent": 390
+      },
+      {
+        "missing": 0,
+        "sent": 391
+      },
+      {
+        "missing": 0,
+        "sent": 391
+      },
+      {
+        "missing": 0,
+        "sent": 390
+      },
+      {
+        "missing": 0,
+        "sent": 391
+      },
+      {
+        "missing": 1,
+        "sent": 391
+      },
+      {
+        "missing": 0,
+        "sent": 585
+      },
+      {
+        "missing": 171,
+        "sent": 586
+      },
+      {
+        "missing": 39,
+        "sent": 586
+      },
+      {
+        "missing": 0,
+        "sent": 586
+      },
+      {
+        "missing": 0,
+        "sent": 586
+      },
+      {
+        "missing": 0,
+        "sent": 586
+      },
+      {
+        "missing": 0,
+        "sent": 586
+      },
+      {
+        "missing": 0,
+        "sent": 586
+      },
+      {
+        "missing": 0,
+        "sent": 585
+      },
+      {
+        "missing": 0,
+        "sent": 586
+      },
+      {
+        "missing": 0,
+        "sent": 586
+      },
+      {
+        "missing": 0,
+        "sent": 586
+      },
+      {
+        "missing": 0,
+        "sent": 879
+      },
+      {
+        "missing": 0,
+        "sent": 879
+      },
+      {
+        "missing": 0,
+        "sent": 879
+      },
+      {
+        "missing": 0,
+        "sent": 879
+      }
+    ],
+    "direction": "upload",
+    "drain_ms": 500.0,
+    "drained_by": "last_seq",
+    "dup": 0,
+    "foreign_dropped": 0,
+    "goodput_bytes": 21776400,
+    "goodput_mbps": 17.421243885949522,
+    "jitter_ms": 0.08769129429013038,
+    "limit_found": true,
+    "loss_locality": {
+      "local_recv_drops": 3,
+      "local_send_drops": 0,
+      "network": 209,
+      "packets_per_datagram": 1
+    },
+    "loss_pct": 1.0927271790113913,
+    "max_burst_datagrams": 3,
+    "max_loss_burst": 210,
+    "max_sustainable_mbps": 15.0,
+    "missing": 212,
+    "mode": "ramp",
+    "offered_mbps": 16.931018545326435,
+    "out_of_range": 0,
+    "pacer_late_ms_mean": 0.38,
+    "payload_bytes": 1200,
+    "rate_achieved": true,
+    "rcvbuf_bytes": 4194304,
+    "received_bytes": 23026800,
+    "receiver": {
+      "bucket_ms": 250,
+      "buckets": [
+        313200,
+        312000,
+        313200,
+        312000,
+        313200,
+        312000,
+        312000,
+        313200,
+        312000,
+        313200,
+        312000,
+        312000,
+        313200,
+        312000,
+        313200,
+        312000,
+        469200,
+        468000,
+        469200,
+        468000,
+        469200,
+        469200,
+        466800,
+        469200,
+        469200,
+        468000,
+        469200,
+        466800,
+        703200,
+        498000,
+        656400,
+        703200,
+        702000,
+        703200,
+        704400,
+        702000,
+        703200,
+        703200,
+        703200,
+        703200,
+        1053600,
+        1056000,
+        1054800,
+        1054800
+      ],
+      "bytes_total": 23026800,
+      "epoch_ns": 1760601601001600000,
+      "last_ns": 1760601612001528888,
+      "streams": [
+        {
+          "bytes": 23026800,
+          "first_ns": 1760601601001600000,
+          "last_ns": 1760601612001528888,
+          "stream_idx": 0
+        }
+      ]
+    },
+    "reordered": 0,
+    "send_errors": 0,
+    "sent": 19401,
+    "sent_bytes": 23281200,
+    "steps": [
+      {
+        "achieved": true,
+        "complete": true,
+        "end_ms": 4000.320000000207,
+        "end_seq": 4167,
+        "first_seq": 1042,
+        "loss_pct": 0.0,
+        "offered_mbps": 9.97,
+        "rate_mbps": 10.0,
+        "start_ms": 1000.3199999999828,
+        "sustained": true
+      },
+      {
+        "achieved": true,
+        "complete": true,
+        "end_ms": 7000.639999999044,
+        "end_seq": 8855,
+        "first_seq": 4167,
+        "loss_pct": 0.042662116040955635,
+        "offered_mbps": 14.97,
+        "rate_mbps": 15.0,
+        "start_ms": 4000.320000000207,
+        "sustained": true
+      },
+      {
+        "achieved": true,
+        "complete": true,
+        "end_ms": 10000.106666662467,
+        "end_seq": 15885,
+        "first_seq": 8855,
+        "loss_pct": 2.987197724039829,
+        "offered_mbps": 22.4775,
+        "rate_mbps": 22.5,
+        "start_ms": 7000.639999999044,
+        "sustained": false
+      },
+      {
+        "achieved": true,
+        "complete": false,
+        "end_ms": 10999.928888884995,
+        "end_seq": 19401,
+        "first_seq": 15885,
+        "loss_pct": 0.0,
+        "offered_mbps": 33.75,
+        "rate_mbps": 33.75,
+        "start_ms": 10000.106666662467,
+        "sustained": false
+      }
+    ],
+    "stop_reason": "the run ended first",
+    "target_mbps": 10.0,
+    "unique": 19189,
+    "window_ms": 9999
+  },
+  "run_id": "example-udp-ramp",
+  "schema_version": 3,
+  "series": [
+    {
+      "key": "offered_mbps",
+      "label": "Offered",
+      "points": [
+        [
+          899.999744,
+          10.022400000000001
+        ],
+        [
+          1149.999872,
+          9.984
+        ],
+        [
+          1400.0,
+          10.022400000000001
+        ],
+        [
+          1649.999872,
+          9.984
+        ],
+        [
+          1899.999744,
+          10.022400000000001
+        ],
+        [
+          2149.999872,
+          9.984
+        ],
+        [
+          2400.0,
+          9.984
+        ],
+        [
+          2649.999872,
+          10.022400000000001
+        ],
+        [
+          2899.999744,
+          9.984
+        ],
+        [
+          3149.999872,
+          10.022400000000001
+        ],
+        [
+          3400.0,
+          9.984
+        ],
+        [
+          3649.999872,
+          9.984
+        ],
+        [
+          3899.999744,
+          10.022400000000001
+        ],
+        [
+          4149.999872,
+          9.984
+        ],
+        [
+          4400.0,
+          10.022400000000001
+        ],
+        [
+          4649.999872,
+          9.984
+        ],
+        [
+          4899.999744,
+          15.0144
+        ],
+        [
+          5149.999872,
+          14.975999999999999
+        ],
+        [
+          5400.0,
+          15.0144
+        ],
+        [
+          5649.999872,
+          15.0144
+        ],
+        [
+          5899.999744,
+          14.975999999999999
+        ],
+        [
+          6149.999872,
+          15.0144
+        ],
+        [
+          6400.0,
+          14.975999999999999
+        ],
+        [
+          6649.999872,
+          15.0144
+        ],
+        [
+          6899.999744,
+          15.0144
+        ],
+        [
+          7149.999872,
+          14.975999999999999
+        ],
+        [
+          7400.0,
+          15.0144
+        ],
+        [
+          7649.999872,
+          15.0144
+        ],
+        [
+          7899.999744,
+          22.464000000000002
+        ],
+        [
+          8149.999872,
+          22.502399999999998
+        ],
+        [
+          8400.0,
+          22.502399999999998
+        ],
+        [
+          8649.999872,
+          22.502399999999998
+        ],
+        [
+          8899.999744,
+          22.502399999999998
+        ],
+        [
+          9149.999872,
+          22.502399999999998
+        ],
+        [
+          9400.0,
+          22.502399999999998
+        ],
+        [
+          9649.999872,
+          22.502399999999998
+        ],
+        [
+          9899.999744,
+          22.464000000000002
+        ],
+        [
+          10149.999872,
+          22.502399999999998
+        ],
+        [
+          10400.0,
+          22.502399999999998
+        ],
+        [
+          10649.999872,
+          22.502399999999998
+        ],
+        [
+          10899.999744,
+          33.7536
+        ],
+        [
+          11149.999872,
+          33.7536
+        ],
+        [
+          11400.0,
+          33.7536
+        ],
+        [
+          11649.928704,
+          33.76320387581607
+        ]
+      ],
+      "unit": "Mb/s",
+      "warmup_ms": 1649.999872
+    },
+    {
+      "key": "goodput_mbps",
+      "label": "Goodput",
+      "points": [
+        [
+          900.315648,
+          10.022400000000001
+        ],
+        [
+          1150.31552,
+          9.984
+        ],
+        [
+          1400.315648,
+          10.022400000000001
+        ],
+        [
+          1650.31552,
+          9.984
+        ],
+        [
+          1900.315648,
+          10.022400000000001
+        ],
+        [
+          2150.31552,
+          9.984
+        ],
+        [
+          2400.315648,
+          9.984
+        ],
+        [
+          2650.31552,
+          10.022400000000001
+        ],
+        [
+          2900.315648,
+          9.984
+        ],
+        [
+          3150.31552,
+          10.022400000000001
+        ],
+        [
+          3400.315648,
+          9.984
+        ],
+        [
+          3650.31552,
+          9.984
+        ],
+        [
+          3900.315648,
+          10.022400000000001
+        ],
+        [
+          4150.31552,
+          9.984
+        ],
+        [
+          4400.315648,
+          10.022400000000001
+        ],
+        [
+          4650.31552,
+          9.984
+        ],
+        [
+          4900.315648,
+          15.0144
+        ],
+        [
+          5150.31552,
+          14.975999999999999
+        ],
+        [
+          5400.315648,
+          15.0144
+        ],
+        [
+          5650.31552,
+          14.975999999999999
+        ],
+        [
+          5900.315648,
+          15.0144
+        ],
+        [
+          6150.31552,
+          15.0144
+        ],
+        [
+          6400.315648,
+          14.9376
+        ],
+        [
+          6650.31552,
+          15.0144
+        ],
+        [
+          6900.315648,
+          15.0144
+        ],
+        [
+          7150.31552,
+          14.975999999999999
+        ],
+        [
+          7400.315648,
+          15.0144
+        ],
+        [
+          7650.31552,
+          14.9376
+        ],
+        [
+          7900.315648,
+          22.502399999999998
+        ],
+        [
+          8150.31552,
+          15.935999999999998
+        ],
+        [
+          8400.315648,
+          21.0048
+        ],
+        [
+          8650.31552,
+          22.502399999999998
+        ],
+        [
+          8900.315648,
+          22.464000000000002
+        ],
+        [
+          9150.31552,
+          22.502399999999998
+        ],
+        [
+          9400.315648,
+          22.5408
+        ],
+        [
+          9650.31552,
+          22.464000000000002
+        ],
+        [
+          9900.315648,
+          22.502399999999998
+        ],
+        [
+          10150.31552,
+          22.502399999999998
+        ],
+        [
+          10400.315648,
+          22.502399999999998
+        ],
+        [
+          10650.31552,
+          22.502399999999998
+        ],
+        [
+          10900.315648,
+          33.7152
+        ],
+        [
+          11150.31552,
+          33.792
+        ],
+        [
+          11400.315648,
+          33.7536
+        ],
+        [
+          11650.244352,
+          33.76320387581607
+        ]
+      ],
+      "unit": "Mb/s",
+      "warmup_ms": 1650.31552
+    },
+    {
+      "key": "loss_pct",
+      "label": "Loss",
+      "points": [
+        [
+          899.999744,
+          0.0
+        ],
+        [
+          1149.999872,
+          0.0
+        ],
+        [
+          1400.0,
+          0.0
+        ],
+        [
+          1649.999872,
+          0.0
+        ],
+        [
+          1899.999744,
+          0.0
+        ],
+        [
+          2149.999872,
+          0.0
+        ],
+        [
+          2400.0,
+          0.0
+        ],
+        [
+          2649.999872,
+          0.0
+        ],
+        [
+          2899.999744,
+          0.0
+        ],
+        [
+          3149.999872,
+          0.0
+        ],
+        [
+          3400.0,
+          0.0
+        ],
+        [
+          3649.999872,
+          0.0
+        ],
+        [
+          3899.999744,
+          0.0
+        ],
+        [
+          4149.999872,
+          0.0
+        ],
+        [
+          4400.0,
+          0.0
+        ],
+        [
+          4649.999872,
+          0.0
+        ],
+        [
+          4899.999744,
+          0.0
+        ],
+        [
+          5149.999872,
+          0.0
+        ],
+        [
+          5400.0,
+          0.0
+        ],
+        [
+          5649.999872,
+          0.0
+        ],
+        [
+          5899.999744,
+          0.0
+        ],
+        [
+          6149.999872,
+          0.0
+        ],
+        [
+          6400.0,
+          0.2564102564102564
+        ],
+        [
+          6649.999872,
+          0.0
+        ],
+        [
+          6899.999744,
+          0.0
+        ],
+        [
+          7149.999872,
+          0.0
+        ],
+        [
+          7400.0,
+          0.0
+        ],
+        [
+          7649.999872,
+          0.2557544757033248
+        ],
+        [
+          7899.999744,
+          0.0
+        ],
+        [
+          8149.999872,
+          29.180887372013654
+        ],
+        [
+          8400.0,
+          6.655290102389079
+        ],
+        [
+          8649.999872,
+          0.0
+        ],
+        [
+          8899.999744,
+          0.0
+        ],
+        [
+          9149.999872,
+          0.0
+        ],
+        [
+          9400.0,
+          0.0
+        ],
+        [
+          9649.999872,
+          0.0
+        ],
+        [
+          9899.999744,
+          0.0
+        ],
+        [
+          10149.999872,
+          0.0
+        ],
+        [
+          10400.0,
+          0.0
+        ],
+        [
+          10649.999872,
+          0.0
+        ],
+        [
+          10899.999744,
+          0.0
+        ],
+        [
+          11149.999872,
+          0.0
+        ],
+        [
+          11400.0,
+          0.0
+        ],
+        [
+          11649.928704,
+          0.0
+        ]
+      ],
+      "unit": "%",
+      "warmup_ms": 1649.999872
+    }
+  ],
+  "started_at": "2026-10-16T08:00:00.000Z",
+  "status": "ok",
+  "suite_id": null,
+  "summary": [
+    {
+      "better": "higher",
+      "key": "max_sustainable_mbps",
+      "label": "Highest rate at ≤ 2% loss",
+      "uncertainty": null,
+      "unit": "Mb/s",
+      "value": 15.0
+    },
+    {
+      "better": "higher",
+      "key": "offered_mbps",
+      "label": "Highest offered",
+      "uncertainty": null,
+      "unit": "Mb/s",
+      "value": 33.75
+    },
+    {
+      "better": "lower",
+      "key": "loss_pct",
+      "label": "Loss",
+      "uncertainty": null,
+      "unit": "%",
+      "value": 1.0927271790113913
+    }
+  ],
+  "tool": "truffle-bench-cli",
+  "tool_version": "0.1.0",
+  "truffle_version": "0.7.17",
+  "workload": "udp"
+}

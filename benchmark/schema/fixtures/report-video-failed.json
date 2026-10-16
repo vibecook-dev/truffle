@@ -1,0 +1,608 @@
+{
+  "compare_key": "0eab4dfeb060f50c",
+  "duration_ms": 14212,
+  "error": "finish: no finish.ack from the peer within 41 s",
+  "error_code": "timeout",
+  "finished_at": "2026-10-16T08:00:14.212Z",
+  "git_dirty": false,
+  "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+  "label": "Video · 1080p30 · UDP · 6 Mb/s · paced · 10 s",
+  "local": {
+    "app_foreground_pct": null,
+    "arch": "aarch64",
+    "build_profile": "release",
+    "device_name": "studio-cli",
+    "git_dirty": false,
+    "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "host_fingerprint": "0f1e2d3c4b5a6978",
+    "host_fingerprint_weak": false,
+    "logical_cpus": 12,
+    "on_battery": false,
+    "os": "macos",
+    "rustc": "rustc 1.91.0 (f8297e351 2025-10-28)",
+    "sidecar_path": "crates/truffle-core/tests/test-sidecar",
+    "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+    "tailscale_ip": "100.64.0.1",
+    "tool": "truffle-bench-cli",
+    "tool_version": "0.1.0",
+    "truffle_version": "0.7.17"
+  },
+  "methodology": "v3",
+  "network": {
+    "after": {
+      "at": "2026-10-16T08:00:00.000Z",
+      "connection": "direct",
+      "endpoint": "192.0.2.10:41641",
+      "error": null,
+      "rtt_ms": 3.3
+    },
+    "before": {
+      "at": "2026-10-16T08:00:00.000Z",
+      "connection": "direct",
+      "endpoint": "192.0.2.10:41641",
+      "error": null,
+      "rtt_ms": 3.1
+    },
+    "clock": {
+      "after": {
+        "at_ns": 1760601610400000000,
+        "delay_ns": 824000,
+        "offset_ns": -1253300,
+        "samples": 16,
+        "uncertainty_ns": 412000
+      },
+      "before": {
+        "at_ns": 1760601600400000000,
+        "delay_ns": 824000,
+        "offset_ns": -1284310,
+        "samples": 16,
+        "uncertainty_ns": 412000
+      },
+      "drift_ppm": 3.101,
+      "uncertainty_ns": 412000
+    },
+    "derp_share": 1.0685840327416905e-6,
+    "loaded_rtt_ms": {
+      "lost": 0,
+      "max": 5.4,
+      "mean": 4.3999999999999995,
+      "min": 3.4,
+      "p50": 4.2,
+      "p90": null,
+      "p95": null,
+      "p99": null,
+      "p999": null,
+      "samples": 6,
+      "stddev": 0.7483314773547884
+    },
+    "path_bytes": {
+      "derp": 1240,
+      "direct": 1160412880,
+      "peer_relay": 0
+    },
+    "path_label": "direct",
+    "path_timeline": [
+      {
+        "connection": "direct",
+        "rtt_ms": 3.4,
+        "t_ms": 500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 3.8,
+        "t_ms": 1000
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 4.2,
+        "t_ms": 1500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 4.6,
+        "t_ms": 2000
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 5.0,
+        "t_ms": 2500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 5.4,
+        "t_ms": 3000
+      }
+    ],
+    "settle_ms": 412,
+    "topology": "separate-hosts"
+  },
+  "notes": [
+    "ended during the running phase"
+  ],
+  "overlapping_runs": 0,
+  "params": {
+    "bitrate_mbps": null,
+    "duration_secs": 10,
+    "fps": null,
+    "gop": 60,
+    "jitter_buffer_ms": 100,
+    "keyframe_ratio": 8,
+    "pacing": "paced",
+    "profile": "1080p30",
+    "transport": "udp",
+    "warmup_secs": 1,
+    "workload": "video"
+  },
+  "peer": {
+    "app_foreground_pct": null,
+    "arch": "aarch64",
+    "build_profile": "release",
+    "device_name": "laptop",
+    "git_dirty": null,
+    "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "host_fingerprint": "a1b2c3d4e5f60718",
+    "host_fingerprint_weak": false,
+    "logical_cpus": 12,
+    "on_battery": null,
+    "os": "macos",
+    "rustc": null,
+    "sidecar_path": null,
+    "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+    "tailscale_ip": "100.64.0.2",
+    "tool": "truffle-bench-app",
+    "tool_version": "0.1.0",
+    "truffle_version": "0.7.17"
+  },
+  "resources": {
+    "combined": null,
+    "local": {
+      "cpu_ms": 812.0,
+      "cpu_ms_per_mb": 0.71,
+      "cpu_pct_avg": 8.12,
+      "cpu_pct_max": 10.15,
+      "rss_mb_max": 48.2,
+      "sidecar_cpu_ms": 1299.2,
+      "sidecar_cpu_ms_per_mb": 1.136,
+      "sidecar_cpu_pct_avg": 12.992,
+      "sidecar_cpu_pct_max": 16.240000000000002,
+      "sidecar_rss_mb_max": 61.9
+    },
+    "peer": {
+      "cpu_ms": 1044.0,
+      "cpu_ms_per_mb": 0.92,
+      "cpu_pct_avg": 10.44,
+      "cpu_pct_max": 13.05,
+      "rss_mb_max": 48.2,
+      "sidecar_cpu_ms": 1670.4,
+      "sidecar_cpu_ms_per_mb": 1.4720000000000002,
+      "sidecar_cpu_pct_avg": 16.704,
+      "sidecar_cpu_pct_max": 20.880000000000003,
+      "sidecar_rss_mb_max": 61.9
+    }
+  },
+  "results": {},
+  "run_id": "example-video-failed",
+  "schema_version": 3,
+  "series": [
+    {
+      "key": "frame_latency_ms",
+      "label": "Frame latency",
+      "points": [
+        [
+          600.0,
+          7.399424
+        ],
+        [
+          800.0,
+          8.11264
+        ],
+        [
+          1000.0,
+          7.92576
+        ],
+        [
+          1200.0,
+          7.739392
+        ],
+        [
+          1400.0,
+          7.552512
+        ],
+        [
+          1600.0,
+          8.265984
+        ],
+        [
+          1800.0,
+          8.07936
+        ],
+        [
+          2000.0,
+          7.89248
+        ],
+        [
+          2200.0,
+          7.706112
+        ],
+        [
+          2400.0,
+          7.519232
+        ],
+        [
+          2600.0,
+          8.232704
+        ],
+        [
+          2800.0,
+          8.04608
+        ],
+        [
+          3000.0,
+          7.8592
+        ],
+        [
+          3200.0,
+          7.672832
+        ],
+        [
+          3400.0,
+          7.485952
+        ],
+        [
+          3600.0,
+          8.199424
+        ],
+        [
+          3800.0,
+          8.0128
+        ],
+        [
+          4000.0,
+          7.82592
+        ],
+        [
+          4200.0,
+          7.639296
+        ],
+        [
+          4400.0,
+          7.452672
+        ],
+        [
+          4600.0,
+          8.166144
+        ],
+        [
+          4800.0,
+          7.979264
+        ],
+        [
+          5000.0,
+          7.79264
+        ],
+        [
+          5200.0,
+          7.606016
+        ],
+        [
+          5400.0,
+          7.419392
+        ],
+        [
+          5600.0,
+          8.132864
+        ],
+        [
+          5800.0,
+          7.945984
+        ],
+        [
+          6000.0,
+          7.75936
+        ],
+        [
+          6200.0,
+          7.572736
+        ],
+        [
+          6400.0,
+          7.385856
+        ],
+        [
+          6600.0,
+          8.099328
+        ],
+        [
+          6800.0,
+          7.912704
+        ],
+        [
+          7000.0,
+          7.725824
+        ],
+        [
+          7200.0,
+          7.539456
+        ],
+        [
+          7400.0,
+          8.252672
+        ],
+        [
+          7600.0,
+          8.066048
+        ],
+        [
+          7833.333248,
+          7.698176
+        ],
+        [
+          8033.333248,
+          7.511552
+        ],
+        [
+          8233.333248,
+          8.224768
+        ],
+        [
+          8433.333248,
+          8.0384
+        ],
+        [
+          8633.333248,
+          7.85152
+        ],
+        [
+          8833.333248,
+          7.664896
+        ],
+        [
+          9033.333248,
+          7.478272
+        ],
+        [
+          9233.333248,
+          8.191488
+        ],
+        [
+          9433.333248,
+          8.004864
+        ],
+        [
+          9633.333248,
+          7.81824
+        ],
+        [
+          9833.333248,
+          7.63136
+        ],
+        [
+          10033.333248,
+          7.444992
+        ],
+        [
+          10233.333248,
+          8.158208
+        ],
+        [
+          10433.333248,
+          7.971584
+        ],
+        [
+          10633.333248,
+          7.78496
+        ],
+        [
+          10833.333248,
+          7.59808
+        ],
+        [
+          11033.333248,
+          7.411712
+        ],
+        [
+          11233.333248,
+          8.124928
+        ],
+        [
+          11433.333248,
+          7.938304
+        ]
+      ],
+      "unit": "ms",
+      "warmup_ms": 1600.0
+    },
+    {
+      "key": "goodput_mbps",
+      "label": "Goodput",
+      "points": [
+        [
+          857.399296,
+          10.74624
+        ],
+        [
+          1107.399424,
+          4.298496
+        ],
+        [
+          1357.399552,
+          6.447744
+        ],
+        [
+          1607.399424,
+          5.014912
+        ],
+        [
+          1857.399296,
+          5.7313279999999995
+        ],
+        [
+          2107.399424,
+          5.014912
+        ],
+        [
+          2357.399552,
+          5.7313279999999995
+        ],
+        [
+          2607.399424,
+          5.014912
+        ],
+        [
+          2857.399296,
+          10.74624
+        ],
+        [
+          3107.399424,
+          5.014912
+        ],
+        [
+          3357.399552,
+          5.7313279999999995
+        ],
+        [
+          3607.399424,
+          5.014912
+        ],
+        [
+          3857.399296,
+          5.7313279999999995
+        ],
+        [
+          4107.399424,
+          5.014912
+        ],
+        [
+          4357.399552,
+          5.014912
+        ],
+        [
+          4607.399424,
+          5.7313279999999995
+        ],
+        [
+          4857.399296,
+          10.74624
+        ],
+        [
+          5107.399424,
+          5.014912
+        ],
+        [
+          5357.399552,
+          5.7313279999999995
+        ],
+        [
+          5607.399424,
+          5.014912
+        ],
+        [
+          5857.399296,
+          5.7313279999999995
+        ],
+        [
+          6107.399424,
+          5.014912
+        ],
+        [
+          6357.399552,
+          5.7313279999999995
+        ],
+        [
+          6607.399424,
+          5.014912
+        ],
+        [
+          6857.399296,
+          10.74624
+        ],
+        [
+          7107.399424,
+          5.014912
+        ],
+        [
+          7357.399552,
+          5.7313279999999995
+        ],
+        [
+          7607.399424,
+          4.298496
+        ],
+        [
+          7857.399296,
+          5.7313279999999995
+        ],
+        [
+          8107.399424,
+          5.014912
+        ],
+        [
+          8357.399552,
+          5.7313279999999995
+        ],
+        [
+          8607.399424,
+          5.014912
+        ],
+        [
+          8857.399296,
+          10.74624
+        ],
+        [
+          9107.399424,
+          5.014912
+        ],
+        [
+          9357.399552,
+          5.7313279999999995
+        ],
+        [
+          9607.399424,
+          5.014912
+        ],
+        [
+          9857.399296,
+          5.7313279999999995
+        ],
+        [
+          10107.399424,
+          5.014912
+        ],
+        [
+          10357.399552,
+          5.7313279999999995
+        ],
+        [
+          10607.399424,
+          5.014912
+        ],
+        [
+          10857.399296,
+          10.029824
+        ],
+        [
+          11107.399424,
+          5.7313279999999995
+        ],
+        [
+          11357.399552,
+          5.7313279999999995
+        ],
+        [
+          11574.780672,
+          5.767415596031539
+        ]
+      ],
+      "unit": "Mb/s",
+      "warmup_ms": 1607.399424
+    }
+  ],
+  "started_at": "2026-10-16T08:00:00.000Z",
+  "status": "failed",
+  "suite_id": null,
+  "summary": [],
+  "tool": "truffle-bench-cli",
+  "tool_version": "0.1.0",
+  "truffle_version": "0.7.17",
+  "workload": "video"
+}

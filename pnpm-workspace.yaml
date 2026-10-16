@@ -3,6 +3,7 @@ packages:
   - 'crates/truffle-napi'
   - 'npm/*'
   - 'examples/*'
+  - 'benchmark/app'
 
 onlyBuiltDependencies:
   - '@vibecook/truffle'

@@ -25,7 +25,6 @@ allowed_files=(
   'docs/TESTING.md'
   'docs/rfcs/019-local-testing-and-benchmarking.md'
   'scripts/check-for-secrets.sh'
-  'crates/truffle-bench/src/main.rs'
   'crates/truffle-core/tests/common/mod.rs'
 )
 

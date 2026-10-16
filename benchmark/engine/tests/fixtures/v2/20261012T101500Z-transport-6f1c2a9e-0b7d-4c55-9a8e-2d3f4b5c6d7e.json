@@ -1,0 +1,96 @@
+{
+  "schema_version": 2,
+  "workload": "transport",
+  "timestamp_utc": "2026-10-12T10:15:00.123456+00:00",
+  "git_sha": "3cdfbaa1e2d3c4b5a69788796a5b4c3d2e1f0a9b",
+  "git_dirty": false,
+  "environment": {
+    "os": "macos",
+    "arch": "aarch64",
+    "logical_cpus": 10,
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "debug_assertions": false,
+    "sidecar_sha256": "9f2c4e6a8b0d1f3e5a7c9e1b3d5f7a9c0e2b4d6f8a1c3e5b7d9f0a2c4e6b8d0f",
+    "sidecar_build_info": null
+  },
+  "network": {
+    "topology": "same-host",
+    "before": {
+      "topology": "same-host",
+      "ping": {
+        "path": "direct",
+        "rtt_ms": 1.482,
+        "endpoint": "192.0.2.10:41641"
+      }
+    },
+    "after": {
+      "topology": "same-host",
+      "ping": {
+        "path": "direct",
+        "rtt_ms": 0.913,
+        "endpoint": "192.0.2.10:41641"
+      }
+    }
+  },
+  "params": {
+    "protocol": "tcp",
+    "bytes": 1048576,
+    "iterations": 2,
+    "warmup": 1,
+    "concurrency": 1,
+    "timeout_secs": 120,
+    "mode": "pair",
+    "port": 9421,
+    "app_id": "bench-wire"
+  },
+  "results": {
+    "valid": true,
+    "samples": [
+      {
+        "connect_ms": 14.218,
+        "transfer_ms": 52.604,
+        "bytes": 1048576,
+        "mb_per_sec": 19.933
+      },
+      {
+        "connect_ms": 11.902,
+        "transfer_ms": 47.331,
+        "bytes": 1048576,
+        "mb_per_sec": 22.154
+      }
+    ],
+    "errors": [],
+    "elapsed_secs": 0.126,
+    "aggregate_mb_per_sec": 16.644,
+    "connect_ms": {
+      "samples": 2,
+      "p50": 11.902,
+      "p95": 14.218,
+      "p99": 14.218,
+      "p999": 14.218,
+      "min": 11.902,
+      "max": 14.218,
+      "mean": 13.06
+    },
+    "transfer_ms": {
+      "samples": 2,
+      "p50": 47.331,
+      "p95": 52.604,
+      "p99": 52.604,
+      "p999": 52.604,
+      "min": 47.331,
+      "max": 52.604,
+      "mean": 49.9675
+    },
+    "mb_per_sec": {
+      "samples": 2,
+      "p50": 19.933,
+      "p95": 22.154,
+      "p99": 22.154,
+      "p999": 22.154,
+      "min": 19.933,
+      "max": 22.154,
+      "mean": 21.0435
+    }
+  }
+}

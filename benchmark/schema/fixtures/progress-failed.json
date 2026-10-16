@@ -1,0 +1,9 @@
+{
+  "fraction": null,
+  "message": "finish: no finish.ack from the peer within 41 s",
+  "phase": "failed",
+  "run_id": "2f0c7a1e-5b3d-4c8a-9e6f-1a2b3c4d5e6f",
+  "samples": [],
+  "suite_id": null,
+  "t_ms": 5250
+}

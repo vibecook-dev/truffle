@@ -1,0 +1,359 @@
+/* truffle bench, controls. Adapted from career/home/styles/base.css "controls" (:136-260):
+   .btn, .iconbtn, .seg, .field, .input/.select, .check, .switch. Square corners, 1 px rules,
+   the focus ring on every focusable control. */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 0;
+  background: var(--ground-raised);
+  color: var(--ink);
+  white-space: nowrap;
+  text-decoration: none;
+  transition:
+    background-color var(--duration-tick) var(--easing-standard),
+    border-color var(--duration-tick) var(--easing-standard);
+}
+.btn:hover {
+  background: var(--ground-sunken);
+}
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.btn:disabled,
+.btn[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn.primary {
+  background: var(--ink);
+  color: var(--on-ink);
+  border-color: var(--ink);
+  font-weight: 500;
+}
+.btn.primary:hover:not(:disabled) {
+  background: var(--ink-2);
+  border-color: var(--ink-2);
+}
+.btn.quiet {
+  border-color: transparent;
+  background: transparent;
+}
+.btn.quiet:hover:not(:disabled) {
+  background: var(--ground-sunken);
+}
+.btn.small {
+  min-height: 28px;
+  padding: 0 8px;
+}
+.btn.large {
+  min-height: 44px;
+  padding: 0 20px;
+  font-weight: 500;
+}
+.btn.wide {
+  width: 100%;
+}
+/* an armed destructive confirmation: ink, told apart by its words and the second click, since
+   redline is for errors and loss only (§11.4) */
+.btn.danger {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+.btn[aria-pressed='true'] {
+  background: var(--blueline-wash);
+  border-color: var(--blueline-ink);
+  color: var(--ink);
+}
+
+.iconbtn {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-2);
+  flex: none;
+  transition: background-color var(--duration-tick) var(--easing-standard);
+}
+.iconbtn:hover {
+  background: var(--ground-sunken);
+  color: var(--ink);
+}
+.iconbtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+  background: transparent;
+}
+.iconbtn.small {
+  width: 28px;
+  height: 28px;
+}
+.icon {
+  flex: none;
+  display: block;
+}
+
+/* segmented control: mono labels, the chosen one inked. Each option carries its own rule, so a
+   long control wraps into a grid of boxes instead of a broken frame (home.css narrow .seg). */
+.seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-self: start;
+  max-width: 100%;
+  padding: 1px 0 0 1px;
+}
+.seg button {
+  min-height: 32px;
+  padding: 0 10px;
+  margin: -1px 0 0 -1px;
+  border: 1px solid var(--rule-strong);
+  background: var(--ground-raised);
+  color: var(--ink-2);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  transition: background-color var(--duration-tick) var(--easing-standard);
+}
+.seg button:hover:not([aria-pressed='true']):not(:disabled) {
+  background: var(--ground-sunken);
+}
+.seg button[aria-pressed='true'] {
+  position: relative;
+  z-index: 1;
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--on-ink);
+}
+.seg button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.seg button:focus-visible {
+  position: relative;
+  z-index: 2;
+}
+.seg.full {
+  display: flex;
+}
+.seg.full button {
+  flex: 1 1 0;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  min-width: 0;
+}
+.field > .f-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ink-2);
+}
+.field .f-bounds {
+  color: var(--ink-3);
+}
+.field .hint {
+  color: var(--ink-3);
+}
+.field .f-error {
+  color: var(--redline);
+}
+.input,
+.textarea,
+.select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--rule-strong);
+  border-radius: 0;
+  background: var(--ground-raised);
+  color: var(--ink);
+  padding: 7px 10px;
+  font-size: 15px;
+  line-height: 22px;
+}
+.input::placeholder {
+  color: var(--ink-3);
+}
+.input:focus,
+.textarea:focus,
+.select:focus {
+  outline: none;
+  border-color: var(--blueline-ink);
+  box-shadow: 0 0 0 1px var(--blueline-ink);
+}
+.input.mono {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+.input[aria-invalid='true'] {
+  border-color: var(--redline);
+}
+.input[aria-invalid='true']:focus {
+  box-shadow: 0 0 0 1px var(--redline);
+}
+.input:disabled {
+  color: var(--ink-3);
+  background: var(--ground-sunken);
+}
+/* a square select with a drawn chevron (the native one is rounded) */
+.select-wrap {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+.select-wrap::after {
+  content: '';
+  position: absolute;
+  right: 13px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--ink-2);
+  border-bottom: 1.5px solid var(--ink-2);
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
+select.select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 32px;
+  height: 38px;
+}
+
+/* a number with its unit inside the box */
+.numfield {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+.numfield .input {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding-right: 52px;
+}
+/* an empty nullable field says what it means in words ("6 from the profile") */
+.numfield .input::placeholder {
+  font-family: var(--font-sans);
+}
+.numfield .nf-unit {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--ink-3);
+  pointer-events: none;
+}
+
+/* square checkbox (base.css .check) */
+.check {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1.5px solid var(--ink-2);
+  border-radius: 0;
+  background: transparent;
+  display: inline-grid;
+  place-content: center;
+  flex: none;
+  cursor: pointer;
+}
+.check:checked {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+.check:checked::after {
+  content: '';
+  width: 9px;
+  height: 5px;
+  border-left: 1.5px solid var(--on-ink);
+  border-bottom: 1.5px solid var(--on-ink);
+  transform: translateY(-1px) rotate(-45deg);
+}
+.check-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+/* switch: the thumb is a circle, so it may be round (base.css .switch) */
+.switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.switch .track {
+  width: 32px;
+  height: 18px;
+  border-radius: 0;
+  background: var(--rule-strong);
+  position: relative;
+  transition: background-color var(--duration-tick) var(--easing-standard);
+  flex: none;
+}
+.switch .track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-round);
+  background: var(--ground-raised);
+  transition: transform var(--duration-step) var(--easing-settle);
+}
+.switch input:checked + .track {
+  background: var(--ink);
+}
+.switch input:checked + .track::after {
+  transform: translateX(14px);
+  background: var(--on-ink);
+}
+.switch input:focus-visible + .track {
+  box-shadow: var(--focus-ring);
+}
+.switch input:disabled + .track {
+  opacity: 0.45;
+}
+
+/* disclosure */
+.disclosure > summary {
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--ink-2);
+}
+.disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+.disclosure > summary .icon {
+  transition: transform var(--duration-tick) var(--easing-standard);
+}
+.disclosure[open] > summary .icon {
+  transform: rotate(90deg);
+}
+.disclosure > summary:hover {
+  color: var(--ink);
+}

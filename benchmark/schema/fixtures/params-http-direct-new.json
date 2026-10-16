@@ -1,0 +1,9 @@
+{
+  "concurrency": 4,
+  "connection": "new",
+  "duration_secs": 10,
+  "response_bytes": 1024,
+  "target": "direct",
+  "warmup_secs": 1,
+  "workload": "http"
+}

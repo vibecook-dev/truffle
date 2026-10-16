@@ -1,0 +1,7 @@
+{
+  "direction": "download",
+  "duration_secs": 10,
+  "streams": 1,
+  "warmup_secs": 1,
+  "workload": "egress"
+}

@@ -1,0 +1,533 @@
+{
+  "compare_key": "51a0efea7391a54e",
+  "duration_ms": 14212,
+  "error": null,
+  "error_code": null,
+  "finished_at": "2026-10-16T08:00:14.212Z",
+  "git_dirty": false,
+  "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+  "label": "QUIC throughput · upload · 4 streams · 10 s",
+  "local": {
+    "app_foreground_pct": null,
+    "arch": "aarch64",
+    "build_profile": "release",
+    "device_name": "studio-cli",
+    "git_dirty": false,
+    "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "host_fingerprint": "0f1e2d3c4b5a6978",
+    "host_fingerprint_weak": false,
+    "logical_cpus": 12,
+    "on_battery": false,
+    "os": "macos",
+    "rustc": "rustc 1.91.0 (f8297e351 2025-10-28)",
+    "sidecar_path": "crates/truffle-core/tests/test-sidecar",
+    "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+    "tailscale_ip": "100.64.0.1",
+    "tool": "truffle-bench-cli",
+    "tool_version": "0.1.0",
+    "truffle_version": "0.7.17"
+  },
+  "methodology": "v3",
+  "network": {
+    "after": {
+      "at": "2026-10-16T08:00:00.000Z",
+      "connection": "direct",
+      "endpoint": "192.0.2.10:41641",
+      "error": null,
+      "rtt_ms": 3.3
+    },
+    "before": {
+      "at": "2026-10-16T08:00:00.000Z",
+      "connection": "direct",
+      "endpoint": "192.0.2.10:41641",
+      "error": null,
+      "rtt_ms": 3.1
+    },
+    "clock": {
+      "after": {
+        "at_ns": 1760601610400000000,
+        "delay_ns": 824000,
+        "offset_ns": -1253300,
+        "samples": 16,
+        "uncertainty_ns": 412000
+      },
+      "before": {
+        "at_ns": 1760601600400000000,
+        "delay_ns": 824000,
+        "offset_ns": -1284310,
+        "samples": 16,
+        "uncertainty_ns": 412000
+      },
+      "drift_ppm": 3.101,
+      "uncertainty_ns": 412000
+    },
+    "derp_share": 1.0685840327416905e-6,
+    "loaded_rtt_ms": {
+      "lost": 0,
+      "max": 5.4,
+      "mean": 4.3999999999999995,
+      "min": 3.4,
+      "p50": 4.2,
+      "p90": null,
+      "p95": null,
+      "p99": null,
+      "p999": null,
+      "samples": 6,
+      "stddev": 0.7483314773547884
+    },
+    "path_bytes": {
+      "derp": 1240,
+      "direct": 1160412880,
+      "peer_relay": 0
+    },
+    "path_label": "direct",
+    "path_timeline": [
+      {
+        "connection": "direct",
+        "rtt_ms": 3.4,
+        "t_ms": 500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 3.8,
+        "t_ms": 1000
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 4.2,
+        "t_ms": 1500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 4.6,
+        "t_ms": 2000
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 5.0,
+        "t_ms": 2500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 5.4,
+        "t_ms": 3000
+      }
+    ],
+    "settle_ms": 412,
+    "topology": "separate-hosts"
+  },
+  "notes": [
+    "about 1200 B packets, because MTU discovery is off",
+    "no GSO",
+    "double encryption"
+  ],
+  "overlapping_runs": 0,
+  "params": {
+    "count": 200,
+    "direction": "upload",
+    "duration_secs": 10,
+    "mode": "throughput",
+    "payload_bytes": 64,
+    "streams": 4,
+    "warmup_count": 10,
+    "warmup_secs": 1,
+    "workload": "quic"
+  },
+  "peer": {
+    "app_foreground_pct": null,
+    "arch": "aarch64",
+    "build_profile": "release",
+    "device_name": "laptop",
+    "git_dirty": null,
+    "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "host_fingerprint": "a1b2c3d4e5f60718",
+    "host_fingerprint_weak": false,
+    "logical_cpus": 12,
+    "on_battery": null,
+    "os": "macos",
+    "rustc": null,
+    "sidecar_path": null,
+    "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+    "tailscale_ip": "100.64.0.2",
+    "tool": "truffle-bench-app",
+    "tool_version": "0.1.0",
+    "truffle_version": "0.7.17"
+  },
+  "resources": {
+    "combined": null,
+    "local": {
+      "cpu_ms": 812.0,
+      "cpu_ms_per_mb": 0.71,
+      "cpu_pct_avg": 8.12,
+      "cpu_pct_max": 10.15,
+      "rss_mb_max": 48.2,
+      "sidecar_cpu_ms": 1299.2,
+      "sidecar_cpu_ms_per_mb": 1.136,
+      "sidecar_cpu_pct_avg": 12.992,
+      "sidecar_cpu_pct_max": 16.240000000000002,
+      "sidecar_rss_mb_max": 61.9
+    },
+    "peer": {
+      "cpu_ms": 1044.0,
+      "cpu_ms_per_mb": 0.92,
+      "cpu_pct_avg": 10.44,
+      "cpu_pct_max": 13.05,
+      "rss_mb_max": 48.2,
+      "sidecar_cpu_ms": 1670.4,
+      "sidecar_cpu_ms_per_mb": 1.4720000000000002,
+      "sidecar_cpu_pct_avg": 16.704,
+      "sidecar_cpu_pct_max": 20.880000000000003,
+      "sidecar_rss_mb_max": 61.9
+    }
+  },
+  "results": {
+    "bytes_total": 390046720,
+    "connect_ms": 61.5,
+    "direction": "upload",
+    "download_mbps": null,
+    "flow_control_ceiling_mbps": 16666.666666666668,
+    "foreign_dropped": 0,
+    "goodput_mbps": 293.98133907515637,
+    "mode": "throughput",
+    "received_bytes": 390046720,
+    "receiver": {
+      "bucket_ms": 250,
+      "buckets": [
+        5555200,
+        8064000,
+        9175040,
+        8852480,
+        9067520,
+        8744960,
+        8960000,
+        9175040,
+        8852480,
+        9067520,
+        8744960,
+        8960000,
+        9175040,
+        8852480,
+        9067520,
+        8744960,
+        8960000,
+        9175040,
+        8852480,
+        9067520,
+        8744960,
+        8960000,
+        9175040,
+        8852480,
+        9067520,
+        8744960,
+        8960000,
+        9175040,
+        8852480,
+        9067520,
+        8744960,
+        8960000,
+        9175040,
+        8852480,
+        9067520,
+        8744960,
+        8960000,
+        9175040,
+        8852480,
+        9067520,
+        8744960,
+        8960000,
+        9175040,
+        8852480
+      ],
+      "bytes_total": 390046720,
+      "epoch_ns": 1760000000400000000,
+      "last_ns": 1760000011153000000,
+      "streams": [
+        {
+          "bytes": 97511680,
+          "first_ns": 1760000000400000000,
+          "last_ns": 1760000011150000000,
+          "stream_idx": 0
+        },
+        {
+          "bytes": 97511680,
+          "first_ns": 1760000000401000000,
+          "last_ns": 1760000011151000000,
+          "stream_idx": 1
+        },
+        {
+          "bytes": 97511680,
+          "first_ns": 1760000000402000000,
+          "last_ns": 1760000011152000000,
+          "stream_idx": 2
+        },
+        {
+          "bytes": 97511680,
+          "first_ns": 1760000000403000000,
+          "last_ns": 1760000011153000000,
+          "stream_idx": 3
+        }
+      ]
+    },
+    "receiver_download": null,
+    "sent_bytes": 390308864,
+    "stream_results": [
+      {
+        "acked_bytes": 97511680,
+        "kind": "upload",
+        "received_bytes": 97511680,
+        "sent_bytes": 97577216,
+        "stream_idx": 0
+      },
+      {
+        "acked_bytes": 97511680,
+        "kind": "upload",
+        "received_bytes": 97511680,
+        "sent_bytes": 97577216,
+        "stream_idx": 1
+      },
+      {
+        "acked_bytes": 97511680,
+        "kind": "upload",
+        "received_bytes": 97511680,
+        "sent_bytes": 97577216,
+        "stream_idx": 2
+      },
+      {
+        "acked_bytes": 97511680,
+        "kind": "upload",
+        "received_bytes": 97511680,
+        "sent_bytes": 97577216,
+        "stream_idx": 3
+      }
+    ],
+    "streams": 4,
+    "upload_mbps": null,
+    "window_bytes": 358400000,
+    "window_ms": 9753.0
+  },
+  "run_id": "example-quic-ok",
+  "schema_version": 3,
+  "series": [
+    {
+      "key": "goodput_mbps",
+      "label": "Goodput",
+      "points": [
+        [
+          649.999872,
+          177.7664
+        ],
+        [
+          900.0,
+          258.048
+        ],
+        [
+          1150.000128,
+          293.60128000000003
+        ],
+        [
+          1400.0,
+          283.27936
+        ],
+        [
+          1649.999872,
+          290.16064
+        ],
+        [
+          1900.0,
+          279.83871999999997
+        ],
+        [
+          2150.000128,
+          286.71999999999997
+        ],
+        [
+          2400.0,
+          293.60128000000003
+        ],
+        [
+          2649.999872,
+          283.27936
+        ],
+        [
+          2900.0,
+          290.16064
+        ],
+        [
+          3150.000128,
+          279.83871999999997
+        ],
+        [
+          3400.0,
+          286.71999999999997
+        ],
+        [
+          3649.999872,
+          293.60128000000003
+        ],
+        [
+          3900.0,
+          283.27936
+        ],
+        [
+          4150.000128,
+          290.16064
+        ],
+        [
+          4400.0,
+          279.83871999999997
+        ],
+        [
+          4649.999872,
+          286.71999999999997
+        ],
+        [
+          4900.0,
+          293.60128000000003
+        ],
+        [
+          5150.000128,
+          283.27936
+        ],
+        [
+          5400.0,
+          290.16064
+        ],
+        [
+          5649.999872,
+          279.83871999999997
+        ],
+        [
+          5900.0,
+          286.71999999999997
+        ],
+        [
+          6150.000128,
+          293.60128000000003
+        ],
+        [
+          6400.0,
+          283.27936
+        ],
+        [
+          6649.999872,
+          290.16064
+        ],
+        [
+          6900.0,
+          279.83871999999997
+        ],
+        [
+          7150.000128,
+          286.71999999999997
+        ],
+        [
+          7400.0,
+          293.60128000000003
+        ],
+        [
+          7649.999872,
+          283.27936
+        ],
+        [
+          7900.0,
+          290.16064
+        ],
+        [
+          8150.000128,
+          279.83871999999997
+        ],
+        [
+          8400.0,
+          286.71999999999997
+        ],
+        [
+          8649.999872,
+          293.60128000000003
+        ],
+        [
+          8900.0,
+          283.27936
+        ],
+        [
+          9150.000128,
+          290.16064
+        ],
+        [
+          9400.0,
+          279.83871999999997
+        ],
+        [
+          9649.999872,
+          286.71999999999997
+        ],
+        [
+          9900.0,
+          293.60128000000003
+        ],
+        [
+          10150.000128,
+          283.27936
+        ],
+        [
+          10400.0,
+          290.16064
+        ],
+        [
+          10649.999872,
+          279.83871999999997
+        ],
+        [
+          10900.0,
+          286.71999999999997
+        ],
+        [
+          11150.000128,
+          293.60128000000003
+        ]
+      ],
+      "unit": "Mb/s",
+      "warmup_ms": 1400.0
+    }
+  ],
+  "started_at": "2026-10-16T08:00:00.000Z",
+  "status": "ok",
+  "suite_id": null,
+  "summary": [
+    {
+      "better": "higher",
+      "key": "goodput_mbps",
+      "label": "Goodput",
+      "uncertainty": null,
+      "unit": "Mb/s",
+      "value": 293.98133907515637
+    },
+    {
+      "better": "lower",
+      "key": "connect_ms",
+      "label": "Connect",
+      "uncertainty": null,
+      "unit": "ms",
+      "value": 61.5
+    },
+    {
+      "better": "lower",
+      "key": "cpu_ms_per_mb",
+      "label": "CPU per MB",
+      "uncertainty": null,
+      "unit": "ms/MB",
+      "value": 9.7
+    },
+    {
+      "better": "lower",
+      "key": "loaded_rtt_p50_ms",
+      "label": "RTT under load (p50)",
+      "uncertainty": null,
+      "unit": "ms",
+      "value": 4.4
+    }
+  ],
+  "tool": "truffle-bench-cli",
+  "tool_version": "0.1.0",
+  "truffle_version": "0.7.17",
+  "workload": "quic"
+}

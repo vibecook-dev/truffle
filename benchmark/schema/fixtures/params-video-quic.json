@@ -1,0 +1,13 @@
+{
+  "bitrate_mbps": null,
+  "duration_secs": 10,
+  "fps": null,
+  "gop": 60,
+  "jitter_buffer_ms": 100,
+  "keyframe_ratio": 8,
+  "pacing": "paced",
+  "profile": "1080p30",
+  "transport": "quic",
+  "warmup_secs": 1,
+  "workload": "video"
+}

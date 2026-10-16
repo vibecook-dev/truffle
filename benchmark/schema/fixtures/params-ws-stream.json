@@ -1,0 +1,10 @@
+{
+  "concurrency": 1,
+  "count": 500,
+  "duration_secs": 10,
+  "mode": "stream",
+  "payload_bytes": 64,
+  "rate_per_sec": 1000,
+  "warmup_count": 10,
+  "workload": "ws"
+}

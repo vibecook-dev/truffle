@@ -1,11 +1,13 @@
 # cargo-deny configuration
 # https://embarkstudios.github.io/cargo-deny/
 
-# Exclude workspace members that need platform-specific tooling (GTK, NAPI).
-# These bring large transitive dependency trees with unmaintained crates
-# and exotic licenses that are irrelevant to the core library.
+# Exclude workspace members that need platform-specific tooling (GTK, NAPI,
+# Tauri: the plugin and the RFC 027 benchmark app). These bring large
+# transitive dependency trees with unmaintained crates and exotic licenses
+# that are irrelevant to the core library. cargo-audit (security-audit.yml)
+# still scans the whole Cargo.lock, so their advisories are not hidden.
 [graph]
-exclude = ["truffle-tauri-plugin", "truffle-napi"]
+exclude = ["truffle-tauri-plugin", "truffle-napi", "truffle-bench-app"]
 
 # Advisories — all advisories are denied by default in modern cargo-deny.
 # Use `ignore` to suppress specific advisories with justification.

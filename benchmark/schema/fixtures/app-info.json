@@ -1,0 +1,10 @@
+{
+  "app_version": "0.1.0",
+  "build_profile": "release",
+  "data_dir": "/Users/james/Library/Application Support/com.vibecook.truffle-bench",
+  "os": "macos",
+  "profile": null,
+  "sidecar_path": "/Applications/truffle bench.app/Contents/MacOS/sidecar-slim",
+  "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+  "truffle_version": "0.7.17"
+}

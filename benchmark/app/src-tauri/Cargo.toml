@@ -1,0 +1,49 @@
+[package]
+name = "truffle-bench-app"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "truffle bench: the Tauri v2 desktop shell over the truffle-bench engine (RFC 027 §11)"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "truffle_bench_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "truffle-bench-app"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2.5", features = [] }
+
+[dependencies]
+truffle-bench = { path = "../../engine" }
+truffle-core.workspace = true
+tauri.workspace = true
+# Dialog is used from Rust only (no JS permission). 2.7.x is the last line that
+# builds against tauri 2.10 (2.8 needs tauri 2.12); Cargo.lock keeps its
+# tauri-plugin-fs at 2.5.2, the last one that does too.
+tauri-plugin-dialog = "~2.7.3"
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true
+open.workspace = true
+uuid.workspace = true
+
+# NSProcessInfo activity while a run is active (§11.1); already in Cargo.lock.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString", "block2"] }
+block2 = "0.6"
+
+[dev-dependencies]
+tauri = { workspace = true, features = ["test"] }
+tempfile.workspace = true

@@ -1,0 +1,97 @@
+{
+  "description": "Every workload once, briefly: about a minute.",
+  "id": "smoke",
+  "items": [
+    {
+      "count": 10,
+      "interval_ms": 250,
+      "workload": "path"
+    },
+    {
+      "count": 200,
+      "direction": "upload",
+      "duration_secs": 3,
+      "mode": "throughput",
+      "nodelay": true,
+      "payload_bytes": 64,
+      "streams": 1,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "tcp"
+    },
+    {
+      "direction": "upload",
+      "duration_secs": 3,
+      "mode": "stream",
+      "payload_bytes": 1200,
+      "pps": 50,
+      "rate_mbps": 5.0,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "udp"
+    },
+    {
+      "count": 200,
+      "direction": "upload",
+      "duration_secs": 3,
+      "mode": "throughput",
+      "payload_bytes": 64,
+      "streams": 4,
+      "warmup_count": 10,
+      "warmup_secs": 1,
+      "workload": "quic"
+    },
+    {
+      "concurrency": 1,
+      "count": 100,
+      "duration_secs": 10,
+      "mode": "rr",
+      "payload_bytes": 64,
+      "rate_per_sec": null,
+      "warmup_count": 10,
+      "workload": "ws"
+    },
+    {
+      "iterations": 2,
+      "size_bytes": 1048576,
+      "workload": "file-transfer"
+    },
+    {
+      "count": 20,
+      "mode": "pingpong",
+      "payload_bytes": 64,
+      "warmup_count": 5,
+      "workload": "synced-store"
+    },
+    {
+      "concurrency": 4,
+      "connection": "keepalive",
+      "duration_secs": 3,
+      "response_bytes": 1024,
+      "target": "proxy",
+      "warmup_secs": 1,
+      "workload": "http"
+    },
+    {
+      "bitrate_mbps": null,
+      "duration_secs": 3,
+      "fps": null,
+      "gop": 60,
+      "jitter_buffer_ms": 100,
+      "keyframe_ratio": 8,
+      "pacing": "paced",
+      "profile": "720p30",
+      "transport": "udp",
+      "warmup_secs": 1,
+      "workload": "video"
+    },
+    {
+      "direction": "upload",
+      "duration_secs": 3,
+      "streams": 1,
+      "warmup_secs": 1,
+      "workload": "egress"
+    }
+  ],
+  "label": "Smoke"
+}

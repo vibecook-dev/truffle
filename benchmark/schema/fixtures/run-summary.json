@@ -1,0 +1,53 @@
+{
+  "build_profile": "release",
+  "compare_key": "14cfeabea123f682",
+  "error_code": null,
+  "flags": [
+    "same-process"
+  ],
+  "label": "TCP throughput · upload · 1 stream · 10 s",
+  "overlapping_runs": 0,
+  "path_label": "direct",
+  "peer_name": "laptop",
+  "run_id": "example-tcp-pair",
+  "started_at": "2026-10-16T08:00:00.000Z",
+  "status": "ok",
+  "suite_id": null,
+  "summary": [
+    {
+      "better": "higher",
+      "key": "goodput_mbps",
+      "label": "Goodput",
+      "uncertainty": null,
+      "unit": "Mb/s",
+      "value": 871.2
+    },
+    {
+      "better": "lower",
+      "key": "connect_ms",
+      "label": "Connect",
+      "uncertainty": null,
+      "unit": "ms",
+      "value": 38.2
+    },
+    {
+      "better": "lower",
+      "key": "cpu_ms_per_mb",
+      "label": "CPU per MB",
+      "uncertainty": null,
+      "unit": "ms/MB",
+      "value": 4.1
+    },
+    {
+      "better": "lower",
+      "key": "loaded_rtt_p50_ms",
+      "label": "RTT under load (p50)",
+      "uncertainty": null,
+      "unit": "ms",
+      "value": 6.8
+    }
+  ],
+  "tool": "truffle-bench-cli",
+  "topology": "same-process",
+  "workload": "tcp"
+}
