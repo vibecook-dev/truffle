@@ -1,0 +1,9 @@
+{
+  "concurrency": 4,
+  "connection": "keepalive",
+  "duration_secs": 10,
+  "response_bytes": 1024,
+  "target": "proxy",
+  "warmup_secs": 1,
+  "workload": "http"
+}

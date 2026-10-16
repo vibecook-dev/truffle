@@ -1,0 +1,1142 @@
+{
+  "compare_key": "ff6f9d9f09969b03",
+  "duration_ms": 14212,
+  "error": null,
+  "error_code": null,
+  "finished_at": "2026-10-16T08:00:14.212Z",
+  "git_dirty": false,
+  "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+  "label": "Video · 1080p30 · QUIC · 6 Mb/s · paced · 10 s",
+  "local": {
+    "app_foreground_pct": null,
+    "arch": "aarch64",
+    "build_profile": "release",
+    "device_name": "studio-cli",
+    "git_dirty": false,
+    "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "host_fingerprint": "0f1e2d3c4b5a6978",
+    "host_fingerprint_weak": false,
+    "logical_cpus": 12,
+    "on_battery": false,
+    "os": "macos",
+    "rustc": "rustc 1.91.0 (f8297e351 2025-10-28)",
+    "sidecar_path": "crates/truffle-core/tests/test-sidecar",
+    "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+    "tailscale_ip": "100.64.0.1",
+    "tool": "truffle-bench-cli",
+    "tool_version": "0.1.0",
+    "truffle_version": "0.7.17"
+  },
+  "methodology": "v3",
+  "network": {
+    "after": {
+      "at": "2026-10-16T08:00:00.000Z",
+      "connection": "direct",
+      "endpoint": "192.0.2.10:41641",
+      "error": null,
+      "rtt_ms": 3.3
+    },
+    "before": {
+      "at": "2026-10-16T08:00:00.000Z",
+      "connection": "direct",
+      "endpoint": "192.0.2.10:41641",
+      "error": null,
+      "rtt_ms": 3.1
+    },
+    "clock": {
+      "after": {
+        "at_ns": 1760601610400000000,
+        "delay_ns": 824000,
+        "offset_ns": -1253300,
+        "samples": 16,
+        "uncertainty_ns": 412000
+      },
+      "before": {
+        "at_ns": 1760601600400000000,
+        "delay_ns": 824000,
+        "offset_ns": -1284310,
+        "samples": 16,
+        "uncertainty_ns": 412000
+      },
+      "drift_ppm": 3.101,
+      "uncertainty_ns": 412000
+    },
+    "derp_share": 1.0685840327416905e-6,
+    "loaded_rtt_ms": {
+      "lost": 0,
+      "max": 5.4,
+      "mean": 4.3999999999999995,
+      "min": 3.4,
+      "p50": 4.2,
+      "p90": null,
+      "p95": null,
+      "p99": null,
+      "p999": null,
+      "samples": 6,
+      "stddev": 0.7483314773547884
+    },
+    "path_bytes": {
+      "derp": 1240,
+      "direct": 1160412880,
+      "peer_relay": 0
+    },
+    "path_label": "direct",
+    "path_timeline": [
+      {
+        "connection": "direct",
+        "rtt_ms": 3.4,
+        "t_ms": 500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 3.8,
+        "t_ms": 1000
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 4.2,
+        "t_ms": 1500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 4.6,
+        "t_ms": 2000
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 5.0,
+        "t_ms": 2500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 5.4,
+        "t_ms": 3000
+      }
+    ],
+    "settle_ms": 412,
+    "topology": "separate-hosts"
+  },
+  "notes": [
+    "pacing applies to UDP fragments; over TCP and QUIC each frame is written whole at its capture time"
+  ],
+  "overlapping_runs": 0,
+  "params": {
+    "bitrate_mbps": null,
+    "duration_secs": 10,
+    "fps": null,
+    "gop": 60,
+    "jitter_buffer_ms": 100,
+    "keyframe_ratio": 8,
+    "pacing": "paced",
+    "profile": "1080p30",
+    "transport": "quic",
+    "warmup_secs": 1,
+    "workload": "video"
+  },
+  "peer": {
+    "app_foreground_pct": null,
+    "arch": "aarch64",
+    "build_profile": "release",
+    "device_name": "laptop",
+    "git_dirty": null,
+    "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "host_fingerprint": "a1b2c3d4e5f60718",
+    "host_fingerprint_weak": false,
+    "logical_cpus": 12,
+    "on_battery": null,
+    "os": "macos",
+    "rustc": null,
+    "sidecar_path": null,
+    "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+    "tailscale_ip": "100.64.0.2",
+    "tool": "truffle-bench-app",
+    "tool_version": "0.1.0",
+    "truffle_version": "0.7.17"
+  },
+  "resources": {
+    "combined": null,
+    "local": {
+      "cpu_ms": 812.0,
+      "cpu_ms_per_mb": 0.71,
+      "cpu_pct_avg": 8.12,
+      "cpu_pct_max": 10.15,
+      "rss_mb_max": 48.2,
+      "sidecar_cpu_ms": 1299.2,
+      "sidecar_cpu_ms_per_mb": 1.136,
+      "sidecar_cpu_pct_avg": 12.992,
+      "sidecar_cpu_pct_max": 16.240000000000002,
+      "sidecar_rss_mb_max": 61.9
+    },
+    "peer": {
+      "cpu_ms": 1044.0,
+      "cpu_ms_per_mb": 0.92,
+      "cpu_pct_avg": 10.44,
+      "cpu_pct_max": 13.05,
+      "rss_mb_max": 48.2,
+      "sidecar_cpu_ms": 1670.4,
+      "sidecar_cpu_ms_per_mb": 1.4720000000000002,
+      "sidecar_cpu_pct_avg": 16.704,
+      "sidecar_cpu_pct_max": 20.880000000000003,
+      "sidecar_rss_mb_max": 61.9
+    }
+  },
+  "results": {
+    "bitrate_mbps": 6.0,
+    "connect_ms": 47.2,
+    "datagrams": null,
+    "delivered_fps": 29.6,
+    "dropped": 1,
+    "dropped_pct": 0.33333333333333337,
+    "foreign_dropped": 0,
+    "fps": 30,
+    "frame_latency_ms": {
+      "lost": 1,
+      "max": 153.476608,
+      "mean": 4.634833765886284,
+      "min": 2.680576,
+      "p50": 3.131648,
+      "p90": 3.49952,
+      "p95": 3.54176,
+      "p99": 153.008896,
+      "p999": null,
+      "samples": 300,
+      "stddev": 14.994876764624967
+    },
+    "frame_spread_ms": {
+      "lost": 0,
+      "max": 6.040064,
+      "mean": 0.9795439732441494,
+      "min": 0.89552,
+      "p50": 0.89552,
+      "p90": 0.89552,
+      "p95": 0.89552,
+      "p99": 5.920256,
+      "p999": null,
+      "samples": 299,
+      "stddev": 0.6454792264207871
+    },
+    "frame_spread_p50_ms": 0.89552,
+    "frames": [
+      {
+        "bytes": 179104,
+        "delay_ms": 0.0,
+        "frame_no": 0,
+        "keyframe": true,
+        "latency_ms": 2.69952,
+        "spread_ms": 5.200128,
+        "state": "on-time",
+        "warmup": true
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.709206,
+        "frame_no": 11,
+        "keyframe": false,
+        "latency_ms": 3.40736,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": true
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.517803,
+        "frame_no": 22,
+        "keyframe": false,
+        "latency_ms": 3.214848,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": true
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.326912,
+        "frame_no": 33,
+        "keyframe": false,
+        "latency_ms": 3.022592,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.136022,
+        "frame_no": 44,
+        "keyframe": false,
+        "latency_ms": 2.830592,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.844971,
+        "frame_no": 55,
+        "keyframe": false,
+        "latency_ms": 3.538432,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.65408,
+        "frame_no": 66,
+        "keyframe": false,
+        "latency_ms": 3.346176,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.46319,
+        "frame_no": 77,
+        "keyframe": false,
+        "latency_ms": 3.15392,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.271787,
+        "frame_no": 88,
+        "keyframe": false,
+        "latency_ms": 2.961664,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.080896,
+        "frame_no": 99,
+        "keyframe": false,
+        "latency_ms": 2.769408,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 150.789974,
+        "frame_no": 110,
+        "keyframe": false,
+        "latency_ms": 153.476608,
+        "spread_ms": 0.89552,
+        "state": "late",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.598955,
+        "frame_no": 121,
+        "keyframe": false,
+        "latency_ms": 3.284992,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.408064,
+        "frame_no": 132,
+        "keyframe": false,
+        "latency_ms": 3.092736,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.217174,
+        "frame_no": 143,
+        "keyframe": false,
+        "latency_ms": 2.900736,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.026027,
+        "frame_no": 154,
+        "keyframe": false,
+        "latency_ms": 2.70848,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.734976,
+        "frame_no": 165,
+        "keyframe": false,
+        "latency_ms": 3.416064,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.544086,
+        "frame_no": 176,
+        "keyframe": false,
+        "latency_ms": 3.223808,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.352939,
+        "frame_no": 187,
+        "keyframe": false,
+        "latency_ms": 3.031808,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.162048,
+        "frame_no": 198,
+        "keyframe": false,
+        "latency_ms": 2.839552,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.870998,
+        "frame_no": 209,
+        "keyframe": false,
+        "latency_ms": 3.547136,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.679851,
+        "frame_no": 220,
+        "keyframe": false,
+        "latency_ms": 3.35488,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.48896,
+        "frame_no": 231,
+        "keyframe": false,
+        "latency_ms": 3.162624,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.29807,
+        "frame_no": 242,
+        "keyframe": false,
+        "latency_ms": 2.970624,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.106923,
+        "frame_no": 253,
+        "keyframe": false,
+        "latency_ms": 2.778368,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.815872,
+        "frame_no": 264,
+        "keyframe": false,
+        "latency_ms": 3.485952,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.624982,
+        "frame_no": 275,
+        "keyframe": false,
+        "latency_ms": 3.293696,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.433835,
+        "frame_no": 286,
+        "keyframe": false,
+        "latency_ms": 3.101696,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.242944,
+        "frame_no": 297,
+        "keyframe": false,
+        "latency_ms": 2.90944,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.052054,
+        "frame_no": 308,
+        "keyframe": false,
+        "latency_ms": 2.717184,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      },
+      {
+        "bytes": 22388,
+        "delay_ms": 0.761003,
+        "frame_no": 319,
+        "keyframe": false,
+        "latency_ms": 3.425024,
+        "spread_ms": 0.89552,
+        "state": "on-time",
+        "warmup": false
+      }
+    ],
+    "frames_sent": 300,
+    "frames_stride": 11,
+    "frames_total": 330,
+    "freeze_ms": 0.0,
+    "freezes": 0,
+    "goodput_mbps": 6.001628191396655,
+    "i_frame_bytes": 179104,
+    "keyframe_complete_ms": {
+      "lost": 0,
+      "max": 3.5328,
+      "mean": 3.3995775999999993,
+      "min": 3.266304,
+      "p50": 3.39968,
+      "p90": null,
+      "p95": null,
+      "p99": null,
+      "p999": null,
+      "samples": 5,
+      "stddev": 0.10536205531784205
+    },
+    "keyframe_complete_p50_ms": 3.39968,
+    "late": 3,
+    "late_pct": 1.0,
+    "latency_uncertainty_ms": 0.6,
+    "max_send_lag_ms": 1.3,
+    "offered_mbps": 5.999984,
+    "on_time": 296,
+    "p_frame_bytes": 22388,
+    "pacing": "paced",
+    "received_bytes": 8305948,
+    "receiver": {
+      "bucket_ms": 250,
+      "buckets": [
+        335820,
+        134328,
+        201492,
+        156716,
+        179104,
+        156716,
+        179104,
+        156716,
+        335820,
+        156716,
+        179104,
+        156716,
+        179104,
+        156716,
+        156716,
+        179104,
+        335820,
+        156716,
+        179104,
+        156716,
+        179104,
+        156716,
+        179104,
+        156716,
+        335820,
+        156716,
+        179104,
+        134328,
+        179104,
+        156716,
+        179104,
+        156716,
+        335820,
+        156716,
+        179104,
+        156716,
+        179104,
+        156716,
+        179104,
+        156716,
+        313432,
+        179104,
+        179104,
+        156716
+      ],
+      "bytes_total": 8305948,
+      "epoch_ns": 1760000000605200128,
+      "last_ns": 1760000011572617984,
+      "streams": [
+        {
+          "bytes": 8305948,
+          "first_ns": 1760000000605200128,
+          "last_ns": 1760000011572617984,
+          "stream_idx": 0
+        }
+      ]
+    },
+    "relative_delay_ms": {
+      "lost": 0,
+      "max": 150.789974,
+      "mean": 1.9553209130434785,
+      "min": 0.00111,
+      "p50": 0.45312,
+      "p90": 0.820054,
+      "p95": 0.85615,
+      "p99": 150.332928,
+      "p999": null,
+      "samples": 299,
+      "stddev": 14.9952237412838
+    },
+    "samples_ms": [
+      2.680576,
+      2.70848,
+      2.730752,
+      2.752768,
+      2.77504,
+      2.797312,
+      2.819328,
+      2.8416,
+      2.878464,
+      2.900736,
+      2.922752,
+      2.945024,
+      2.967296,
+      2.989312,
+      3.014912,
+      3.048448,
+      3.074048,
+      3.096064,
+      3.118336,
+      3.140608,
+      3.162624,
+      3.1872,
+      3.2128,
+      3.24608,
+      3.268352,
+      3.290368,
+      3.31264,
+      3.335168,
+      3.357184,
+      3.379456,
+      3.414016,
+      3.436288,
+      3.460352,
+      3.485952,
+      3.50848,
+      3.530752,
+      3.552768,
+      153.008896
+    ],
+    "sent_bytes": 8328336,
+    "stream_ack": null,
+    "transport": "quic",
+    "warmup_frames": 30
+  },
+  "run_id": "example-video-quic",
+  "schema_version": 3,
+  "series": [
+    {
+      "key": "frame_latency_ms",
+      "label": "Frame latency",
+      "points": [
+        [
+          600.0,
+          2.69952
+        ],
+        [
+          800.0,
+          3.412736
+        ],
+        [
+          1000.0,
+          3.226368
+        ],
+        [
+          1200.0,
+          3.039488
+        ],
+        [
+          1400.0,
+          2.852608
+        ],
+        [
+          1600.0,
+          3.56608
+        ],
+        [
+          1800.0,
+          3.379456
+        ],
+        [
+          2000.0,
+          3.192832
+        ],
+        [
+          2200.0,
+          3.006208
+        ],
+        [
+          2400.0,
+          2.819328
+        ],
+        [
+          2600.0,
+          3.5328
+        ],
+        [
+          2800.0,
+          3.346176
+        ],
+        [
+          3000.0,
+          3.159296
+        ],
+        [
+          3200.0,
+          2.972928
+        ],
+        [
+          3400.0,
+          2.786048
+        ],
+        [
+          3600.0,
+          3.49952
+        ],
+        [
+          3800.0,
+          3.31264
+        ],
+        [
+          4000.0,
+          3.126016
+        ],
+        [
+          4200.0,
+          2.939392
+        ],
+        [
+          4400.0,
+          2.752768
+        ],
+        [
+          4600.0,
+          3.46624
+        ],
+        [
+          4800.0,
+          3.27936
+        ],
+        [
+          5000.0,
+          3.092736
+        ],
+        [
+          5200.0,
+          2.906112
+        ],
+        [
+          5400.0,
+          2.719488
+        ],
+        [
+          5600.0,
+          3.43296
+        ],
+        [
+          5800.0,
+          3.24608
+        ],
+        [
+          6000.0,
+          3.059456
+        ],
+        [
+          6200.0,
+          2.872832
+        ],
+        [
+          6400.0,
+          2.685952
+        ],
+        [
+          6600.0,
+          3.39968
+        ],
+        [
+          6800.0,
+          3.2128
+        ],
+        [
+          7000.0,
+          3.02592
+        ],
+        [
+          7200.0,
+          2.839552
+        ],
+        [
+          7400.0,
+          3.552768
+        ],
+        [
+          7600.0,
+          3.366144
+        ],
+        [
+          7833.333248,
+          2.998528
+        ],
+        [
+          8033.333248,
+          2.811648
+        ],
+        [
+          8233.333248,
+          3.524864
+        ],
+        [
+          8433.333248,
+          3.338496
+        ],
+        [
+          8633.333248,
+          3.151616
+        ],
+        [
+          8833.333248,
+          2.965248
+        ],
+        [
+          9033.333248,
+          2.778368
+        ],
+        [
+          9233.333248,
+          3.491584
+        ],
+        [
+          9433.333248,
+          3.30496
+        ],
+        [
+          9633.333248,
+          3.118336
+        ],
+        [
+          9833.333248,
+          2.931712
+        ],
+        [
+          10033.333248,
+          2.745088
+        ],
+        [
+          10233.333248,
+          3.458304
+        ],
+        [
+          10433.333248,
+          3.27168
+        ],
+        [
+          10633.333248,
+          3.085056
+        ],
+        [
+          10833.333248,
+          2.898176
+        ],
+        [
+          11033.333248,
+          2.711808
+        ],
+        [
+          11233.333248,
+          3.425024
+        ],
+        [
+          11433.333248,
+          3.2384
+        ]
+      ],
+      "unit": "ms",
+      "warmup_ms": 1600.0
+    },
+    {
+      "key": "goodput_mbps",
+      "label": "Goodput",
+      "points": [
+        [
+          852.699648,
+          10.74624
+        ],
+        [
+          1102.69952,
+          4.298496
+        ],
+        [
+          1352.699392,
+          6.447744
+        ],
+        [
+          1602.69952,
+          5.014912
+        ],
+        [
+          1852.699648,
+          5.7313279999999995
+        ],
+        [
+          2102.69952,
+          5.014912
+        ],
+        [
+          2352.699392,
+          5.7313279999999995
+        ],
+        [
+          2602.69952,
+          5.014912
+        ],
+        [
+          2852.699648,
+          10.74624
+        ],
+        [
+          3102.69952,
+          5.014912
+        ],
+        [
+          3352.699392,
+          5.7313279999999995
+        ],
+        [
+          3602.69952,
+          5.014912
+        ],
+        [
+          3852.699648,
+          5.7313279999999995
+        ],
+        [
+          4102.69952,
+          5.014912
+        ],
+        [
+          4352.699392,
+          5.014912
+        ],
+        [
+          4602.69952,
+          5.7313279999999995
+        ],
+        [
+          4852.699648,
+          10.74624
+        ],
+        [
+          5102.69952,
+          5.014912
+        ],
+        [
+          5352.699392,
+          5.7313279999999995
+        ],
+        [
+          5602.69952,
+          5.014912
+        ],
+        [
+          5852.699648,
+          5.7313279999999995
+        ],
+        [
+          6102.69952,
+          5.014912
+        ],
+        [
+          6352.699392,
+          5.7313279999999995
+        ],
+        [
+          6602.69952,
+          5.014912
+        ],
+        [
+          6852.699648,
+          10.74624
+        ],
+        [
+          7102.69952,
+          5.014912
+        ],
+        [
+          7352.699392,
+          5.7313279999999995
+        ],
+        [
+          7602.69952,
+          4.298496
+        ],
+        [
+          7852.699648,
+          5.7313279999999995
+        ],
+        [
+          8102.69952,
+          5.014912
+        ],
+        [
+          8352.699392,
+          5.7313279999999995
+        ],
+        [
+          8602.69952,
+          5.014912
+        ],
+        [
+          8852.699648,
+          10.74624
+        ],
+        [
+          9102.69952,
+          5.014912
+        ],
+        [
+          9352.699392,
+          5.7313279999999995
+        ],
+        [
+          9602.69952,
+          5.014912
+        ],
+        [
+          9852.699648,
+          5.7313279999999995
+        ],
+        [
+          10102.69952,
+          5.014912
+        ],
+        [
+          10352.699392,
+          5.7313279999999995
+        ],
+        [
+          10602.69952,
+          5.014912
+        ],
+        [
+          10852.699648,
+          10.029824
+        ],
+        [
+          11102.69952,
+          5.7313279999999995
+        ],
+        [
+          11352.699392,
+          5.7313279999999995
+        ],
+        [
+          11570.080768,
+          5.767415596031539
+        ]
+      ],
+      "unit": "Mb/s",
+      "warmup_ms": 1602.69952
+    }
+  ],
+  "started_at": "2026-10-16T08:00:00.000Z",
+  "status": "ok",
+  "suite_id": null,
+  "summary": [
+    {
+      "better": "higher",
+      "key": "delivered_fps",
+      "label": "Delivered",
+      "uncertainty": null,
+      "unit": "fps",
+      "value": 29.6
+    },
+    {
+      "better": "lower",
+      "key": "late_pct",
+      "label": "Late",
+      "uncertainty": null,
+      "unit": "%",
+      "value": 1.0
+    },
+    {
+      "better": "lower",
+      "key": "dropped_pct",
+      "label": "Dropped",
+      "uncertainty": null,
+      "unit": "%",
+      "value": 0.33333333333333337
+    },
+    {
+      "better": "lower",
+      "key": "freezes",
+      "label": "Freezes",
+      "uncertainty": null,
+      "unit": "",
+      "value": 0.0
+    },
+    {
+      "better": "lower",
+      "key": "frame_latency_p50_ms",
+      "label": "Frame latency p50",
+      "uncertainty": 0.6,
+      "unit": "ms",
+      "value": 3.131648
+    },
+    {
+      "better": "higher",
+      "key": "goodput_mbps",
+      "label": "Goodput",
+      "uncertainty": null,
+      "unit": "Mb/s",
+      "value": 6.001628191396655
+    }
+  ],
+  "tool": "truffle-bench-cli",
+  "tool_version": "0.1.0",
+  "truffle_version": "0.7.17",
+  "workload": "video"
+}

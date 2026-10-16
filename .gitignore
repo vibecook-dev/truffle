@@ -21,6 +21,11 @@ target/
 target/bench-results/
 bench-results/
 
+# Benchmark app (RFC 027): sidecar copies written by app:build, Tauri codegen
+benchmark/app/src-tauri/binaries/*
+!benchmark/app/src-tauri/binaries/.gitkeep
+benchmark/app/src-tauri/gen/
+
 # Sidecar binaries
 packages/sidecar-slim/bin/
 packages/sidecar-slim/sidecar-slim

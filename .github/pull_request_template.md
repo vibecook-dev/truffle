@@ -16,8 +16,8 @@
 - [ ] I have tested these changes locally
 - [ ] I have added/updated tests for the changes (if applicable)
 - [ ] I have updated documentation (if applicable)
-- [ ] `cargo test --workspace --exclude truffle-tauri-plugin --exclude truffle-napi` passes
-- [ ] `cargo clippy --workspace --exclude truffle-tauri-plugin --exclude truffle-napi` has no new warnings
+- [ ] `cargo test --workspace --exclude truffle-tauri-plugin --exclude truffle-napi --exclude truffle-bench-app` passes
+- [ ] `cargo clippy --workspace --exclude truffle-tauri-plugin --exclude truffle-napi --exclude truffle-bench-app` has no new warnings
 - [ ] `cargo fmt --check` passes
 
 ## Screenshots / Recordings

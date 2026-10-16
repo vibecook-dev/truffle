@@ -1,0 +1,8 @@
+{
+  "peer": "laptop",
+  "peer_id": "nLAPTOP2CNTRL",
+  "run_id": "2f0c7a1e-5b3d-4c8a-9e6f-1a2b3c4d5e6f",
+  "state": "prepared",
+  "type": "remote-run",
+  "workload": "tcp"
+}

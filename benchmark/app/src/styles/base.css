@@ -1,0 +1,170 @@
+/* truffle bench, base. Tokens come from the vendored tokens.css (imported first in main.tsx).
+   These are Home's extensions to them (career/home/styles/base.css :root, lines 7, 18, 25) and
+   the page defaults Home uses for a dense desktop app: a 15 px body, not the brand's 18 px. */
+
+:root {
+  --desk: #e9e9e3;
+  --redline-wash: #f8e6e1;
+  --scrim: rgba(10, 10, 10, 0.32);
+  --titlebar-h: 40px;
+  --rail-w: 232px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --desk: #1d1d1b;
+    --redline-wash: #3a1712;
+    --scrim: rgba(0, 0, 0, 0.56);
+  }
+}
+:root[data-theme='dark'] {
+  --desk: #1d1d1b;
+  --redline-wash: #3a1712;
+  --scrim: rgba(0, 0, 0, 0.56);
+}
+
+/* base.css html/body, adapted */
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+* {
+  box-sizing: border-box;
+}
+::selection {
+  background: var(--blueline-wash);
+  color: var(--ink);
+}
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+button {
+  cursor: pointer;
+}
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+a {
+  color: inherit;
+}
+p {
+  margin: 0;
+}
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 500;
+}
+
+/* type helpers. .label, .spec, .annotation and .code come from tokens.css. */
+.label {
+  color: var(--ink-2);
+}
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: 0;
+}
+.num {
+  font-family: var(--font-mono);
+}
+/* small words in Jost (hints, captions, metas): DM Mono is for numbers, specs and code only */
+.caption {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 16px;
+  letter-spacing: 0;
+}
+.muted {
+  color: var(--ink-3);
+}
+.ink2 {
+  color: var(--ink-2);
+}
+.bad {
+  color: var(--redline);
+}
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.nowrap {
+  white-space: nowrap;
+}
+.spacer {
+  flex: 1 1 auto;
+}
+.inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.stack {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr);
+}
+.measure {
+  max-width: 68ch;
+}
+.linkish {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--rule-strong);
+  text-underline-offset: 0.22em;
+}
+.linkish:hover {
+  text-decoration-color: currentColor;
+}
+code,
+.code-inline {
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.87em;
+  padding: 0 4px;
+  background: var(--ground-sunken);
+  border: 1px solid var(--rule);
+}
+
+/* base.css :552: under reduced motion nothing moves */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* main.tsx: the app's code failed to load */
+.load-error {
+  margin: 48px 24px;
+  color: var(--ink);
+}

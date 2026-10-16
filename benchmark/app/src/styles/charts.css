@@ -1,0 +1,130 @@
+/* truffle bench, charts (RFC 027 §11.4). The SVG draws with resolved tokens; this styles the
+   card around it, the legend, the readout and the construction layer. */
+
+.chart {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+.chart-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px 16px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.ch-title {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 10px;
+  min-width: 0;
+}
+.ch-name {
+  font-weight: 500;
+  color: var(--ink);
+}
+.ch-meta {
+  color: var(--ink-3);
+}
+.ch-legend {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-left: auto;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 18px;
+}
+.ch-right {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+.lg-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.lg-item svg {
+  display: block;
+  flex: none;
+}
+.chart-plot {
+  position: relative;
+  min-width: 0;
+  width: 100%;
+}
+.chart-plot > svg {
+  display: block;
+  overflow: visible;
+}
+.chart-plot text {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* the readout: ground-raised, rule-strong edge, values lead in DM Mono */
+.chart-tip {
+  position: absolute;
+  z-index: 6;
+  min-width: 120px;
+  padding: 6px 8px;
+  background: var(--ground-raised);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink);
+  pointer-events: none;
+  display: grid;
+  gap: 2px;
+}
+.chart-tip .ct-title {
+  color: var(--ink-3);
+}
+.chart-tip .ct-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.chart-tip .ct-row > svg {
+  grid-column: 1;
+}
+.chart-tip .ct-value {
+  font-weight: 500;
+}
+.chart-tip .ct-label {
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+/* construction: only while ⌥ is held; fades in over 240 ms (none under reduced motion) */
+.chart-construction {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+  animation: jy-fade var(--duration-step) var(--easing-standard) both;
+}
+.chart-construction > svg {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+.spark-fluid {
+  width: 100%;
+  min-width: 0;
+}
+.sparkline {
+  display: block;
+}
+
+/* an empty chart's sentence ("Run it to see the result here."): words are Jost, not DM Mono */
+.chart-empty {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 16px;
+}

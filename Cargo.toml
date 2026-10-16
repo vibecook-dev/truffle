@@ -7,7 +7,17 @@ members = [
     "crates/truffle",
     "crates/truffle-napi",
     "crates/truffle-tauri-plugin",
-    "crates/truffle-bench",
+    "benchmark/engine",
+    "benchmark/app/src-tauri",
+]
+# A plain `cargo build` / `cargo test` skips the GUI-toolkit crates (NAPI,
+# Tauri); name them with `-p` or `--workspace` (RFC 027 §4).
+default-members = [
+    "crates/truffle-core",
+    "crates/truffle-cli",
+    "crates/truffle-sidecar",
+    "crates/truffle",
+    "benchmark/engine",
 ]
 
 # ── Shared package metadata ──────────────────────────────────────────
@@ -99,6 +109,13 @@ deunicode = "1"
 
 # Misc
 toml = "1.1"
+
+# Benchmark engine (RFC 027; benchmark/engine only)
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
+schemars = { version = "1", features = ["derive"] }
+fd-lock = "4"
+machine-uid = "0.6"
+socket2 = "0.6"
 
 # NAPI
 napi = { version = "3", features = ["async", "napi4", "tokio_rt", "serde-json"] }

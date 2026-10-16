@@ -1,0 +1,245 @@
+{
+  "compare_key": "4bbb2648d70114c0",
+  "duration_ms": 14212,
+  "error": null,
+  "error_code": null,
+  "finished_at": "2026-10-16T08:00:14.212Z",
+  "git_dirty": false,
+  "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+  "label": "File transfer · 10 MiB × 3",
+  "local": {
+    "app_foreground_pct": null,
+    "arch": "aarch64",
+    "build_profile": "release",
+    "device_name": "studio-cli",
+    "git_dirty": false,
+    "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "host_fingerprint": "0f1e2d3c4b5a6978",
+    "host_fingerprint_weak": false,
+    "logical_cpus": 12,
+    "on_battery": false,
+    "os": "macos",
+    "rustc": "rustc 1.91.0 (f8297e351 2025-10-28)",
+    "sidecar_path": "crates/truffle-core/tests/test-sidecar",
+    "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+    "tailscale_ip": "100.64.0.1",
+    "tool": "truffle-bench-cli",
+    "tool_version": "0.1.0",
+    "truffle_version": "0.7.17"
+  },
+  "methodology": "v3",
+  "network": {
+    "after": {
+      "at": "2026-10-16T08:00:00.000Z",
+      "connection": "direct",
+      "endpoint": "192.0.2.10:41641",
+      "error": null,
+      "rtt_ms": 3.3
+    },
+    "before": {
+      "at": "2026-10-16T08:00:00.000Z",
+      "connection": "direct",
+      "endpoint": "192.0.2.10:41641",
+      "error": null,
+      "rtt_ms": 3.1
+    },
+    "clock": null,
+    "derp_share": 1.0685840327416905e-6,
+    "loaded_rtt_ms": null,
+    "path_bytes": {
+      "derp": 1240,
+      "direct": 1160412880,
+      "peer_relay": 0
+    },
+    "path_label": "direct",
+    "path_timeline": [],
+    "settle_ms": 412,
+    "topology": "separate-hosts"
+  },
+  "notes": [],
+  "overlapping_runs": 0,
+  "params": {
+    "iterations": 3,
+    "size_bytes": 10485760,
+    "workload": "file-transfer"
+  },
+  "peer": {
+    "app_foreground_pct": null,
+    "arch": "aarch64",
+    "build_profile": "release",
+    "device_name": "laptop",
+    "git_dirty": null,
+    "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "host_fingerprint": "a1b2c3d4e5f60718",
+    "host_fingerprint_weak": false,
+    "logical_cpus": 12,
+    "on_battery": null,
+    "os": "macos",
+    "rustc": null,
+    "sidecar_path": null,
+    "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+    "tailscale_ip": "100.64.0.2",
+    "tool": "truffle-bench-app",
+    "tool_version": "0.1.0",
+    "truffle_version": "0.7.17"
+  },
+  "resources": {
+    "combined": null,
+    "local": {
+      "cpu_ms": 812.0,
+      "cpu_ms_per_mb": 0.71,
+      "cpu_pct_avg": 8.12,
+      "cpu_pct_max": 10.15,
+      "rss_mb_max": 48.2,
+      "sidecar_cpu_ms": 1299.2,
+      "sidecar_cpu_ms_per_mb": 1.136,
+      "sidecar_cpu_pct_avg": 12.992,
+      "sidecar_cpu_pct_max": 16.240000000000002,
+      "sidecar_rss_mb_max": 61.9
+    },
+    "peer": {
+      "cpu_ms": 1044.0,
+      "cpu_ms_per_mb": 0.92,
+      "cpu_pct_avg": 10.44,
+      "cpu_pct_max": 13.05,
+      "rss_mb_max": 48.2,
+      "sidecar_cpu_ms": 1670.4,
+      "sidecar_cpu_ms_per_mb": 1.4720000000000002,
+      "sidecar_cpu_pct_avg": 16.704,
+      "sidecar_cpu_pct_max": 20.880000000000003,
+      "sidecar_rss_mb_max": 61.9
+    }
+  },
+  "results": {
+    "ack_failures": 0,
+    "iterations": [
+      {
+        "ack_ok": true,
+        "bytes": 10485760,
+        "done_wait_ms": 1.9,
+        "e2e_mbps": 300.6669534050179,
+        "elapsed_ms": 279.0,
+        "error": null,
+        "excluded": true,
+        "excluded_reason": "first of 3 or more (warms caches and the connection)",
+        "file_name": "tb-8f3a5c7e9b1d2f40-1.bin",
+        "hash_ms": 27.9,
+        "index": 1,
+        "negotiate_ms": 14.2,
+        "ok": true,
+        "sha256_match": true,
+        "t_ms": 1320.0,
+        "transfer_ms": 236.3,
+        "wire_mbps": 354.9982225983918
+      },
+      {
+        "ack_ok": true,
+        "bytes": 10485760,
+        "done_wait_ms": 1.9,
+        "e2e_mbps": 357.87576791808874,
+        "elapsed_ms": 234.4,
+        "error": null,
+        "excluded": false,
+        "excluded_reason": null,
+        "file_name": "tb-8f3a5c7e9b1d2f40-2.bin",
+        "hash_ms": 21.4,
+        "index": 2,
+        "negotiate_ms": 4.1,
+        "ok": true,
+        "sha256_match": true,
+        "t_ms": 1560.0,
+        "transfer_ms": 208.3,
+        "wire_mbps": 402.717618819011
+      },
+      {
+        "ack_ok": true,
+        "bytes": 10485760,
+        "done_wait_ms": 1.9,
+        "e2e_mbps": 363.7731136166522,
+        "elapsed_ms": 230.6,
+        "error": null,
+        "excluded": false,
+        "excluded_reason": null,
+        "file_name": "tb-8f3a5c7e9b1d2f40-3.bin",
+        "hash_ms": 21.0,
+        "index": 3,
+        "negotiate_ms": 3.9,
+        "ok": true,
+        "sha256_match": true,
+        "t_ms": 1795.0,
+        "transfer_ms": 205.1,
+        "wire_mbps": 409.00087762067284
+      }
+    ],
+    "received_bytes": 31457280,
+    "sent_bytes": 31457280,
+    "size_bytes": 10485760,
+    "source_write_ms": 48.2,
+    "timed_iterations": 2
+  },
+  "run_id": "example-file-transfer-ok",
+  "schema_version": 3,
+  "series": [
+    {
+      "key": "wire_mbps",
+      "label": "Wire",
+      "points": [
+        [
+          1320.0,
+          354.9982225983918
+        ],
+        [
+          1560.0,
+          402.717618819011
+        ],
+        [
+          1795.0,
+          409.00087762067284
+        ]
+      ],
+      "unit": "Mb/s",
+      "warmup_ms": 1320.0
+    }
+  ],
+  "started_at": "2026-10-16T08:00:00.000Z",
+  "status": "ok",
+  "suite_id": null,
+  "summary": [
+    {
+      "better": "higher",
+      "key": "wire_mbps",
+      "label": "Wire",
+      "uncertainty": null,
+      "unit": "Mb/s",
+      "value": 405.8592482198419
+    },
+    {
+      "better": "higher",
+      "key": "e2e_mbps",
+      "label": "End to end",
+      "uncertainty": null,
+      "unit": "Mb/s",
+      "value": 360.82444076737045
+    },
+    {
+      "better": "lower",
+      "key": "hash_ms",
+      "label": "SHA-256 of page-cached data",
+      "uncertainty": null,
+      "unit": "ms",
+      "value": 21.2
+    },
+    {
+      "better": "lower",
+      "key": "negotiate_ms",
+      "label": "Offer to stream",
+      "uncertainty": null,
+      "unit": "ms",
+      "value": 4.0
+    }
+  ],
+  "tool": "truffle-bench-cli",
+  "tool_version": "0.1.0",
+  "truffle_version": "0.7.17",
+  "workload": "file-transfer"
+}

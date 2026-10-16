@@ -1,0 +1,11 @@
+{
+  "auth_url": null,
+  "error": {
+    "code": "state-in-use",
+    "message": "Another truffle bench is using this profile. Quit it, or start this one with --profile <name>."
+  },
+  "local": null,
+  "since_ms": 1760601600000,
+  "state": "error",
+  "tailscale_hostname": "truffle-truffle-bench-studio"
+}

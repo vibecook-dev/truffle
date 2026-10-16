@@ -9,6 +9,7 @@
       "force-tag-creation": true,
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
+      "exclude-paths": ["benchmark"],
       "extra-files": [
         {
           "type": "generic",

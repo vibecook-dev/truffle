@@ -1,0 +1,375 @@
+{
+  "compare_key": "b7c393d8b153ab38",
+  "duration_ms": 14212,
+  "error": "finish: no finish.ack from the peer within 41 s",
+  "error_code": "timeout",
+  "finished_at": "2026-10-16T08:00:14.212Z",
+  "git_dirty": false,
+  "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+  "label": "Egress · upload · 1 stream · 10 s",
+  "local": {
+    "app_foreground_pct": null,
+    "arch": "aarch64",
+    "build_profile": "release",
+    "device_name": "studio-cli",
+    "git_dirty": false,
+    "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "host_fingerprint": "0f1e2d3c4b5a6978",
+    "host_fingerprint_weak": false,
+    "logical_cpus": 12,
+    "on_battery": false,
+    "os": "macos",
+    "rustc": "rustc 1.91.0 (f8297e351 2025-10-28)",
+    "sidecar_path": "crates/truffle-core/tests/test-sidecar",
+    "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+    "tailscale_ip": "100.64.0.1",
+    "tool": "truffle-bench-cli",
+    "tool_version": "0.1.0",
+    "truffle_version": "0.7.17"
+  },
+  "methodology": "v3",
+  "network": {
+    "after": {
+      "at": "2026-10-16T08:00:00.000Z",
+      "connection": "direct",
+      "endpoint": "192.0.2.10:41641",
+      "error": null,
+      "rtt_ms": 3.3
+    },
+    "before": {
+      "at": "2026-10-16T08:00:00.000Z",
+      "connection": "direct",
+      "endpoint": "192.0.2.10:41641",
+      "error": null,
+      "rtt_ms": 3.1
+    },
+    "clock": {
+      "after": {
+        "at_ns": 1760601610400000000,
+        "delay_ns": 824000,
+        "offset_ns": -1253300,
+        "samples": 16,
+        "uncertainty_ns": 412000
+      },
+      "before": {
+        "at_ns": 1760601600400000000,
+        "delay_ns": 824000,
+        "offset_ns": -1284310,
+        "samples": 16,
+        "uncertainty_ns": 412000
+      },
+      "drift_ppm": 3.101,
+      "uncertainty_ns": 412000
+    },
+    "derp_share": 1.0685840327416905e-6,
+    "loaded_rtt_ms": {
+      "lost": 0,
+      "max": 5.4,
+      "mean": 4.3999999999999995,
+      "min": 3.4,
+      "p50": 4.2,
+      "p90": null,
+      "p95": null,
+      "p99": null,
+      "p999": null,
+      "samples": 6,
+      "stddev": 0.7483314773547884
+    },
+    "path_bytes": {
+      "derp": 1240,
+      "direct": 1160412880,
+      "peer_relay": 0
+    },
+    "path_label": "direct",
+    "path_timeline": [
+      {
+        "connection": "direct",
+        "rtt_ms": 3.4,
+        "t_ms": 500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 3.8,
+        "t_ms": 1000
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 4.2,
+        "t_ms": 1500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 4.6,
+        "t_ms": 2000
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 5.0,
+        "t_ms": 2500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 5.4,
+        "t_ms": 3000
+      }
+    ],
+    "settle_ms": 412,
+    "topology": "separate-hosts"
+  },
+  "notes": [
+    "egress removes only the initiator-side Rust bridge, and the responder's sink still uses one. So tcp crosses 2 bridges and egress 1, and egress − tcp is the cost of one bridge.",
+    "ended during the running phase"
+  ],
+  "overlapping_runs": 0,
+  "params": {
+    "direction": "upload",
+    "duration_secs": 10,
+    "streams": 1,
+    "warmup_secs": 1,
+    "workload": "egress"
+  },
+  "peer": {
+    "app_foreground_pct": null,
+    "arch": "aarch64",
+    "build_profile": "release",
+    "device_name": "laptop",
+    "git_dirty": null,
+    "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "host_fingerprint": "a1b2c3d4e5f60718",
+    "host_fingerprint_weak": false,
+    "logical_cpus": 12,
+    "on_battery": null,
+    "os": "macos",
+    "rustc": null,
+    "sidecar_path": null,
+    "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+    "tailscale_ip": "100.64.0.2",
+    "tool": "truffle-bench-app",
+    "tool_version": "0.1.0",
+    "truffle_version": "0.7.17"
+  },
+  "resources": {
+    "combined": null,
+    "local": {
+      "cpu_ms": 812.0,
+      "cpu_ms_per_mb": 0.71,
+      "cpu_pct_avg": 8.12,
+      "cpu_pct_max": 10.15,
+      "rss_mb_max": 48.2,
+      "sidecar_cpu_ms": 1299.2,
+      "sidecar_cpu_ms_per_mb": 1.136,
+      "sidecar_cpu_pct_avg": 12.992,
+      "sidecar_cpu_pct_max": 16.240000000000002,
+      "sidecar_rss_mb_max": 61.9
+    },
+    "peer": {
+      "cpu_ms": 1044.0,
+      "cpu_ms_per_mb": 0.92,
+      "cpu_pct_avg": 10.44,
+      "cpu_pct_max": 13.05,
+      "rss_mb_max": 48.2,
+      "sidecar_cpu_ms": 1670.4,
+      "sidecar_cpu_ms_per_mb": 1.4720000000000002,
+      "sidecar_cpu_pct_avg": 16.704,
+      "sidecar_cpu_pct_max": 20.880000000000003,
+      "sidecar_rss_mb_max": 61.9
+    }
+  },
+  "results": {},
+  "run_id": "example-egress-failed",
+  "schema_version": 3,
+  "series": [
+    {
+      "key": "goodput_mbps",
+      "label": "Goodput",
+      "points": [
+        [
+          650.000128,
+          700.0
+        ],
+        [
+          900.0,
+          1010.0
+        ],
+        [
+          1149.999872,
+          1044.0
+        ],
+        [
+          1400.0,
+          1052.0
+        ],
+        [
+          1650.000128,
+          1038.0
+        ],
+        [
+          1900.0,
+          700.0
+        ],
+        [
+          2149.999872,
+          1010.0
+        ],
+        [
+          2400.0,
+          1044.0
+        ],
+        [
+          2650.000128,
+          1052.0
+        ],
+        [
+          2900.0,
+          1038.0
+        ],
+        [
+          3149.999872,
+          700.0
+        ],
+        [
+          3400.0,
+          1010.0
+        ],
+        [
+          3650.000128,
+          1044.0
+        ],
+        [
+          3900.0,
+          1052.0
+        ],
+        [
+          4149.999872,
+          1038.0
+        ],
+        [
+          4400.0,
+          700.0
+        ],
+        [
+          4650.000128,
+          1010.0
+        ],
+        [
+          4900.0,
+          1044.0
+        ],
+        [
+          5149.999872,
+          1052.0
+        ],
+        [
+          5400.0,
+          1038.0
+        ],
+        [
+          5650.000128,
+          700.0
+        ],
+        [
+          5900.0,
+          1010.0
+        ],
+        [
+          6149.999872,
+          1044.0
+        ],
+        [
+          6400.0,
+          1052.0
+        ],
+        [
+          6650.000128,
+          1038.0
+        ],
+        [
+          6900.0,
+          700.0
+        ],
+        [
+          7149.999872,
+          1010.0
+        ],
+        [
+          7400.0,
+          1044.0
+        ],
+        [
+          7650.000128,
+          1052.0
+        ],
+        [
+          7900.0,
+          1038.0
+        ],
+        [
+          8149.999872,
+          700.0
+        ],
+        [
+          8400.0,
+          1010.0
+        ],
+        [
+          8650.000128,
+          1044.0
+        ],
+        [
+          8900.0,
+          1052.0
+        ],
+        [
+          9149.999872,
+          1038.0
+        ],
+        [
+          9400.0,
+          700.0
+        ],
+        [
+          9650.000128,
+          1010.0
+        ],
+        [
+          9900.0,
+          1044.0
+        ],
+        [
+          10149.999872,
+          1052.0
+        ],
+        [
+          10400.0,
+          1038.0
+        ],
+        [
+          10650.000128,
+          700.0
+        ],
+        [
+          10900.0,
+          1010.0
+        ],
+        [
+          11149.999872,
+          1044.0
+        ],
+        [
+          11396.999936,
+          1064.7773279352227
+        ]
+      ],
+      "unit": "Mb/s",
+      "warmup_ms": 1400.0
+    }
+  ],
+  "started_at": "2026-10-16T08:00:00.000Z",
+  "status": "failed",
+  "suite_id": null,
+  "summary": [],
+  "tool": "truffle-bench-cli",
+  "tool_version": "0.1.0",
+  "truffle_version": "0.7.17",
+  "workload": "egress"
+}

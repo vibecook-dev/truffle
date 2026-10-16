@@ -1,0 +1,12 @@
+{
+  "count": 200,
+  "direction": "bidirectional",
+  "duration_secs": 10,
+  "mode": "throughput",
+  "nodelay": true,
+  "payload_bytes": 64,
+  "streams": 4,
+  "warmup_count": 10,
+  "warmup_secs": 1,
+  "workload": "tcp"
+}

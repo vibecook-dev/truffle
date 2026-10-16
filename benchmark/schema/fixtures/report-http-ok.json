@@ -1,0 +1,492 @@
+{
+  "compare_key": "6039b33cec02cbe0",
+  "duration_ms": 14212,
+  "error": null,
+  "error_code": null,
+  "finished_at": "2026-10-16T08:00:14.212Z",
+  "git_dirty": false,
+  "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+  "label": "HTTP · proxy · keep-alive · 4 workers · 1 KiB · 10 s",
+  "local": {
+    "app_foreground_pct": null,
+    "arch": "aarch64",
+    "build_profile": "release",
+    "device_name": "studio-cli",
+    "git_dirty": false,
+    "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "host_fingerprint": "0f1e2d3c4b5a6978",
+    "host_fingerprint_weak": false,
+    "logical_cpus": 12,
+    "on_battery": false,
+    "os": "macos",
+    "rustc": "rustc 1.91.0 (f8297e351 2025-10-28)",
+    "sidecar_path": "crates/truffle-core/tests/test-sidecar",
+    "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+    "tailscale_ip": "100.64.0.1",
+    "tool": "truffle-bench-cli",
+    "tool_version": "0.1.0",
+    "truffle_version": "0.7.17"
+  },
+  "methodology": "v3",
+  "network": {
+    "after": {
+      "at": "2026-10-16T08:00:00.000Z",
+      "connection": "direct",
+      "endpoint": "192.0.2.10:41641",
+      "error": null,
+      "rtt_ms": 3.3
+    },
+    "before": {
+      "at": "2026-10-16T08:00:00.000Z",
+      "connection": "direct",
+      "endpoint": "192.0.2.10:41641",
+      "error": null,
+      "rtt_ms": 3.1
+    },
+    "clock": null,
+    "derp_share": 1.0685840327416905e-6,
+    "loaded_rtt_ms": {
+      "lost": 0,
+      "max": 5.4,
+      "mean": 4.3999999999999995,
+      "min": 3.4,
+      "p50": 4.2,
+      "p90": null,
+      "p95": null,
+      "p99": null,
+      "p999": null,
+      "samples": 6,
+      "stddev": 0.7483314773547884
+    },
+    "path_bytes": {
+      "derp": 1240,
+      "direct": 1160412880,
+      "peer_relay": 0
+    },
+    "path_label": "direct",
+    "path_timeline": [
+      {
+        "connection": "direct",
+        "rtt_ms": 3.4,
+        "t_ms": 500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 3.8,
+        "t_ms": 1000
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 4.2,
+        "t_ms": 1500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 4.6,
+        "t_ms": 2000
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 5.0,
+        "t_ms": 2500
+      },
+      {
+        "connection": "direct",
+        "rtt_ms": 5.4,
+        "t_ms": 3000
+      }
+    ],
+    "settle_ms": 412,
+    "topology": "separate-hosts"
+  },
+  "notes": [
+    "the sidecar's proxy reconnected upstream: 9 upstream connections for 4 keep-alive workers (sidecars before protocol 8 keep only 2 idle connections per host)"
+  ],
+  "overlapping_runs": 0,
+  "params": {
+    "concurrency": 4,
+    "connection": "keepalive",
+    "duration_secs": 10,
+    "response_bytes": 1024,
+    "target": "proxy",
+    "warmup_secs": 1,
+    "workload": "http"
+  },
+  "peer": {
+    "app_foreground_pct": null,
+    "arch": "aarch64",
+    "build_profile": "release",
+    "device_name": "laptop",
+    "git_dirty": null,
+    "git_sha": "3cdfbaa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+    "host_fingerprint": "a1b2c3d4e5f60718",
+    "host_fingerprint_weak": false,
+    "logical_cpus": 12,
+    "on_battery": null,
+    "os": "macos",
+    "rustc": null,
+    "sidecar_path": null,
+    "sidecar_sha256": "9f2c1e7a4b8d3f60c5a1e2d4b6f8a0c2e4d6f8a1b3c5e7f9a2b4c6d8e0f1a3b5",
+    "tailscale_ip": "100.64.0.2",
+    "tool": "truffle-bench-app",
+    "tool_version": "0.1.0",
+    "truffle_version": "0.7.17"
+  },
+  "resources": {
+    "combined": null,
+    "local": {
+      "cpu_ms": 812.0,
+      "cpu_ms_per_mb": 0.71,
+      "cpu_pct_avg": 8.12,
+      "cpu_pct_max": 10.15,
+      "rss_mb_max": 48.2,
+      "sidecar_cpu_ms": 1299.2,
+      "sidecar_cpu_ms_per_mb": 1.136,
+      "sidecar_cpu_pct_avg": 12.992,
+      "sidecar_cpu_pct_max": 16.240000000000002,
+      "sidecar_rss_mb_max": 61.9
+    },
+    "peer": {
+      "cpu_ms": 1044.0,
+      "cpu_ms_per_mb": 0.92,
+      "cpu_pct_avg": 10.44,
+      "cpu_pct_max": 13.05,
+      "rss_mb_max": 48.2,
+      "sidecar_cpu_ms": 1670.4,
+      "sidecar_cpu_ms_per_mb": 1.4720000000000002,
+      "sidecar_cpu_pct_avg": 16.704,
+      "sidecar_cpu_pct_max": 20.880000000000003,
+      "sidecar_rss_mb_max": 61.9
+    }
+  },
+  "results": {
+    "attempts": 21277,
+    "body_bytes": 21766144,
+    "connect": {
+      "lost": 0,
+      "max": 13.6,
+      "mean": 12.675,
+      "min": 11.8,
+      "p50": 12.4,
+      "p90": null,
+      "p95": null,
+      "p99": null,
+      "p999": null,
+      "samples": 4,
+      "stddev": 0.7632168761236869
+    },
+    "connect_ms": 12.65,
+    "connections_opened": 4,
+    "error_kinds": {},
+    "error_pct": 0.09869812473563003,
+    "errors": {
+      "io": 0,
+      "non_2xx": 21,
+      "timeout": 0
+    },
+    "goodput_mbps": 17.4129152,
+    "latency_ms": {
+      "lost": 0,
+      "max": 5.893,
+      "mean": 2.213564264207748,
+      "min": 1.5,
+      "p50": 2.203,
+      "p90": 2.765,
+      "p95": 2.836,
+      "p99": 2.892,
+      "p999": 5.515,
+      "samples": 21256,
+      "stddev": 0.45239206189149406
+    },
+    "ok": 21256,
+    "port": 21337,
+    "req_per_sec": 2125.6,
+    "samples_ms": [
+      1.5,
+      1.535,
+      1.571,
+      1.607,
+      1.644,
+      1.68,
+      1.716,
+      1.752,
+      1.788,
+      1.824,
+      1.86,
+      1.896,
+      1.932,
+      1.969,
+      2.004,
+      2.041,
+      2.076,
+      2.113,
+      2.148,
+      2.185,
+      2.22,
+      2.257,
+      2.292,
+      2.329,
+      2.365,
+      2.401,
+      2.438,
+      2.474,
+      2.51,
+      2.546,
+      2.582,
+      2.617,
+      2.654,
+      2.689,
+      2.726,
+      2.761,
+      2.798,
+      2.834,
+      2.87,
+      5.893
+    ],
+    "samples_total": 21256,
+    "server": {
+      "bad_request": 0,
+      "body_bytes": 23943168,
+      "connections": 9,
+      "forbidden": 0,
+      "foreign_dropped": 0,
+      "not_found": 0,
+      "ok": 23382,
+      "requests": 23405
+    },
+    "status_counts": {
+      "200": 21256,
+      "502": 21
+    },
+    "warmup_requests": 2128
+  },
+  "run_id": "example-http-ok",
+  "schema_version": 3,
+  "series": [
+    {
+      "key": "req_per_sec",
+      "label": "Requests per second",
+      "points": [
+        [
+          649.999872,
+          2104.0
+        ],
+        [
+          900.0,
+          2128.0
+        ],
+        [
+          1150.000128,
+          2132.0
+        ],
+        [
+          1400.0,
+          2116.0
+        ],
+        [
+          1649.999872,
+          2128.0
+        ],
+        [
+          1900.0,
+          2132.0
+        ],
+        [
+          2150.000128,
+          2124.0
+        ],
+        [
+          2400.0,
+          2120.0
+        ],
+        [
+          2649.999872,
+          2128.0
+        ],
+        [
+          2900.0,
+          2128.0
+        ],
+        [
+          3150.000128,
+          2128.0
+        ],
+        [
+          3400.0,
+          2120.0
+        ],
+        [
+          3649.999872,
+          2124.0
+        ],
+        [
+          3900.0,
+          2132.0
+        ],
+        [
+          4150.000128,
+          2128.0
+        ],
+        [
+          4400.0,
+          2112.0
+        ],
+        [
+          4649.999872,
+          2132.0
+        ],
+        [
+          4900.0,
+          2128.0
+        ],
+        [
+          5150.000128,
+          2128.0
+        ],
+        [
+          5400.0,
+          2116.0
+        ],
+        [
+          5649.999872,
+          2132.0
+        ],
+        [
+          5900.0,
+          2124.0
+        ],
+        [
+          6150.000128,
+          2132.0
+        ],
+        [
+          6400.0,
+          2116.0
+        ],
+        [
+          6649.999872,
+          2128.0
+        ],
+        [
+          6900.0,
+          2128.0
+        ],
+        [
+          7150.000128,
+          2132.0
+        ],
+        [
+          7400.0,
+          2112.0
+        ],
+        [
+          7649.999872,
+          2132.0
+        ],
+        [
+          7900.0,
+          2128.0
+        ],
+        [
+          8150.000128,
+          2124.0
+        ],
+        [
+          8400.0,
+          2120.0
+        ],
+        [
+          8649.999872,
+          2128.0
+        ],
+        [
+          8900.0,
+          2128.0
+        ],
+        [
+          9150.000128,
+          2128.0
+        ],
+        [
+          9400.0,
+          2120.0
+        ],
+        [
+          9649.999872,
+          2124.0
+        ],
+        [
+          9900.0,
+          2132.0
+        ],
+        [
+          10150.000128,
+          2124.0
+        ],
+        [
+          10400.0,
+          2120.0
+        ],
+        [
+          10649.999872,
+          2128.0
+        ],
+        [
+          10900.0,
+          2128.0
+        ],
+        [
+          11150.000128,
+          2128.0
+        ],
+        [
+          11400.0,
+          2120.0
+        ]
+      ],
+      "unit": "req/s",
+      "warmup_ms": 1400.0
+    }
+  ],
+  "started_at": "2026-10-16T08:00:00.000Z",
+  "status": "ok",
+  "suite_id": null,
+  "summary": [
+    {
+      "better": "higher",
+      "key": "req_per_sec",
+      "label": "Requests per second",
+      "uncertainty": null,
+      "unit": "req/s",
+      "value": 2125.6
+    },
+    {
+      "better": "lower",
+      "key": "latency_p50_ms",
+      "label": "Latency p50",
+      "uncertainty": null,
+      "unit": "ms",
+      "value": 2.203
+    },
+    {
+      "better": "lower",
+      "key": "latency_p99_ms",
+      "label": "Latency p99",
+      "uncertainty": null,
+      "unit": "ms",
+      "value": 2.892
+    },
+    {
+      "better": "lower",
+      "key": "error_pct",
+      "label": "Errors",
+      "uncertainty": null,
+      "unit": "%",
+      "value": 0.09869812473563003
+    }
+  ],
+  "tool": "truffle-bench-cli",
+  "tool_version": "0.1.0",
+  "truffle_version": "0.7.17",
+  "workload": "http"
+}

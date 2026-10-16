@@ -1,0 +1,9 @@
+{
+  "cancelled": false,
+  "failed": 0,
+  "run_ids": [
+    "2f0c7a1e-5b3d-4c8a-9e6f-1a2b3c4d5e6f",
+    "8b9c0d1e-2f3a-4b5c-8d6e-7f8091a2b3c4"
+  ],
+  "suite_id": "6a1d2c3b-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+}

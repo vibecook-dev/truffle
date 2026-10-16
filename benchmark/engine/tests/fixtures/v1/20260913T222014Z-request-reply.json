@@ -1,0 +1,24 @@
+{
+  "workload": "request-reply",
+  "timestamp_utc": "2026-09-13T22:20:14.674381+00:00",
+  "git_sha": "d327825",
+  "params": {
+    "count": 200,
+    "payload_bytes": 1024,
+    "timeout_secs": 10
+  },
+  "results": {
+    "successes": 200,
+    "timeouts": 0,
+    "total_elapsed_secs": 0.065324666,
+    "rtt_ms": {
+      "p50": 0.293,
+      "p95": 0.482,
+      "p99": 0.56,
+      "p999": 0.894,
+      "min": 0.204,
+      "max": 0.894,
+      "mean": 0.3253200000000002
+    }
+  }
+}

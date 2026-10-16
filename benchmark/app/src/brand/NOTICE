@@ -1,0 +1,23 @@
+Vendored brand files
+
+Everything in this folder except react-global.ts, jy.d.ts, VERSION and this NOTICE is copied
+unedited from James Yong's identity files (career/brand). See VERSION for the source date.
+
+1. The JY mark, wordmark and lockups (logos/*.svg, and the geometry inside
+   components/bundle.js) are James Yong's personal marks. All rights reserved. They are
+   not covered by this repository's MIT licence and may not be reused outside this app
+   without permission.
+
+2. The component bundle (components/bundle.js, bundle.css, index.d.ts), the design tokens
+   (tokens/tokens.css, tokens.json) and the interface icons (icons/*.svg) come from the same
+   identity and are vendored for this app only. Ask James Yong before reusing them elsewhere.
+
+3. Fonts are licensed under the SIL Open Font License, Version 1.1, with no Reserved Font
+   Name. The licence texts sit next to the font files:
+   - Jost (fonts/Jost-Variable.woff2, fonts/Jost-Italic-Variable.woff2),
+     Copyright 2020 The Jost Project Authors. Licence: fonts/Jost-OFL.txt
+   - DM Mono (fonts/DMMono-Light.woff2, fonts/DMMono-Regular.woff2, fonts/DMMono-Medium.woff2),
+     Copyright 2020 The DM Mono Project Authors. Licence: fonts/DMMono-OFL.txt
+
+The app package (@vibecook/truffle-bench-app) is private and never published, so none of
+these files leave the repository in an npm or crates package.

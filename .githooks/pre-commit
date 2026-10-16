@@ -10,9 +10,13 @@
 #      gitignored (rebuilt at release); 0.3.17 shipped stale types.
 #   2. Workflow YAML parse errors
 #   3. Rustfmt violations on staged Rust files
-#   4. Prettier violations on staged TypeScript files in packages/
+#   4. Prettier violations on staged TypeScript files in packages/ and
+#      benchmark/app/src/ (the benchmark app, RFC 027)
 #   5. Doctests in crates/truffle/src/lib.rs (the only doctest in CI)
 #      when truffle-core or the meta-crate changes
+#   6. TypeScript build when packages/ or benchmark/app sources, or the
+#      generated benchmark/schema fixtures the app type-checks, change
+#   7. Secret scan on every staged file
 #
 # Skip with: git commit --no-verify
 
@@ -142,14 +146,19 @@ if [ "$rust_count" -gt 0 ]; then
 fi
 
 # ───────────────────────────────────────────────────────────────
-# Check 4: Prettier on staged TypeScript files in packages/
-# CI runs `prettier --check 'packages/*/src/**/*.ts'`, so mirror that.
+# Check 4: Prettier on staged TypeScript files in packages/ and the
+# benchmark app. CI runs
+# `prettier --check '{packages/*/src,benchmark/app/src}/**/*.{ts,tsx}'`,
+# so mirror that. (In `case`, `*` also matches `/`, so these patterns
+# cover every depth.) The vendored brand files are never formatted.
 # ───────────────────────────────────────────────────────────────
 ts_files=""
 ts_count=0
 while IFS= read -r f; do
   case "$f" in
-    packages/*/src/*.ts|packages/*/src/**/*.ts)
+    benchmark/app/src/brand/*)
+      ;;
+    packages/*/src/*.ts|benchmark/app/src/*.ts|benchmark/app/src/*.tsx)
       ts_files="$ts_files $f"
       ts_count=$((ts_count + 1))
       ;;
@@ -201,17 +210,26 @@ if [ "$doctest_relevant" -eq 1 ]; then
 fi
 
 # ───────────────────────────────────────────────────────────────
-# Check 6: TypeScript build for packages/
-# When any TS file in packages/, the NAPI .d.ts, or a package.json
-# changes, run `pnpm run build` to catch type drift across the
-# workspace. CI runs this in the `check` job's "Build" step; the
-# RFC 017 migration broke packages/cli/dev.ts (deviceId rename)
-# without anything local catching it.
+# Check 6: TypeScript build for packages/ and benchmark/app
+# When any TS file in packages/ or benchmark/app/src/, the NAPI .d.ts,
+# or a package.json/tsconfig/vite config of those changes, run
+# `pnpm run build` to catch type drift across the workspace. CI runs
+# this in the `check` job's "Build" step; the RFC 017 migration broke
+# packages/cli/dev.ts (deviceId rename) without anything local
+# catching it. The benchmark app's `build` is frontend-only
+# (tsc -b && vite build), so this needs no Rust or Tauri toolchain.
+# Its tsc also type-checks the JSON in benchmark/schema/fixtures/
+# (src/api/fixtures.test.ts), which engine changes regenerate with
+# UPDATE_SCHEMA=1, so an engine + schema-only commit can break it.
 # ───────────────────────────────────────────────────────────────
 ts_build_relevant=0
 while IFS= read -r f; do
   case "$f" in
-    packages/*/src/*.ts|packages/*/src/**/*.ts|packages/*/package.json|crates/truffle-napi/index.d.ts)
+    packages/*/src/*.ts|packages/*/package.json|crates/truffle-napi/index.d.ts)
+      ts_build_relevant=1
+      break
+      ;;
+    benchmark/app/src/*|benchmark/app/package.json|benchmark/app/tsconfig*.json|benchmark/app/vite.config.ts|benchmark/schema/*)
       ts_build_relevant=1
       break
       ;;
@@ -222,7 +240,7 @@ if [ "$ts_build_relevant" -eq 1 ]; then
   if ! command -v pnpm >/dev/null 2>&1; then
     echo "${YELLOW}[pre-commit] pnpm not found — skipping TS build check${NC}"
   else
-    echo "${YELLOW}[pre-commit] packages/ or NAPI types changed — running pnpm build...${NC}"
+    echo "${YELLOW}[pre-commit] packages/, benchmark/app, schema fixtures or NAPI types changed — running pnpm build...${NC}"
     if ! pnpm run build >/tmp/truffle-precommit-build.log 2>&1; then
       echo "${RED}[pre-commit] TypeScript build failed. Last 20 lines:${NC}"
       tail -20 /tmp/truffle-precommit-build.log | sed 's/^/            /'

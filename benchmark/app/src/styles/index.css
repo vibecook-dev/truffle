@@ -1,0 +1,7 @@
+/* truffle bench styles, on the vendored brand tokens (imported first in main.tsx). */
+@import './base.css';
+@import './chrome.css';
+@import './controls.css';
+@import './content.css';
+@import './charts.css';
+@import './views.css';

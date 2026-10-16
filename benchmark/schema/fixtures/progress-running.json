@@ -1,0 +1,18 @@
+{
+  "fraction": 0.4300000071525574,
+  "message": null,
+  "phase": "running",
+  "run_id": "2f0c7a1e-5b3d-4c8a-9e6f-1a2b3c4d5e6f",
+  "samples": [
+    {
+      "key": "goodput_mbps",
+      "value": 912.4
+    },
+    {
+      "key": "sent_mbps",
+      "value": 930.2
+    }
+  ],
+  "suite_id": null,
+  "t_ms": 5250
+}

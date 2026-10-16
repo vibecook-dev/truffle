@@ -1,0 +1,8 @@
+{
+  "auth_url": null,
+  "error": null,
+  "local": null,
+  "since_ms": 1760601600000,
+  "state": "stopping",
+  "tailscale_hostname": "truffle-truffle-bench-studio"
+}

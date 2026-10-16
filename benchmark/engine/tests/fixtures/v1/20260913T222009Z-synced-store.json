@@ -1,0 +1,16 @@
+{
+  "workload": "synced-store",
+  "timestamp_utc": "2026-09-13T22:20:09.839097+00:00",
+  "git_sha": "d327825",
+  "params": {
+    "scenario": "b1-sequential",
+    "ops": 200,
+    "converge_secs": 60
+  },
+  "results": {
+    "convergence_ms": 28,
+    "ops_per_sec_during_writes": 951063.0507249477,
+    "final_local_count": 200,
+    "observed_final_count_on_peer": 200
+  }
+}

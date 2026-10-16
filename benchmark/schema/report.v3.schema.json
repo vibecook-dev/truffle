@@ -1,0 +1,6784 @@
+{
+  "$defs": {
+    "ActiveRun": {
+      "description": "A run in flight on this hub (initiator side).",
+      "properties": {
+        "last": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Progress"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The latest progress event."
+        },
+        "peer_name": {
+          "description": "Target peer's device name.",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "Run id.",
+          "type": "string"
+        },
+        "started_at": {
+          "description": "RFC 3339.",
+          "type": "string"
+        },
+        "suite_id": {
+          "description": "Suite id when part of a suite.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "suite_index": {
+          "description": "This item's 0-based index in its suite.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "suite_profile": {
+          "description": "The suite's profile (`smoke`, `standard`, `full`, `nightly`) when\npart of a suite, so a reloaded UI can follow it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "suite_total": {
+          "description": "Items in its suite.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "workload": {
+          "description": "Workload name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "workload",
+        "peer_name",
+        "started_at"
+      ],
+      "type": "object"
+    },
+    "AppError": {
+      "description": "An engine error: a stable code plus a human-readable message.\n\n`Display` prints only the message; use [`AppError::code`] to branch.",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode",
+          "description": "Machine-readable code."
+        },
+        "message": {
+          "description": "One plain sentence for people.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "AppInfo": {
+      "description": "`app_info`.",
+      "properties": {
+        "app_version": {
+          "description": "App (engine) version.",
+          "type": "string"
+        },
+        "build_profile": {
+          "$ref": "#/$defs/BuildProfile",
+          "description": "Build profile."
+        },
+        "data_dir": {
+          "description": "Data directory.",
+          "type": "string"
+        },
+        "os": {
+          "description": "OS.",
+          "type": "string"
+        },
+        "profile": {
+          "description": "Profile name, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sidecar_path": {
+          "description": "Resolved sidecar path.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sidecar_sha256": {
+          "description": "Its SHA-256.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "truffle_version": {
+          "description": "truffle-core version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "app_version",
+        "truffle_version",
+        "data_dir",
+        "os",
+        "build_profile"
+      ],
+      "type": "object"
+    },
+    "BenchPeer": {
+      "description": "A same-app peer as the app shows it.",
+      "properties": {
+        "connection": {
+          "description": "Tailscale's connection label (`direct`, `relay:<region>`, `peer-relay:…`, `unknown`).",
+          "type": "string"
+        },
+        "device_id": {
+          "description": "Durable ULID once hello completed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "device_name": {
+          "description": "Device name (falls back to the display name).",
+          "type": "string"
+        },
+        "hello": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PeerHello"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Cached `hello.ack`, once received."
+        },
+        "hello_error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AppError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the last hello failed, if it did."
+        },
+        "hostname": {
+          "description": "Tailscale hostname.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Tailscale stable node id: the only peer key used for runs.",
+          "type": "string"
+        },
+        "ip": {
+          "description": "Tailnet IP.",
+          "type": "string"
+        },
+        "last_seen": {
+          "description": "Last seen (RFC 3339).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "login_name": {
+          "description": "Owner login, or `tagged-devices`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "online": {
+          "description": "Layer 3 online.",
+          "type": "boolean"
+        },
+        "os": {
+          "description": "OS, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rtt_ms": {
+          "description": "Last measured path RTT.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "same_host": {
+          "description": "Same machine as this hub, from the host fingerprint in the peer's\nhello (§7.4; [`same_host_verdict`](crate::env::same_host_verdict)):\n`None` when unknown (no hello yet, a peer that does not admit us and\nso withholds its fingerprint, or weak fingerprints that cannot tell).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "same_login": {
+          "description": "Same real account as this hub ([`same_login`]).",
+          "type": "boolean"
+        },
+        "tagged": {
+          "description": "The peer is a tagged device.",
+          "type": "boolean"
+        },
+        "ws_connected": {
+          "description": "Session WebSocket connected.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "device_name",
+        "hostname",
+        "ip",
+        "online",
+        "ws_connected",
+        "connection",
+        "same_login",
+        "tagged"
+      ],
+      "type": "object"
+    },
+    "Better": {
+      "description": "Which direction of a summary value is better.",
+      "oneOf": [
+        {
+          "const": "higher",
+          "description": "Bigger is better (throughput, rates).",
+          "type": "string"
+        },
+        {
+          "const": "lower",
+          "description": "Smaller is better (latency, loss, CPU).",
+          "type": "string"
+        }
+      ]
+    },
+    "BuildProfile": {
+      "description": "Rust build profile of one side.\n\n`unknown` only appears in imported v1 reports, which recorded nothing.",
+      "oneOf": [
+        {
+          "const": "debug",
+          "description": "`debug_assertions` on.",
+          "type": "string"
+        },
+        {
+          "const": "release",
+          "description": "An optimised build.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Not recorded (imported v1 reports).",
+          "type": "string"
+        }
+      ]
+    },
+    "CancelMsg": {
+      "description": "`cancel`: tear a run down (no reply).",
+      "properties": {
+        "run_id": {
+          "description": "Run id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "ClockAck": {
+      "description": "`clock.ack`.",
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Machine-readable failure code."
+        },
+        "error": {
+          "description": "Why it failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Request id.",
+          "type": "string"
+        },
+        "ok": {
+          "description": "Whether the request succeeded.",
+          "type": "boolean"
+        },
+        "t1_ns": {
+          "default": 0,
+          "description": "Echo of the request's `t1_ns`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "t2_ns": {
+          "default": 0,
+          "description": "Responder `now_ns()` on receipt.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "t3_ns": {
+          "default": 0,
+          "description": "Responder `now_ns()` just before replying.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "ok"
+      ],
+      "type": "object"
+    },
+    "ClockInfo": {
+      "description": "Clock offsets taken before and after a run (`network.clock`).",
+      "properties": {
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClockOffset"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Estimate after it."
+        },
+        "before": {
+          "$ref": "#/$defs/ClockOffset",
+          "description": "Estimate before the data phase."
+        },
+        "drift_ppm": {
+          "description": "Drift between the two, ppm.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "uncertainty_ns": {
+          "description": "The larger uncertainty of the two, ns.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "before",
+        "uncertainty_ns"
+      ],
+      "type": "object"
+    },
+    "ClockOffset": {
+      "description": "NTP-style offset estimate (§6 Clock).",
+      "properties": {
+        "at_ns": {
+          "description": "t4 of the chosen sample (local `now_ns()`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "delay_ns": {
+          "description": "δ: round-trip delay of the chosen sample, ns.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "offset_ns": {
+          "description": "θ: peer − local, ns.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "samples": {
+          "description": "Samples that answered.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "uncertainty_ns": {
+          "description": "⌈δ/2⌉, ns.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "offset_ns",
+        "delay_ns",
+        "uncertainty_ns",
+        "at_ns",
+        "samples"
+      ],
+      "type": "object"
+    },
+    "ClockReq": {
+      "description": "`clock`: one NTP-style exchange.",
+      "properties": {
+        "id": {
+          "description": "Request id.",
+          "type": "string"
+        },
+        "t1_ns": {
+          "description": "Initiator `now_ns()` at send (informational; the initiator keeps its own stamp).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "t1_ns"
+      ],
+      "type": "object"
+    },
+    "Direction": {
+      "description": "tcp / quic direction, seen from the initiator.",
+      "oneOf": [
+        {
+          "const": "upload",
+          "description": "Initiator → responder.",
+          "type": "string"
+        },
+        {
+          "const": "download",
+          "description": "Responder → initiator.",
+          "type": "string"
+        },
+        {
+          "const": "bidirectional",
+          "description": "Both at once (`streams` each way).",
+          "type": "string"
+        }
+      ]
+    },
+    "Distribution": {
+      "description": "Summary statistics of a sample set (§7.4).\n\n`samples` counts every sample including lost ones. Percentiles are\nnearest-rank over all samples with lost ones ranked as +∞; a percentile is\n`None` below its minimum sample count or when it lands on a lost sample.\n`min`, `mean`, `max` and `stddev` cover the received samples only.",
+      "properties": {
+        "lost": {
+          "description": "Lost or timed-out samples.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max": {
+          "description": "Largest received value.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "mean": {
+          "description": "Mean of received values.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "min": {
+          "description": "Smallest received value.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "p50": {
+          "description": "Median (n ≥ 2).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "p90": {
+          "description": "n ≥ 10.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "p95": {
+          "description": "n ≥ 20.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "p99": {
+          "description": "n ≥ 100.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "p999": {
+          "description": "n ≥ 1000.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "samples": {
+          "description": "n, lost included.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stddev": {
+          "description": "Sample standard deviation (n − 1) of received values; n ≥ 2.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "samples",
+        "lost"
+      ],
+      "type": "object"
+    },
+    "EgressResults": {
+      "description": "`RunReport.results` of an `egress` run: the tcp throughput results plus\nthe route.",
+      "properties": {
+        "bridges": {
+          "description": "Rust loopback bridges on the data path: 1 (tcp has 2).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytes_total": {
+          "description": "Payload bytes received, all directions.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "connect_ms": {
+          "$ref": "#/$defs/Distribution",
+          "description": "`connect_ms` over every stream."
+        },
+        "direction": {
+          "$ref": "#/$defs/Direction",
+          "description": "Upload, download or bidirectional."
+        },
+        "download": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TcpDirectionResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Bidirectional: the download direction."
+        },
+        "foreign_dropped": {
+          "description": "Foreign connections and bad headers the sink dropped.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "goodput_bytes": {
+          "description": "Payload bytes inside the measurement window.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "nodelay": {
+          "description": "`TCP_NODELAY` on both Rust sockets.",
+          "type": "boolean"
+        },
+        "received_bytes": {
+          "description": "Same as `bytes_total` (the §12 `received ≤ sent` check reads it).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "receiver": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReceiverStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The receiver's accounting (receiver timebase) for one-way runs."
+        },
+        "route_id": {
+          "description": "The egress route's id, `bench-<run_tag_hex>`.",
+          "type": "string"
+        },
+        "sent_bytes": {
+          "description": "Payload bytes written, all directions.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "streams": {
+          "description": "Every stream, both directions.",
+          "items": {
+            "$ref": "#/$defs/TcpStreamResult"
+          },
+          "type": "array"
+        },
+        "upload": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TcpDirectionResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Bidirectional: the upload direction."
+        },
+        "window_ms": {
+          "description": "Length of the measurement window, ms.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "direction",
+        "streams",
+        "bytes_total",
+        "received_bytes",
+        "sent_bytes",
+        "goodput_bytes",
+        "window_ms",
+        "connect_ms",
+        "foreign_dropped",
+        "nodelay",
+        "bridges",
+        "route_id"
+      ],
+      "type": "object"
+    },
+    "ErrorCode": {
+      "description": "Stable error codes. Serialised in kebab-case (`peer-not-found`, …), so the\napp and the control protocol can branch on them.",
+      "oneOf": [
+        {
+          "const": "not-running",
+          "description": "The hub (or its node) is not running.",
+          "type": "string"
+        },
+        {
+          "const": "peer-not-found",
+          "description": "No peer matches the reference, or the sender of a request is unknown.",
+          "type": "string"
+        },
+        {
+          "const": "peer-ambiguous",
+          "description": "The peer reference matches more than one peer.",
+          "type": "string"
+        },
+        {
+          "const": "peer-offline",
+          "description": "The peer is known but offline or gone.",
+          "type": "string"
+        },
+        {
+          "const": "login-refused",
+          "description": "The responder's admission rule refused this peer (§6 rule 1).",
+          "type": "string"
+        },
+        {
+          "const": "busy",
+          "description": "The responder is initiating its own run (§6 rule 3).",
+          "type": "string"
+        },
+        {
+          "const": "being-measured",
+          "description": "This hub is being measured by a peer and cannot start a run (§6 rule 3).",
+          "type": "string"
+        },
+        {
+          "const": "protocol-mismatch",
+          "description": "The peer speaks a different control-protocol version.",
+          "type": "string"
+        },
+        {
+          "const": "unsupported-workload",
+          "description": "The peer does not offer the requested workload.",
+          "type": "string"
+        },
+        {
+          "const": "invalid-params",
+          "description": "Parameters are out of bounds or malformed; never clamped.",
+          "type": "string"
+        },
+        {
+          "const": "timeout",
+          "description": "A deadline passed.",
+          "type": "string"
+        },
+        {
+          "const": "state-in-use",
+          "description": "Another process holds this hub's state directory.",
+          "type": "string"
+        },
+        {
+          "const": "sidecar-not-found",
+          "description": "No sidecar binary could be found (§5.3).",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "The run or suite was cancelled.",
+          "type": "string"
+        },
+        {
+          "const": "io",
+          "description": "A local I/O error.",
+          "type": "string"
+        },
+        {
+          "const": "internal",
+          "description": "Anything else.",
+          "type": "string"
+        }
+      ]
+    },
+    "FileTransferIteration": {
+      "description": "One iteration in the report.",
+      "properties": {
+        "ack_ok": {
+          "description": "The sender read the receiver's ACK byte.",
+          "type": "boolean"
+        },
+        "bytes": {
+          "description": "File size.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "done_wait_ms": {
+          "description": "`send_file` returned → `ft.done` arrived, ms.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "e2e_mbps": {
+          "description": "`size·8 / elapsed_secs / 1e6`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "elapsed_ms": {
+          "description": "`send_file` end to end, ms.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "error": {
+          "description": "What went wrong.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "excluded": {
+          "description": "Left out of the summary.",
+          "type": "boolean"
+        },
+        "excluded_reason": {
+          "description": "Why it was left out.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file_name": {
+          "description": "`tb-<run_tag_hex>-<index>.bin`.",
+          "type": "string"
+        },
+        "hash_ms": {
+          "description": "`timings.hash_secs` in ms (\"SHA-256 of page-cached data\").",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Iteration, from 1.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "negotiate_ms": {
+          "description": "OFFER sent → data stream open, ms.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "ok": {
+          "description": "Sent, received and verified (a missing ACK is fine when the\nreceiver's SHA-256 matches).",
+          "type": "boolean"
+        },
+        "sha256_match": {
+          "description": "The receiver's SHA-256 equals the sender's; `None` when unknown.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "t_ms": {
+          "description": "When it ended, ms since the run started.",
+          "format": "double",
+          "type": "number"
+        },
+        "transfer_ms": {
+          "description": "First write to the data stream → ACK read, ms.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "wire_mbps": {
+          "description": "`size·8 / transfer_secs / 1e6`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "index",
+        "file_name",
+        "bytes",
+        "ok",
+        "ack_ok",
+        "excluded",
+        "t_ms"
+      ],
+      "type": "object"
+    },
+    "FileTransferResults": {
+      "description": "`RunReport.results` of a `file-transfer` run.",
+      "properties": {
+        "ack_failures": {
+          "description": "Iterations whose ACK was not read (valid by SHA-256, untimed).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "iterations": {
+          "description": "Every iteration attempted, in order.",
+          "items": {
+            "$ref": "#/$defs/FileTransferIteration"
+          },
+          "type": "array"
+        },
+        "received_bytes": {
+          "description": "Σ bytes the receiver completed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sent_bytes": {
+          "description": "Σ bytes of iterations `send_file` completed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "size_bytes": {
+          "description": "File size.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source_write_ms": {
+          "description": "Writing the source file before the first iteration, ms.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "timed_iterations": {
+          "description": "Iterations the summary medians cover.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "size_bytes",
+        "iterations",
+        "timed_iterations",
+        "ack_failures",
+        "sent_bytes",
+        "received_bytes"
+      ],
+      "type": "object"
+    },
+    "FinishAck": {
+      "description": "`finish.ack`.",
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Machine-readable failure code."
+        },
+        "error": {
+          "description": "Why it failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Request id.",
+          "type": "string"
+        },
+        "max_overlapping_runs": {
+          "default": 0,
+          "description": "Other runs that shared the responder's hub during this one.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ok": {
+          "description": "Whether the request succeeded.",
+          "type": "boolean"
+        },
+        "path_bytes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PathBytes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The responder's usermetrics byte deltas."
+        },
+        "resources": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResourceStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The responder's CPU and memory."
+        },
+        "run_id": {
+          "description": "Run id.",
+          "type": "string"
+        },
+        "stats": {
+          "default": null,
+          "description": "The workload's `Stats` struct (receiver-side numbers)."
+        }
+      },
+      "required": [
+        "id",
+        "ok",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "FinishReq": {
+      "description": "`finish`: the initiator is done; collect the responder's numbers.",
+      "properties": {
+        "id": {
+          "description": "Request id.",
+          "type": "string"
+        },
+        "info": {
+          "description": "The workload's `Info` struct (sender-side counts)."
+        },
+        "run_id": {
+          "description": "Run id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "run_id",
+        "info"
+      ],
+      "type": "object"
+    },
+    "FtDoneMsg": {
+      "description": "`ft.done`: the responder saw a file-transfer iteration end (no reply).",
+      "properties": {
+        "bytes": {
+          "description": "Bytes received.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "error": {
+          "description": "Why it failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "iteration": {
+          "description": "Iteration, from 1.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ok": {
+          "description": "`Completed` (true) or `Failed` (false).",
+          "type": "boolean"
+        },
+        "run_id": {
+          "description": "Run id.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "SHA-256 of the received file (hex).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "run_id",
+        "iteration",
+        "ok",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "HealthSummary": {
+      "description": "Health of the local node (from `Node::health()`).",
+      "properties": {
+        "healthy": {
+          "description": "Whether the network is fully operational.",
+          "type": "boolean"
+        },
+        "key_expiry": {
+          "description": "Node key expiry (RFC 3339), if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "description": "Tailscale backend state, e.g. `\"Running\"`.",
+          "type": "string"
+        },
+        "warnings": {
+          "description": "Active health warnings.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "state",
+        "healthy",
+        "warnings"
+      ],
+      "type": "object"
+    },
+    "HelloAck": {
+      "description": "`hello.ack`: who I am, as far as you may know. Always answered, across accounts.",
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Machine-readable failure code."
+        },
+        "error": {
+          "description": "Why it failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hello": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PeerHello"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The responder's hello (`host_fingerprint` omitted unless admitted)."
+        },
+        "id": {
+          "description": "Request id.",
+          "type": "string"
+        },
+        "ok": {
+          "description": "Whether the request succeeded.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "ok"
+      ],
+      "type": "object"
+    },
+    "HelloReq": {
+      "description": "`hello`: who I am.",
+      "properties": {
+        "hello": {
+          "$ref": "#/$defs/PeerHello",
+          "description": "The asking hub's hello."
+        },
+        "id": {
+          "description": "Request id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "hello"
+      ],
+      "type": "object"
+    },
+    "HttpConnection": {
+      "description": "http connection reuse.",
+      "oneOf": [
+        {
+          "const": "keepalive",
+          "description": "One connection per worker.",
+          "type": "string"
+        },
+        {
+          "const": "new",
+          "description": "A connection per request.",
+          "type": "string"
+        }
+      ]
+    },
+    "HttpErrors": {
+      "description": "Failed requests by cause.",
+      "properties": {
+        "io": {
+          "description": "Connect, read or write failures.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "non_2xx": {
+          "description": "Answers outside 2xx.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeout": {
+          "description": "Requests over the 10 s limit.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "non_2xx",
+        "io",
+        "timeout"
+      ],
+      "type": "object"
+    },
+    "HttpResults": {
+      "description": "`RunReport.results` of a `http` run.",
+      "properties": {
+        "attempts": {
+          "description": "Measured requests (started after the warmup, before the end).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "body_bytes": {
+          "description": "Body bytes of measured 2xx answers.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "connect": {
+          "$ref": "#/$defs/Distribution",
+          "description": "`open_tcp` times, ms."
+        },
+        "connect_ms": {
+          "description": "Median `open_tcp` time, ms (every connection opened).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "connections_opened": {
+          "description": "Connections opened (successful `open_tcp` calls), warmup included.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "error_kinds": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Measured I/O errors by kind (`connect`, `closed`, `reset`, `invalid-response`, `io`).",
+          "type": "object"
+        },
+        "error_pct": {
+          "description": "`(non-2xx + io + timeouts) / attempts · 100`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "errors": {
+          "$ref": "#/$defs/HttpErrors",
+          "description": "Measured failures by cause."
+        },
+        "goodput_mbps": {
+          "description": "Body goodput over the measured window, Mb/s.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "latency_ms": {
+          "$ref": "#/$defs/Distribution",
+          "description": "Latency of measured 2xx answers, ms (timeouts ranked as lost)."
+        },
+        "ok": {
+          "description": "Measured 2xx answers.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "port": {
+          "description": "The tailnet port requests went to.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "req_per_sec": {
+          "description": "Measured 2xx answers ÷ `duration_secs`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "samples_ms": {
+          "description": "Raw 2xx latencies, ms, ascending; at most 4000 evenly spaced order\nstatistics when there were more.",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "samples_total": {
+          "description": "Measured 2xx answers behind `samples_ms`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "server": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HttpServerStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the responder's server saw (warmup included)."
+        },
+        "status_counts": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Measured answers by status code.",
+          "type": "object"
+        },
+        "warmup_requests": {
+          "description": "Requests started during the warmup (not counted).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "port",
+        "attempts",
+        "ok",
+        "errors",
+        "error_kinds",
+        "status_counts",
+        "latency_ms",
+        "samples_ms",
+        "samples_total",
+        "connect",
+        "connections_opened",
+        "body_bytes",
+        "warmup_requests"
+      ],
+      "type": "object"
+    },
+    "HttpServerStats": {
+      "description": "`finish.ack.stats`: what the responder's server saw (warmup included).",
+      "properties": {
+        "bad_request": {
+          "description": "400 answers (size above `response_bytes`, or a malformed request).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "body_bytes": {
+          "description": "Body bytes of 200 answers.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "connections": {
+          "description": "Connections accepted (from the proxy on loopback, or from the tailnet).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "forbidden": {
+          "description": "403 answers (`Tailscale-Node-Id` missing or not the initiator's).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "foreign_dropped": {
+          "description": "Tailnet connections dropped by rule 5 (direct target).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "not_found": {
+          "description": "404 answers.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ok": {
+          "description": "200 answers.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "requests": {
+          "description": "Requests parsed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "requests",
+        "ok",
+        "forbidden",
+        "bad_request",
+        "not_found",
+        "body_bytes",
+        "connections",
+        "foreign_dropped"
+      ],
+      "type": "object"
+    },
+    "HttpTarget": {
+      "description": "http target.",
+      "oneOf": [
+        {
+          "const": "proxy",
+          "description": "The sidecar's reverse proxy (`proxy().add`).",
+          "type": "string"
+        },
+        {
+          "const": "direct",
+          "description": "A Rust handler on `listen_tcp`.",
+          "type": "string"
+        }
+      ]
+    },
+    "HubEvent": {
+      "description": "Events a hub broadcasts (`bench://event` in the app).",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/NodeState",
+          "description": "The node's lifecycle state changed (boxed: it is by far the largest\nvariant; serialises flat, `{\"type\": \"node\", ...NodeState}`).",
+          "properties": {
+            "type": {
+              "const": "node",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The peer list changed (debounced to 250 ms).",
+          "properties": {
+            "peers": {
+              "description": "Every same-app peer.",
+              "items": {
+                "$ref": "#/$defs/BenchPeer"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "peers",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "peers"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A peer's run against this hub changed state.",
+          "properties": {
+            "peer": {
+              "description": "The initiator's device name.",
+              "type": "string"
+            },
+            "peer_id": {
+              "description": "The initiator's tailscale id.",
+              "type": "string"
+            },
+            "run_id": {
+              "description": "The initiator's run id.",
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/$defs/RemoteRunState",
+              "description": "New state."
+            },
+            "type": {
+              "const": "remote-run",
+              "type": "string"
+            },
+            "workload": {
+              "description": "Workload name.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "run_id",
+            "peer",
+            "peer_id",
+            "workload",
+            "state"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ImportResult": {
+      "description": "`runs_import` result.",
+      "properties": {
+        "imported": {
+          "description": "Reports added to the store.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "skipped": {
+          "description": "Files that were not reports, could not be normalised, or were already stored.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "imported",
+        "skipped"
+      ],
+      "type": "object"
+    },
+    "LocalInfo": {
+      "description": "What this hub knows about itself once running.",
+      "properties": {
+        "app_id": {
+          "description": "The truffle app id (`truffle-bench`, or a per-run id in `pair`).",
+          "type": "string"
+        },
+        "device_id": {
+          "description": "Durable ULID.",
+          "type": "string"
+        },
+        "device_name": {
+          "description": "Human device name.",
+          "type": "string"
+        },
+        "dns_name": {
+          "description": "MagicDNS name, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "health": {
+          "$ref": "#/$defs/HealthSummary",
+          "description": "Node health."
+        },
+        "hub_start_ms": {
+          "description": "Hub start → Running, in ms.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "login_name": {
+          "description": "Signed-in login, or `tagged-devices`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sidecar_path": {
+          "description": "The sidecar binary in use.",
+          "type": "string"
+        },
+        "tailnet": {
+          "description": "Tailnet name, derived from `dns_name` (everything after the first label).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tailscale_hostname": {
+          "description": "`truffle-truffle-bench-<slug>`.",
+          "type": "string"
+        },
+        "tailscale_id": {
+          "description": "Tailscale stable node id.",
+          "type": "string"
+        },
+        "tailscale_ip": {
+          "description": "Tailnet IPv4, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "device_name",
+        "device_id",
+        "tailscale_id",
+        "tailscale_hostname",
+        "app_id",
+        "health",
+        "sidecar_path"
+      ],
+      "type": "object"
+    },
+    "NetworkInfo": {
+      "description": "`network` of a report: where the bytes went.",
+      "properties": {
+        "after": {
+          "$ref": "#/$defs/PathSnapshot",
+          "description": "Path after the run."
+        },
+        "before": {
+          "$ref": "#/$defs/PathSnapshot",
+          "description": "Path before the run (after settling)."
+        },
+        "clock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClockInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Clock offsets, for workloads that map peer time."
+        },
+        "derp_share": {
+          "description": "DERP bytes ÷ all bytes.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "loaded_rtt_ms": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Distribution"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "RTT under load, from the path sampler."
+        },
+        "path_bytes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PathBytes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Sum of both sides' usermetrics byte deltas."
+        },
+        "path_label": {
+          "$ref": "#/$defs/PathLabel",
+          "description": "The verdict (History filters on this, never on `before.connection`)."
+        },
+        "path_timeline": {
+          "description": "2 Hz path samples during time-based runs.",
+          "items": {
+            "$ref": "#/$defs/PathTimelinePoint"
+          },
+          "type": "array"
+        },
+        "settle_ms": {
+          "description": "Path settle time before the run.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "topology": {
+          "$ref": "#/$defs/Topology",
+          "description": "Same process, same host, or separate hosts."
+        }
+      },
+      "required": [
+        "topology",
+        "settle_ms",
+        "before",
+        "after",
+        "path_timeline",
+        "path_label"
+      ],
+      "type": "object"
+    },
+    "NodeEnv": {
+      "description": "The environment of one side of a run.",
+      "properties": {
+        "app_foreground_pct": {
+          "description": "App only: share of the run with the window in front, 0–100.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "arch": {
+          "description": "CPU architecture.",
+          "type": "string"
+        },
+        "build_profile": {
+          "$ref": "#/$defs/BuildProfile",
+          "description": "Build profile."
+        },
+        "device_name": {
+          "description": "Device name.",
+          "type": "string"
+        },
+        "git_dirty": {
+          "description": "Uncommitted tracked changes.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "git_sha": {
+          "description": "Git commit.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host_fingerprint": {
+          "description": "§7.4 host fingerprint.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host_fingerprint_weak": {
+          "description": "The fingerprint fell back to the hostname.",
+          "type": "boolean"
+        },
+        "logical_cpus": {
+          "description": "Logical CPUs.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "on_battery": {
+          "description": "macOS only: running on battery.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "os": {
+          "description": "OS.",
+          "type": "string"
+        },
+        "rustc": {
+          "description": "`rustc -V` at build time.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sidecar_path": {
+          "description": "Sidecar binary path.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sidecar_sha256": {
+          "description": "SHA-256 of the sidecar binary.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tailscale_ip": {
+          "description": "Tailnet IP.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool": {
+          "description": "`truffle-bench-app`, `truffle-bench-cli`, or for imports the source\ntool (`truffle-bench v1`, `truffle-bench v2`, `tsnet-bench`).",
+          "type": "string"
+        },
+        "tool_version": {
+          "description": "Engine version.",
+          "type": "string"
+        },
+        "truffle_version": {
+          "description": "truffle-core version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_name",
+        "os",
+        "arch",
+        "tool",
+        "tool_version",
+        "truffle_version",
+        "build_profile",
+        "host_fingerprint_weak"
+      ],
+      "type": "object"
+    },
+    "NodeState": {
+      "description": "The hub's lifecycle state.",
+      "properties": {
+        "auth_url": {
+          "description": "Login URL while `needs-login`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AppError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why start failed, in `error`."
+        },
+        "local": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocalInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set while `running`."
+        },
+        "since_ms": {
+          "description": "When the hub entered this state, Unix ms.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/NodeStatus",
+          "description": "Lifecycle state."
+        },
+        "tailscale_hostname": {
+          "description": "The Tailscale hostname this hub registers as (known before login).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "since_ms"
+      ],
+      "type": "object"
+    },
+    "NodeStatus": {
+      "description": "Lifecycle state of a hub (`NodeState.state`).",
+      "oneOf": [
+        {
+          "const": "idle",
+          "description": "Created, never started.",
+          "type": "string"
+        },
+        {
+          "const": "starting",
+          "description": "`Hub::start` is building the node.",
+          "type": "string"
+        },
+        {
+          "const": "needs-login",
+          "description": "The node waits for an interactive login (`auth_url` is set).",
+          "type": "string"
+        },
+        {
+          "const": "needs-approval",
+          "description": "The tailnet has device approval on and an admin has not approved this\ndevice (`tailscale_hostname`) yet. The node keeps waiting and runs as\nsoon as it is approved in the Tailscale admin console (Machines).\nEvery sidecar reports it (`tsnet:needsApproval`, since RFC 008 phase\n2); cores before `NodeBuilder::on_network_status` dropped the event,\nso hubs built on them stay in `needs-login` or `starting` instead.",
+          "type": "string"
+        },
+        {
+          "const": "running",
+          "description": "The node is up; `local` is set.",
+          "type": "string"
+        },
+        {
+          "const": "stopping",
+          "description": "`Hub::stop` is tearing down.",
+          "type": "string"
+        },
+        {
+          "const": "stopped",
+          "description": "Stopped after running.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "Start failed; `error` is set.",
+          "type": "string"
+        }
+      ]
+    },
+    "OneWayDirection": {
+      "description": "udp / egress direction, seen from the initiator.",
+      "oneOf": [
+        {
+          "const": "upload",
+          "description": "Initiator → responder.",
+          "type": "string"
+        },
+        {
+          "const": "download",
+          "description": "Responder → initiator.",
+          "type": "string"
+        }
+      ]
+    },
+    "Pacing": {
+      "description": "video pacing.",
+      "oneOf": [
+        {
+          "const": "paced",
+          "description": "Fragments spread over the frame interval.",
+          "type": "string"
+        },
+        {
+          "const": "burst",
+          "description": "Fragments back to back.",
+          "type": "string"
+        }
+      ]
+    },
+    "PathBytes": {
+      "description": "Bytes per path class, from usermetrics deltas.",
+      "properties": {
+        "derp": {
+          "description": "`derp`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "direct": {
+          "description": "`direct_ipv4` + `direct_ipv6`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "peer_relay": {
+          "description": "`peer_relay_ipv4` + `peer_relay_ipv6`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "direct",
+        "derp",
+        "peer_relay"
+      ],
+      "type": "object"
+    },
+    "PathLabel": {
+      "description": "Which path carried the bytes (§7.4 `path_label`).",
+      "oneOf": [
+        {
+          "const": "direct",
+          "description": "Direct UDP the whole run.",
+          "type": "string"
+        },
+        {
+          "const": "relay",
+          "description": "Relayed (DERP or peer relay) the whole run.",
+          "type": "string"
+        },
+        {
+          "const": "mixed",
+          "description": "Both, or a transition during the run.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "No usermetrics and no usable path samples.",
+          "type": "string"
+        }
+      ]
+    },
+    "PathPingSample": {
+      "description": "One ping.",
+      "properties": {
+        "connection": {
+          "description": "`direct`, `relay:<region>`, `peer-relay:…`; `None` when lost.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endpoint": {
+          "description": "Direct endpoint, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "description": "Why it was lost.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "i": {
+          "description": "Index from 0.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rtt_ms": {
+          "description": "RTT; `None` when lost.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "t_ms": {
+          "description": "When it was sent, ms since the run started.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "i",
+        "t_ms"
+      ],
+      "type": "object"
+    },
+    "PathResults": {
+      "description": "`results` of a path run.",
+      "properties": {
+        "connections": {
+          "additionalProperties": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Answered pings per connection label.",
+          "type": "object"
+        },
+        "discovery_ms": {
+          "description": "Running → this peer first listed, ms.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "first_rtt_ms": {
+          "description": "RTT of sample 0 (first contact after settling).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "hub_start_ms": {
+          "description": "Hub start → Running, ms.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "loss_pct": {
+          "description": "`lost ÷ (sent − 1) × 100`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "lost": {
+          "description": "Pings 1… that were lost.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rtt_ms": {
+          "$ref": "#/$defs/Distribution",
+          "description": "RTT distribution of samples 1… (lost ones ranked as +∞)."
+        },
+        "samples": {
+          "description": "Every ping, in order.",
+          "items": {
+            "$ref": "#/$defs/PathPingSample"
+          },
+          "type": "array"
+        },
+        "sent": {
+          "description": "Pings sent.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "transitions": {
+          "description": "Connection changes.",
+          "items": {
+            "$ref": "#/$defs/PathTransition"
+          },
+          "type": "array"
+        },
+        "ws_connect_ms": {
+          "description": "First `hello` while the peer was not ws_connected → `hello.ack`, ms.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "samples",
+        "rtt_ms",
+        "sent",
+        "lost",
+        "transitions",
+        "connections"
+      ],
+      "type": "object"
+    },
+    "PathSnapshot": {
+      "description": "One ping's view of the path.",
+      "properties": {
+        "at": {
+          "description": "When (RFC 3339).",
+          "type": "string"
+        },
+        "connection": {
+          "description": "`direct`, `relay:<region>`, `peer-relay:…`; `None` when the ping failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endpoint": {
+          "description": "Direct endpoint, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "description": "Why the ping failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rtt_ms": {
+          "description": "Ping RTT.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "at"
+      ],
+      "type": "object"
+    },
+    "PathTimelinePoint": {
+      "description": "One path-sampler point.",
+      "properties": {
+        "connection": {
+          "description": "Connection label; `None` when the ping failed or timed out.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rtt_ms": {
+          "description": "RTT; `None` when lost.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "t_ms": {
+          "description": "Ms since the sampler's origin.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "t_ms"
+      ],
+      "type": "object"
+    },
+    "PathTransition": {
+      "description": "A change of connection between consecutive answered pings.",
+      "properties": {
+        "from": {
+          "description": "Previous connection.",
+          "type": "string"
+        },
+        "i": {
+          "description": "Index of the first ping on the new connection.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "t_ms": {
+          "description": "Its send time, ms since the run started.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "to": {
+          "description": "New connection.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "i",
+        "t_ms",
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "PeerHello": {
+      "description": "What a hub says about itself in `hello` / `hello.ack`.",
+      "properties": {
+        "accepts_runs_from_you": {
+          "description": "Whether the asking peer passes this hub's admission rule.",
+          "type": "boolean"
+        },
+        "app": {
+          "description": "`truffle-bench-app` or `truffle-bench-cli`.",
+          "type": "string"
+        },
+        "arch": {
+          "description": "`std::env::consts::ARCH`.",
+          "type": "string"
+        },
+        "build_profile": {
+          "$ref": "#/$defs/BuildProfile",
+          "description": "`debug` or `release`."
+        },
+        "busy": {
+          "description": "Set while this hub is in a data-plane run, e.g. \"measuring studio · tcp\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "device_id": {
+          "description": "Durable ULID.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "device_name": {
+          "description": "Device name.",
+          "type": "string"
+        },
+        "git_sha": {
+          "description": "Git commit, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host_fingerprint": {
+          "description": "§7.4 host fingerprint; omitted for peers that are not admitted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host_fingerprint_weak": {
+          "description": "The fingerprint fell back to the hostname.",
+          "type": "boolean"
+        },
+        "logical_cpus": {
+          "description": "Logical CPUs.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "login_name": {
+          "description": "Signed-in login.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "os": {
+          "description": "`std::env::consts::OS`.",
+          "type": "string"
+        },
+        "protocol": {
+          "description": "Control protocol version ([`PROTOCOL`](crate::PROTOCOL)).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sidecar_sha256": {
+          "description": "SHA-256 of the sidecar binary.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool_version": {
+          "description": "Engine version.",
+          "type": "string"
+        },
+        "truffle_version": {
+          "description": "truffle-core version.",
+          "type": "string"
+        },
+        "workloads": {
+          "description": "Workloads this hub can respond to.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "protocol",
+        "app",
+        "tool_version",
+        "truffle_version",
+        "build_profile",
+        "device_name",
+        "os",
+        "arch",
+        "host_fingerprint_weak",
+        "workloads",
+        "accepts_runs_from_you"
+      ],
+      "type": "object"
+    },
+    "PeerProbe": {
+      "description": "`peer_probe`: a peer, its fresh hello and a path snapshot.",
+      "properties": {
+        "hello": {
+          "$ref": "#/$defs/PeerHello",
+          "description": "Its hello."
+        },
+        "path": {
+          "$ref": "#/$defs/PathSnapshot",
+          "description": "One ping."
+        },
+        "peer": {
+          "$ref": "#/$defs/BenchPeer",
+          "description": "The peer."
+        }
+      },
+      "required": [
+        "peer",
+        "hello",
+        "path"
+      ],
+      "type": "object"
+    },
+    "Phase": {
+      "description": "Phase of a run (`Progress.phase`).",
+      "oneOf": [
+        {
+          "const": "preparing",
+          "description": "Resolving the peer, hello, prepare.",
+          "type": "string"
+        },
+        {
+          "const": "settling",
+          "description": "Settling the path (§6 flow step 4).",
+          "type": "string"
+        },
+        {
+          "const": "clock",
+          "description": "Estimating the clock offset.",
+          "type": "string"
+        },
+        {
+          "const": "warmup",
+          "description": "Data is flowing but not yet measured.",
+          "type": "string"
+        },
+        {
+          "const": "running",
+          "description": "The measurement window.",
+          "type": "string"
+        },
+        {
+          "const": "draining",
+          "description": "Waiting for in-flight data after the senders stop.",
+          "type": "string"
+        },
+        {
+          "const": "finishing",
+          "description": "`finish`, after-snapshots, report assembly.",
+          "type": "string"
+        },
+        {
+          "const": "done",
+          "description": "Terminal: the report has `status: ok`.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Terminal: the report has `status: failed`.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "Terminal: the report has `status: cancelled`.",
+          "type": "string"
+        }
+      ]
+    },
+    "PrepareAck": {
+      "description": "`prepare.ack`.",
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Machine-readable failure code."
+        },
+        "error": {
+          "description": "Why it failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Request id.",
+          "type": "string"
+        },
+        "ok": {
+          "description": "Whether the request succeeded.",
+          "type": "boolean"
+        },
+        "overlapping_runs": {
+          "default": 0,
+          "description": "Other runs active on the responder's hub right now.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "params": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkloadParams"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Params as validated and used by the responder."
+        },
+        "run_id": {
+          "description": "Echo of the run id.",
+          "type": "string"
+        },
+        "run_tag": {
+          "default": 0,
+          "description": "64 random bits chosen by the responder.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "setup": {
+          "default": null,
+          "description": "The workload's `Setup` struct."
+        }
+      },
+      "required": [
+        "id",
+        "ok",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "PrepareReq": {
+      "description": "`prepare`: set up a run.",
+      "properties": {
+        "client": {
+          "description": "The workload's `Client` struct (`{}` when unused)."
+        },
+        "id": {
+          "description": "Request id.",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/WorkloadParams",
+          "description": "Params; validated again by the responder."
+        },
+        "run_id": {
+          "description": "The initiator's run id (`^[A-Za-z0-9-]{1,64}$`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "run_id",
+        "params",
+        "client"
+      ],
+      "type": "object"
+    },
+    "Progress": {
+      "description": "Live progress of one run.",
+      "properties": {
+        "fraction": {
+          "description": "0–1 when known.",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "One line for people.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase",
+          "description": "Phase."
+        },
+        "run_id": {
+          "description": "Run id.",
+          "type": "string"
+        },
+        "samples": {
+          "description": "Live values. Receiver-side keys come only from `tick`s; sender-side\nkeys are distinct (`sent_mbps`).",
+          "items": {
+            "$ref": "#/$defs/Sample"
+          },
+          "type": "array"
+        },
+        "suite_id": {
+          "description": "Suite id when part of a suite.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "t_ms": {
+          "description": "Ms since the run started.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id",
+        "t_ms",
+        "phase",
+        "samples"
+      ],
+      "type": "object"
+    },
+    "QuicLatencyResults": {
+      "description": "`results` of a quic latency run.",
+      "properties": {
+        "completed": {
+          "description": "Measured messages that came back.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "connect_ms": {
+          "description": "`connect_quic()` call → return, ms.",
+          "format": "double",
+          "type": "number"
+        },
+        "count": {
+          "description": "Measured messages.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "echoes": {
+          "description": "Messages the responder echoed (warmup included).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "foreign_dropped": {
+          "description": "Foreign connections and streams the responder dropped.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "payload_bytes": {
+          "description": "Message size.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rtt_ms": {
+          "$ref": "#/$defs/Distribution",
+          "description": "Round trips of the measured messages."
+        },
+        "samples_ms": {
+          "description": "Raw measured round trips in send order, ms (evenly thinned to at\nmost 5000).",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "warmup_count": {
+          "description": "Discarded messages before them.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "connect_ms",
+        "payload_bytes",
+        "count",
+        "warmup_count",
+        "completed",
+        "rtt_ms",
+        "samples_ms",
+        "echoes",
+        "foreign_dropped"
+      ],
+      "type": "object"
+    },
+    "QuicResults": {
+      "description": "`RunReport.results` of a `quic` run, tagged by `mode`.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/QuicThroughputResults",
+          "description": "Throughput mode.",
+          "properties": {
+            "mode": {
+              "const": "throughput",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/QuicLatencyResults",
+          "description": "Latency mode.",
+          "properties": {
+            "mode": {
+              "const": "latency",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "QuicStreamResult": {
+      "description": "One stream of a throughput run, both ends' counts.",
+      "properties": {
+        "acked_bytes": {
+          "description": "The receiver's per-stream ack.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/StreamKind",
+          "description": "`upload` or `download`."
+        },
+        "received_bytes": {
+          "description": "Payload bytes the receiver counted.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sent_bytes": {
+          "description": "Payload bytes the sender handed to the stream.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stream_idx": {
+          "description": "Stream index.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "stream_idx",
+        "sent_bytes",
+        "received_bytes"
+      ],
+      "type": "object"
+    },
+    "QuicThroughputResults": {
+      "description": "`results` of a quic throughput run.",
+      "properties": {
+        "bytes_total": {
+          "description": "Every payload byte received, warmup included.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "connect_ms": {
+          "description": "`connect_quic()` call → return, ms.",
+          "format": "double",
+          "type": "number"
+        },
+        "direction": {
+          "$ref": "#/$defs/Direction",
+          "description": "Upload, download or bidirectional."
+        },
+        "download_mbps": {
+          "description": "Download goodput over the overlap window (bidirectional only).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "flow_control_ceiling_mbps": {
+          "description": "What quinn's default windows allow at the settled RTT, Mb/s.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "foreign_dropped": {
+          "description": "Foreign connections and streams the responder dropped.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "goodput_mbps": {
+          "description": "Goodput over the measurement window (bidirectional: the sum), Mb/s.",
+          "format": "double",
+          "type": "number"
+        },
+        "received_bytes": {
+          "description": "Same as `bytes_total` (the cross-check against `sent_bytes`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "receiver": {
+          "$ref": "#/$defs/ReceiverStats",
+          "description": "The receiver of the measured direction (bidirectional: upload), in\nthe receiver's own clock."
+        },
+        "receiver_download": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReceiverStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The download receiver of a bidirectional run (initiator clock)."
+        },
+        "sent_bytes": {
+          "description": "Every payload byte the senders handed to their streams.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stream_results": {
+          "description": "Per stream.",
+          "items": {
+            "$ref": "#/$defs/QuicStreamResult"
+          },
+          "type": "array"
+        },
+        "streams": {
+          "description": "Streams per direction.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "upload_mbps": {
+          "description": "Upload goodput over the overlap window (bidirectional only).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "window_bytes": {
+          "description": "Payload bytes inside the measurement window.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "window_ms": {
+          "description": "Length of the measurement window, ms.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "direction",
+        "streams",
+        "connect_ms",
+        "goodput_mbps",
+        "window_bytes",
+        "window_ms",
+        "bytes_total",
+        "received_bytes",
+        "sent_bytes",
+        "foreign_dropped",
+        "receiver",
+        "stream_results"
+      ],
+      "type": "object"
+    },
+    "ReceiverStats": {
+      "description": "The receiver's accounting for one direction of a run, as sent in\n`finish.ack.stats` (§8.1). `epoch_ns`/`last_ns` are 0 when nothing arrived.",
+      "properties": {
+        "bucket_ms": {
+          "description": "Bucket width, 250.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "buckets": {
+          "description": "Payload bytes read in `[epoch + 250·i ms, epoch + 250·(i+1) ms)`.",
+          "items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "bytes_total": {
+          "description": "All payload bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "epoch_ns": {
+          "description": "Receiver `now_ns()` at the first payload byte of any stream.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "last_ns": {
+          "description": "Time of the last payload byte of any stream.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "streams": {
+          "description": "Per-stream counters, by index.",
+          "items": {
+            "$ref": "#/$defs/StreamStats"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "epoch_ns",
+        "bucket_ms",
+        "buckets",
+        "last_ns",
+        "bytes_total",
+        "streams"
+      ],
+      "type": "object"
+    },
+    "RemoteRunState": {
+      "description": "State of a run another peer drives against this hub (`HubEvent::RemoteRun`).",
+      "oneOf": [
+        {
+          "const": "prepared",
+          "description": "`prepare` accepted; this device is being measured.",
+          "type": "string"
+        },
+        {
+          "const": "finished",
+          "description": "`finish` answered.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "The initiator cancelled.",
+          "type": "string"
+        },
+        {
+          "const": "expired",
+          "description": "The watchdog tore it down.",
+          "type": "string"
+        }
+      ]
+    },
+    "ReportTool": {
+      "description": "Which tool produced a report (`RunReport.tool`).",
+      "oneOf": [
+        {
+          "const": "truffle-bench-app",
+          "description": "The desktop app.",
+          "type": "string"
+        },
+        {
+          "const": "truffle-bench-cli",
+          "description": "The `truffle-bench` CLI.",
+          "type": "string"
+        },
+        {
+          "const": "imported",
+          "description": "Normalised from a v1/v2/tsnet-bench report (§7.5).",
+          "type": "string"
+        }
+      ]
+    },
+    "ResourceStats": {
+      "description": "CPU and memory of one side over the measurement window (§7.4).\n\nCPU percentages use 100 = one logical CPU, so they can exceed 100.",
+      "properties": {
+        "cpu_ms": {
+          "description": "Process CPU time (user + sys) in the window, ms.",
+          "format": "double",
+          "type": "number"
+        },
+        "cpu_ms_per_mb": {
+          "description": "`cpu_ms / (goodput bytes / 10⁶)`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "cpu_pct_avg": {
+          "description": "`cpu_ms / window_ms × 100`.",
+          "format": "double",
+          "type": "number"
+        },
+        "cpu_pct_max": {
+          "description": "Max over 500 ms intervals (priming interval discarded).",
+          "format": "double",
+          "type": "number"
+        },
+        "rss_mb_max": {
+          "description": "Max RSS, MB (10⁶ bytes).",
+          "format": "double",
+          "type": "number"
+        },
+        "sidecar_cpu_ms": {
+          "description": "Sidecar CPU time, ms.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sidecar_cpu_ms_per_mb": {
+          "description": "Sidecar `cpu_ms` per MB of goodput.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sidecar_cpu_pct_avg": {
+          "description": "Sidecar average CPU %.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sidecar_cpu_pct_max": {
+          "description": "Sidecar max CPU % over 500 ms intervals.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sidecar_rss_mb_max": {
+          "description": "Sidecar max RSS, MB.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "cpu_ms",
+        "cpu_pct_avg",
+        "cpu_pct_max",
+        "rss_mb_max"
+      ],
+      "type": "object"
+    },
+    "Resources": {
+      "description": "`resources` of a report.",
+      "properties": {
+        "combined": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResourceStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Same-process topology: the process plus both sidecars."
+        },
+        "local": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResourceStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "This side (separate processes)."
+        },
+        "peer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResourceStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The peer (from `finish.ack.resources`)."
+        }
+      },
+      "type": "object"
+    },
+    "RunRequest": {
+      "description": "One run to execute (`bench_run`).",
+      "properties": {
+        "params": {
+          "$ref": "#/$defs/WorkloadParams",
+          "description": "What to run."
+        },
+        "peer": {
+          "description": "Peer reference: device name, ULID, tailscale id, hostname or IP.",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "Caller-chosen id, `^[A-Za-z0-9-]{1,64}$`.",
+          "type": "string"
+        },
+        "suite_id": {
+          "description": "Set when the run belongs to a suite.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "run_id",
+        "peer",
+        "params"
+      ],
+      "type": "object"
+    },
+    "RunStatus": {
+      "description": "Outcome of a run (`RunReport.status`).",
+      "oneOf": [
+        {
+          "const": "ok",
+          "description": "Completed and measured.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Failed; `error`/`error_code` say why.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "Cancelled by the user or a peer.",
+          "type": "string"
+        }
+      ]
+    },
+    "RunSummary": {
+      "description": "One History row.",
+      "properties": {
+        "build_profile": {
+          "$ref": "#/$defs/BuildProfile",
+          "description": "`debug` if either side is debug, `unknown` if not recorded, else `release`."
+        },
+        "compare_key": {
+          "description": "Comparability key.",
+          "type": "string"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Error code when failed."
+        },
+        "flags": {
+          "description": "History flags derived from the report, in this order when present:\n`debug` (either side a debug build), `overlap` (shared the machine\nwith other runs), `rate-not-achieved` (the sender could not sustain\nits target), `imported`, `same-host`, `same-process`, `mixed-path`,\n`partial` (a failed or cancelled run that kept partial results). See\n[`RunReport::flags`](crate::report::RunReport::flags).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "label": {
+          "description": "Params label.",
+          "type": "string"
+        },
+        "mode": {
+          "default": null,
+          "description": "The workload's mode (`params.mode`: `throughput`, `latency`, `echo`,\n`rr`, `pingpong`, …), or `None` for a workload without modes. The app\npicks the latest run of the mode its form is in from this.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "overlapping_runs": {
+          "description": "Other runs sharing the machine.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path_label": {
+          "$ref": "#/$defs/PathLabel",
+          "description": "Path label."
+        },
+        "peer_name": {
+          "description": "Peer device name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_id": {
+          "description": "Run id.",
+          "type": "string"
+        },
+        "started_at": {
+          "description": "RFC 3339.",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/RunStatus",
+          "description": "Outcome."
+        },
+        "suite_id": {
+          "description": "Suite id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summary": {
+          "description": "Headline numbers.",
+          "items": {
+            "$ref": "#/$defs/SummaryItem"
+          },
+          "type": "array"
+        },
+        "tool": {
+          "$ref": "#/$defs/ReportTool",
+          "description": "Producing tool."
+        },
+        "topology": {
+          "$ref": "#/$defs/Topology",
+          "description": "Topology."
+        },
+        "workload": {
+          "$ref": "#/$defs/Workload",
+          "description": "Workload."
+        }
+      },
+      "required": [
+        "run_id",
+        "workload",
+        "label",
+        "status",
+        "started_at",
+        "path_label",
+        "topology",
+        "build_profile",
+        "compare_key",
+        "summary",
+        "overlapping_runs",
+        "tool",
+        "flags"
+      ],
+      "type": "object"
+    },
+    "Sample": {
+      "description": "One live value.",
+      "properties": {
+        "key": {
+          "description": "Key, e.g. `goodput_mbps`.",
+          "type": "string"
+        },
+        "value": {
+          "description": "Value.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "type": "object"
+    },
+    "Series": {
+      "description": "A time series for a chart.",
+      "properties": {
+        "key": {
+          "description": "Stable key.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Label for people.",
+          "type": "string"
+        },
+        "points": {
+          "description": "`[t_ms, value]` pairs, t in the initiator's run timebase.",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "format": "double",
+                "type": "number"
+              },
+              {
+                "format": "double",
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "unit": {
+          "description": "Unit.",
+          "type": "string"
+        },
+        "warmup_ms": {
+          "description": "Points with `t_ms ≤ warmup_ms` are warmup.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "unit",
+        "points"
+      ],
+      "type": "object"
+    },
+    "Settings": {
+      "description": "Persisted app settings.",
+      "properties": {
+        "allow_other_logins": {
+          "description": "Accept runs from other accounts.",
+          "type": "boolean"
+        },
+        "device_name": {
+          "description": "Device name.",
+          "type": "string"
+        },
+        "target_peer": {
+          "description": "Remembered target: device_id, else tailscale_id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "theme": {
+          "$ref": "#/$defs/Theme",
+          "description": "Theme."
+        }
+      },
+      "required": [
+        "device_name",
+        "allow_other_logins",
+        "theme"
+      ],
+      "type": "object"
+    },
+    "StartAck": {
+      "description": "`start.ack`.",
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Machine-readable failure code."
+        },
+        "error": {
+          "description": "Why it failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Request id.",
+          "type": "string"
+        },
+        "ok": {
+          "description": "Whether the request succeeded.",
+          "type": "boolean"
+        },
+        "run_id": {
+          "description": "Run id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "ok",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "StartReq": {
+      "description": "`start`: begin the data phase (e.g. udp download).",
+      "properties": {
+        "id": {
+          "description": "Request id.",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "Run id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "StoreMode": {
+      "description": "synced-store mode.",
+      "oneOf": [
+        {
+          "const": "pingpong",
+          "description": "One write, one echo, repeat.",
+          "type": "string"
+        },
+        {
+          "const": "burst",
+          "description": "`count` writes back to back.",
+          "type": "string"
+        }
+      ]
+    },
+    "StreamKind": {
+      "description": "What a stream carries (`kind` byte of the TBN1 header).",
+      "oneOf": [
+        {
+          "const": "upload",
+          "description": "Initiator writes, responder counts.",
+          "type": "string"
+        },
+        {
+          "const": "download",
+          "description": "Responder writes, initiator counts.",
+          "type": "string"
+        },
+        {
+          "const": "echo",
+          "description": "Ping-pong.",
+          "type": "string"
+        },
+        {
+          "const": "frames",
+          "description": "Video frames.",
+          "type": "string"
+        }
+      ]
+    },
+    "StreamMode": {
+      "description": "tcp / quic mode.",
+      "oneOf": [
+        {
+          "const": "throughput",
+          "description": "Bulk transfer for a duration.",
+          "type": "string"
+        },
+        {
+          "const": "latency",
+          "description": "Ping-pong of small messages.",
+          "type": "string"
+        }
+      ]
+    },
+    "StreamStats": {
+      "description": "Per-stream receive counters.",
+      "properties": {
+        "bytes": {
+          "description": "Payload bytes received.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "first_ns": {
+          "description": "First payload byte.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "last_ns": {
+          "description": "Last payload byte.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stream_idx": {
+          "description": "Stream index.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "stream_idx",
+        "bytes",
+        "first_ns",
+        "last_ns"
+      ],
+      "type": "object"
+    },
+    "SuiteProfile": {
+      "description": "A suite profile (§8.4): what `suite_profiles` returns.",
+      "properties": {
+        "description": {
+          "description": "One sentence.",
+          "type": "string"
+        },
+        "id": {
+          "description": "`smoke`, `standard`, `full` or `nightly`.",
+          "type": "string"
+        },
+        "items": {
+          "description": "Items, run in order.",
+          "items": {
+            "$ref": "#/$defs/WorkloadParams"
+          },
+          "type": "array"
+        },
+        "label": {
+          "description": "Name people read.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "description",
+        "items"
+      ],
+      "type": "object"
+    },
+    "SuiteProgress": {
+      "description": "Live progress of a suite: which item, plus that item's run progress.",
+      "properties": {
+        "index": {
+          "description": "0-based item index.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item_label": {
+          "description": "The item's params label.",
+          "type": "string"
+        },
+        "run": {
+          "$ref": "#/$defs/Progress",
+          "description": "The item's run progress."
+        },
+        "suite_id": {
+          "description": "Suite id.",
+          "type": "string"
+        },
+        "total": {
+          "description": "Item count.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "suite_id",
+        "index",
+        "total",
+        "item_label",
+        "run"
+      ],
+      "type": "object"
+    },
+    "SuiteRequest": {
+      "description": "One suite to execute (`suite_run`).",
+      "properties": {
+        "overrides": {
+          "default": [],
+          "description": "`(\"<workload>.<field>\", value)` overrides.",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              true
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "peer": {
+          "description": "Peer reference.",
+          "type": "string"
+        },
+        "profile": {
+          "description": "`smoke`, `standard`, `full` or `nightly`.",
+          "type": "string"
+        },
+        "suite_id": {
+          "description": "Caller-chosen id, `^[A-Za-z0-9-]{1,64}$`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "suite_id",
+        "profile",
+        "peer"
+      ],
+      "type": "object"
+    },
+    "SuiteResult": {
+      "description": "Outcome of a suite.",
+      "properties": {
+        "cancelled": {
+          "description": "The suite was cancelled.",
+          "type": "boolean"
+        },
+        "failed": {
+          "description": "Items whose run did not end `ok`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "run_ids": {
+          "description": "One run per item that started, in order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "suite_id": {
+          "description": "Suite id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "suite_id",
+        "run_ids",
+        "failed",
+        "cancelled"
+      ],
+      "type": "object"
+    },
+    "SummaryItem": {
+      "description": "One headline number.",
+      "properties": {
+        "better": {
+          "$ref": "#/$defs/Better",
+          "description": "Which direction is better."
+        },
+        "key": {
+          "description": "Stable key, e.g. `goodput_mbps`.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Label for people.",
+          "type": "string"
+        },
+        "uncertainty": {
+          "description": "± uncertainty in the same unit.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "unit": {
+          "description": "Unit, e.g. `Mb/s`.",
+          "type": "string"
+        },
+        "value": {
+          "description": "Value; `None` when it could not be measured.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "unit",
+        "better"
+      ],
+      "type": "object"
+    },
+    "SyncedStoreBurstResults": {
+      "description": "`results` of a burst run.",
+      "properties": {
+        "burst_write_ms": {
+          "description": "Time spent calling `set()` `count` times, ms.",
+          "format": "double",
+          "type": "number"
+        },
+        "coalescing_pct": {
+          "description": "`(1 − distinct_versions_seen / count) · 100`.",
+          "format": "double",
+          "type": "number"
+        },
+        "count": {
+          "description": "Writes in the burst.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "distinct_versions_seen": {
+          "description": "Distinct versions (seq ≥ 1) the peer observed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "echoes": {
+          "description": "Echoes the peer wrote (readiness included).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "echoes_seen": {
+          "description": "Echoes (seq ≥ 1) this side saw arrive.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "final_echo_ms": {
+          "description": "Last `set()` → seeing the echo of `count`, ms (`None` when it\nnever came).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "lagged": {
+          "description": "Σ `Lagged(n)` on this side's store subscription.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "payload_bytes": {
+          "description": "Padding per write.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "peer_lagged": {
+          "description": "The same on the peer.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "peer_ws_peers_end": {
+          "description": "… and at its end.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "peer_ws_peers_start": {
+          "description": "The same on the peer.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "readiness_writes": {
+          "description": "Readiness writes needed.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ready_ms": {
+          "description": "First readiness write → the echo of seq 0, ms.",
+          "format": "double",
+          "type": "number"
+        },
+        "store_id": {
+          "description": "The store.",
+          "type": "string"
+        },
+        "ws_peers_end": {
+          "description": "… and at the end.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ws_peers_start": {
+          "description": "WebSocket-connected peers here at the start.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "count",
+        "payload_bytes",
+        "burst_write_ms",
+        "coalescing_pct",
+        "distinct_versions_seen",
+        "echoes_seen",
+        "echoes",
+        "ready_ms",
+        "readiness_writes",
+        "ws_peers_start",
+        "ws_peers_end",
+        "peer_ws_peers_start",
+        "peer_ws_peers_end",
+        "lagged",
+        "peer_lagged",
+        "store_id"
+      ],
+      "type": "object"
+    },
+    "SyncedStorePingpongResults": {
+      "description": "`results` of a pingpong run.",
+      "properties": {
+        "completed": {
+          "description": "Measured samples echoed in time.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "convergence_ms": {
+          "$ref": "#/$defs/Distribution",
+          "description": "`rtt / 2` of the measured samples (\"RTT/2 estimate\")."
+        },
+        "count": {
+          "description": "Measured samples.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "echoes": {
+          "description": "Echoes the peer wrote (readiness included).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lagged": {
+          "description": "Σ `Lagged(n)` on this side's store subscription.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "payload_bytes": {
+          "description": "Padding per write.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "peer_lagged": {
+          "description": "The same on the peer.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "peer_ws_peers_end": {
+          "description": "… and at its end.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "peer_ws_peers_start": {
+          "description": "The same on the peer.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "readiness_writes": {
+          "description": "Readiness writes needed.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ready_ms": {
+          "description": "First readiness write → the echo of seq 0, ms.",
+          "format": "double",
+          "type": "number"
+        },
+        "rtt_ms": {
+          "$ref": "#/$defs/Distribution",
+          "description": "Round trips of the measured samples."
+        },
+        "samples_ms": {
+          "description": "Raw measured convergence values in order, ms (thinned to at most 5000).",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "store_id": {
+          "description": "The store.",
+          "type": "string"
+        },
+        "timeouts": {
+          "description": "Measured samples not echoed within 5 s.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warmup_count": {
+          "description": "Discarded samples before them.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ws_peers_end": {
+          "description": "… and at the end.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ws_peers_start": {
+          "description": "WebSocket-connected peers here at the start.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "count",
+        "warmup_count",
+        "payload_bytes",
+        "convergence_ms",
+        "rtt_ms",
+        "samples_ms",
+        "completed",
+        "timeouts",
+        "ready_ms",
+        "readiness_writes",
+        "ws_peers_start",
+        "ws_peers_end",
+        "peer_ws_peers_start",
+        "peer_ws_peers_end",
+        "echoes",
+        "lagged",
+        "peer_lagged",
+        "store_id"
+      ],
+      "type": "object"
+    },
+    "SyncedStoreResults": {
+      "description": "`RunReport.results` of a `synced-store` run, tagged by `mode`.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/SyncedStorePingpongResults",
+          "description": "One write, one echo, repeat.",
+          "properties": {
+            "mode": {
+              "const": "pingpong",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/SyncedStoreBurstResults",
+          "description": "`count` writes back to back.",
+          "properties": {
+            "mode": {
+              "const": "burst",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TcpDirectionResult": {
+      "description": "One direction of a bidirectional run.",
+      "properties": {
+        "goodput_mbps": {
+          "description": "Goodput over the overlap window, Mb/s.",
+          "format": "double",
+          "type": "number"
+        },
+        "receiver": {
+          "$ref": "#/$defs/ReceiverStats",
+          "description": "This direction's receiver accounting, in the receiver's own timebase."
+        },
+        "window_bytes": {
+          "description": "Payload bytes in the overlap window (partial buckets prorated).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "goodput_mbps",
+        "window_bytes",
+        "receiver"
+      ],
+      "type": "object"
+    },
+    "TcpLatencyResults": {
+      "description": "`results` of a latency run.",
+      "properties": {
+        "completed": {
+          "description": "Round trips completed after the warmup.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "connect_ms": {
+          "description": "`open_tcp` call → return, ms.",
+          "format": "double",
+          "type": "number"
+        },
+        "count": {
+          "description": "Measured round trips requested.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "echoed": {
+          "description": "Messages the responder echoed (warmup included).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "foreign_dropped": {
+          "description": "Foreign connections and bad headers the sink dropped.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "nodelay": {
+          "description": "`TCP_NODELAY` on both Rust sockets.",
+          "type": "boolean"
+        },
+        "payload_bytes": {
+          "description": "Message size.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "received_bytes": {
+          "description": "Payload bytes read back.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rtt_ms": {
+          "$ref": "#/$defs/Distribution",
+          "description": "Round trips after the warmup."
+        },
+        "samples_ms": {
+          "description": "The raw round trips after the warmup, in order (for the CDF).",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "sent_bytes": {
+          "description": "Payload bytes written (warmup included).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warmup_count": {
+          "description": "Discarded round trips before them.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "payload_bytes",
+        "count",
+        "warmup_count",
+        "nodelay",
+        "connect_ms",
+        "rtt_ms",
+        "samples_ms",
+        "completed",
+        "sent_bytes",
+        "received_bytes",
+        "echoed",
+        "foreign_dropped"
+      ],
+      "type": "object"
+    },
+    "TcpResults": {
+      "description": "`RunReport.results` of a `tcp` run, tagged by `mode`.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/TcpThroughputResults",
+          "description": "`mode: \"throughput\"`.",
+          "properties": {
+            "mode": {
+              "const": "throughput",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/TcpLatencyResults",
+          "description": "`mode: \"latency\"`.",
+          "properties": {
+            "mode": {
+              "const": "latency",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TcpStreamResult": {
+      "description": "One stream of a throughput run.",
+      "properties": {
+        "acked_bytes": {
+          "description": "The receiver's ack, as the sender read it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "connect_ms": {
+          "description": "`open_tcp` call → return (egress: the loopback connect), ms.",
+          "format": "double",
+          "type": "number"
+        },
+        "direction": {
+          "$ref": "#/$defs/OneWayDirection",
+          "description": "Which way its payload flowed."
+        },
+        "received_bytes": {
+          "description": "Payload bytes its receiver counted.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sent_bytes": {
+          "description": "Payload bytes its sender wrote.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stream_idx": {
+          "description": "Stream index (unique within the run).",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "stream_idx",
+        "direction",
+        "connect_ms",
+        "sent_bytes",
+        "received_bytes",
+        "acked_bytes"
+      ],
+      "type": "object"
+    },
+    "TcpThroughputResults": {
+      "description": "`results` of a throughput run (tcp and egress).",
+      "properties": {
+        "bytes_total": {
+          "description": "Payload bytes received, all directions.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "connect_ms": {
+          "$ref": "#/$defs/Distribution",
+          "description": "`connect_ms` over every stream."
+        },
+        "direction": {
+          "$ref": "#/$defs/Direction",
+          "description": "Upload, download or bidirectional."
+        },
+        "download": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TcpDirectionResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Bidirectional: the download direction."
+        },
+        "foreign_dropped": {
+          "description": "Foreign connections and bad headers the sink dropped.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "goodput_bytes": {
+          "description": "Payload bytes inside the measurement window.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "nodelay": {
+          "description": "`TCP_NODELAY` on both Rust sockets.",
+          "type": "boolean"
+        },
+        "received_bytes": {
+          "description": "Same as `bytes_total` (the §12 `received ≤ sent` check reads it).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "receiver": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReceiverStats"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The receiver's accounting (receiver timebase) for one-way runs."
+        },
+        "sent_bytes": {
+          "description": "Payload bytes written, all directions.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "streams": {
+          "description": "Every stream, both directions.",
+          "items": {
+            "$ref": "#/$defs/TcpStreamResult"
+          },
+          "type": "array"
+        },
+        "upload": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TcpDirectionResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Bidirectional: the upload direction."
+        },
+        "window_ms": {
+          "description": "Length of the measurement window, ms.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "direction",
+        "streams",
+        "bytes_total",
+        "received_bytes",
+        "sent_bytes",
+        "goodput_bytes",
+        "window_ms",
+        "connect_ms",
+        "foreign_dropped",
+        "nodelay"
+      ],
+      "type": "object"
+    },
+    "Theme": {
+      "description": "Theme preference (`Settings.theme`).",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "Follow the OS.",
+          "type": "string"
+        },
+        {
+          "const": "light",
+          "description": "Always light.",
+          "type": "string"
+        },
+        {
+          "const": "dark",
+          "description": "Always dark.",
+          "type": "string"
+        }
+      ]
+    },
+    "TickMsg": {
+      "description": "`tick`: live receiver-side numbers (responder → initiator, ≤ 4 Hz, no reply).",
+      "properties": {
+        "run_id": {
+          "description": "Run id.",
+          "type": "string"
+        },
+        "t_ns": {
+          "description": "Responder `now_ns()`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "values": {
+          "additionalProperties": {
+            "format": "double",
+            "type": "number"
+          },
+          "description": "Values by sample key (e.g. `goodput_mbps`).",
+          "type": "object"
+        }
+      },
+      "required": [
+        "run_id",
+        "t_ns",
+        "values"
+      ],
+      "type": "object"
+    },
+    "Topology": {
+      "description": "Where the two ends of a run lived (§7.4).",
+      "oneOf": [
+        {
+          "const": "same-process",
+          "description": "Both hubs in one process (`pair`).",
+          "type": "string"
+        },
+        {
+          "const": "same-host",
+          "description": "Matching, non-weak host fingerprints.",
+          "type": "string"
+        },
+        {
+          "const": "separate-hosts",
+          "description": "Anything else.",
+          "type": "string"
+        }
+      ]
+    },
+    "UdpBucketLoss": {
+      "description": "One send bucket's (or ramp step's) loss, exact.",
+      "properties": {
+        "missing": {
+          "description": "Seqs in the range that never arrived.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sent": {
+          "description": "Seqs in the range.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "missing",
+        "sent"
+      ],
+      "type": "object"
+    },
+    "UdpEchoResults": {
+      "description": "`results` of an echo run.",
+      "properties": {
+        "completed": {
+          "description": "Measured datagrams echoed in time.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "drain_ms": {
+          "description": "Drain period, ms.",
+          "format": "double",
+          "type": "number"
+        },
+        "dup": {
+          "description": "Duplicate echoes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "foreign_dropped": {
+          "description": "Foreign datagrams dropped on both sides.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "late": {
+          "description": "Echoes after the deadline (counted as lost).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "loss_pct": {
+          "description": "`lost / measured · 100`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "lost": {
+          "description": "Measured datagrams not echoed within the drain deadline.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offered_pps": {
+          "description": "Offered datagrams per second.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "payload_bytes": {
+          "description": "Datagram size, header included.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pps": {
+          "description": "Target rate.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rcvbuf_bytes": {
+          "description": "`SO_RCVBUF` this side got.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "responder": {
+          "$ref": "#/$defs/UdpEchoStats",
+          "description": "The responder's counts."
+        },
+        "rtt_ms": {
+          "$ref": "#/$defs/Distribution",
+          "description": "Round trips of measured datagrams (lost ones ranked as +∞)."
+        },
+        "samples_ms": {
+          "description": "Raw round trips of measured datagrams, in seq order (for the CDF).",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "send_errors": {
+          "description": "`send_to` errors.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sent": {
+          "description": "Datagrams sent.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warmup_count": {
+          "description": "Discarded seqs.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "payload_bytes",
+        "pps",
+        "warmup_count",
+        "sent",
+        "completed",
+        "lost",
+        "dup",
+        "late",
+        "send_errors",
+        "rtt_ms",
+        "samples_ms",
+        "drain_ms",
+        "responder",
+        "foreign_dropped"
+      ],
+      "type": "object"
+    },
+    "UdpEchoStats": {
+      "description": "The echo responder's counts.",
+      "properties": {
+        "before_start": {
+          "description": "Received before `start` (not echoed).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "echo_errors": {
+          "description": "Echo `send_to` errors.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "echoed": {
+          "description": "Echoes sent.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "received": {
+          "description": "Valid datagrams received.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "received",
+        "echoed",
+        "echo_errors",
+        "before_start"
+      ],
+      "type": "object"
+    },
+    "UdpLossLocality": {
+      "description": "Where datagrams were lost (usermetrics on both sides; an approximation).",
+      "properties": {
+        "local_recv_drops": {
+          "description": "`receiver inbound Δ − unique`, in datagrams.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "local_send_drops": {
+          "description": "`sent − sender outbound Δ`, in datagrams.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "network": {
+          "description": "`sender outbound Δ − receiver inbound Δ`, in datagrams.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "packets_per_datagram": {
+          "description": "Tunnel packets per datagram used to convert (2 above 1252 B).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "local_send_drops",
+        "network",
+        "local_recv_drops",
+        "packets_per_datagram"
+      ],
+      "type": "object"
+    },
+    "UdpMode": {
+      "description": "udp mode.",
+      "oneOf": [
+        {
+          "const": "stream",
+          "description": "Paced one-way stream at `rate_mbps`.",
+          "type": "string"
+        },
+        {
+          "const": "echo",
+          "description": "Echo at `pps`.",
+          "type": "string"
+        },
+        {
+          "const": "ramp",
+          "description": "Rate ramp from `rate_mbps` until loss.",
+          "type": "string"
+        }
+      ]
+    },
+    "UdpRampResults": {
+      "description": "`results` of a ramp run.",
+      "properties": {
+        "bad_datagrams": {
+          "description": "Short, wrong-magic or wrong-tag datagrams.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bucket_first_seq": {
+          "description": "First seq of each 250 ms send bucket.",
+          "items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "bucket_loss": {
+          "description": "Loss per send bucket.",
+          "items": {
+            "$ref": "#/$defs/UdpBucketLoss"
+          },
+          "type": "array"
+        },
+        "direction": {
+          "$ref": "#/$defs/OneWayDirection",
+          "description": "Upload or download."
+        },
+        "drain_ms": {
+          "description": "Drain period, ms.",
+          "format": "double",
+          "type": "number"
+        },
+        "drained_by": {
+          "description": "How the receiver's drain ended.",
+          "type": "string"
+        },
+        "dup": {
+          "description": "Repeat arrivals.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "foreign_dropped": {
+          "description": "Foreign datagrams dropped on both sides.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "goodput_bytes": {
+          "description": "Payload bytes in the measurement window.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "goodput_mbps": {
+          "description": "Goodput over the measurement window, Mb/s.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "jitter_ms": {
+          "description": "RFC 3550 interarrival jitter, ms.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "limit_found": {
+          "default": false,
+          "description": "Whether the ramp reached a limit: a step lost more than 2% or missed\nits rate (or the live loss stop fired). When false, the summary's\n`max_sustainable_mbps` is left empty, so a duration-bound ceiling is\nnever trended as a capacity.",
+          "type": "boolean"
+        },
+        "loss_locality": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UdpLossLocality"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "usermetrics loss locality, when both sides had usermetrics."
+        },
+        "loss_pct": {
+          "description": "`(sent − unique) / sent · 100`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_burst_datagrams": {
+          "description": "Largest number of datagrams the pacer released back to back.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_loss_burst": {
+          "description": "Longest run of never-received seqs.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_sustainable_mbps": {
+          "description": "The last step's rate with loss ≤ 2%. When `limit_found` is false this\nis only a lower bound: the run ended before any step lost more than\n2% or missed its rate.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "missing": {
+          "description": "`sent − unique`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offered_mbps": {
+          "description": "Offered load, Mb/s.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "out_of_range": {
+          "description": "Arrivals with an impossible seq.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pacer_late_ms_mean": {
+          "description": "Mean timer lateness of the sender's pacing sleeps, ms.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "payload_bytes": {
+          "description": "Datagram size, header included.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rate_achieved": {
+          "description": "`offered ≥ 0.98 · target`.",
+          "type": "boolean"
+        },
+        "rcvbuf_bytes": {
+          "description": "`SO_RCVBUF` the receiver got.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "received_bytes": {
+          "description": "Unique payload bytes received.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "receiver": {
+          "$ref": "#/$defs/ReceiverStats",
+          "description": "The receiver's byte accounting (receiver timebase)."
+        },
+        "reordered": {
+          "description": "RFC 4737 reordered arrivals.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "send_errors": {
+          "description": "`send_to` errors.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sent": {
+          "description": "Datagrams whose `send_to` returned Ok.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sent_bytes": {
+          "description": "Payload bytes sent.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "steps": {
+          "description": "Every step.",
+          "items": {
+            "$ref": "#/$defs/UdpRampStep"
+          },
+          "type": "array"
+        },
+        "stop_reason": {
+          "description": "Why the ramp stopped.",
+          "type": "string"
+        },
+        "target_mbps": {
+          "description": "Target (ramp: start) rate, Mb/s.",
+          "format": "double",
+          "type": "number"
+        },
+        "unique": {
+          "description": "Distinct seqs received.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "window_ms": {
+          "description": "Measurement window, ms.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "direction",
+        "payload_bytes",
+        "target_mbps",
+        "sent",
+        "unique",
+        "missing",
+        "dup",
+        "reordered",
+        "out_of_range",
+        "bad_datagrams",
+        "send_errors",
+        "max_loss_burst",
+        "rate_achieved",
+        "max_burst_datagrams",
+        "sent_bytes",
+        "received_bytes",
+        "goodput_bytes",
+        "window_ms",
+        "bucket_first_seq",
+        "bucket_loss",
+        "receiver",
+        "drain_ms",
+        "drained_by",
+        "foreign_dropped",
+        "steps",
+        "stop_reason"
+      ],
+      "type": "object"
+    },
+    "UdpRampStep": {
+      "description": "One ramp step.",
+      "properties": {
+        "achieved": {
+          "description": "`offered ≥ 0.98 · rate`.",
+          "type": "boolean"
+        },
+        "complete": {
+          "description": "It ran its full 3 s.",
+          "type": "boolean"
+        },
+        "end_ms": {
+          "description": "End, ms since the sender started.",
+          "format": "double",
+          "type": "number"
+        },
+        "end_seq": {
+          "description": "One past its last seq.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "first_seq": {
+          "description": "First seq of the step.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "loss_pct": {
+          "description": "Exact loss of its seq range (filled from the receiver).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "offered_mbps": {
+          "description": "What the sender offered during the step, Mb/s.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "rate_mbps": {
+          "description": "Target rate, Mb/s.",
+          "format": "double",
+          "type": "number"
+        },
+        "start_ms": {
+          "description": "Start, ms since the sender started.",
+          "format": "double",
+          "type": "number"
+        },
+        "sustained": {
+          "description": "Counted as sustained: achieved, loss ≤ 2%, and not the step the\nloss stop cut short.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "rate_mbps",
+        "first_seq",
+        "end_seq",
+        "start_ms",
+        "end_ms",
+        "complete",
+        "achieved",
+        "sustained"
+      ],
+      "type": "object"
+    },
+    "UdpResults": {
+      "description": "`RunReport.results` of a `udp` run, tagged by `mode`.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/UdpStreamResults",
+          "description": "`mode: \"stream\"`.",
+          "properties": {
+            "mode": {
+              "const": "stream",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/UdpEchoResults",
+          "description": "`mode: \"echo\"`.",
+          "properties": {
+            "mode": {
+              "const": "echo",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/UdpRampResults",
+          "description": "`mode: \"ramp\"`.",
+          "properties": {
+            "mode": {
+              "const": "ramp",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UdpStreamResults": {
+      "description": "`results` of a stream run (and the common part of a ramp run).",
+      "properties": {
+        "bad_datagrams": {
+          "description": "Short, wrong-magic or wrong-tag datagrams.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bucket_first_seq": {
+          "description": "First seq of each 250 ms send bucket.",
+          "items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "bucket_loss": {
+          "description": "Loss per send bucket.",
+          "items": {
+            "$ref": "#/$defs/UdpBucketLoss"
+          },
+          "type": "array"
+        },
+        "direction": {
+          "$ref": "#/$defs/OneWayDirection",
+          "description": "Upload or download."
+        },
+        "drain_ms": {
+          "description": "Drain period, ms.",
+          "format": "double",
+          "type": "number"
+        },
+        "drained_by": {
+          "description": "How the receiver's drain ended.",
+          "type": "string"
+        },
+        "dup": {
+          "description": "Repeat arrivals.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "foreign_dropped": {
+          "description": "Foreign datagrams dropped on both sides.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "goodput_bytes": {
+          "description": "Payload bytes in the measurement window.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "goodput_mbps": {
+          "description": "Goodput over the measurement window, Mb/s.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "jitter_ms": {
+          "description": "RFC 3550 interarrival jitter, ms.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "loss_locality": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UdpLossLocality"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "usermetrics loss locality, when both sides had usermetrics."
+        },
+        "loss_pct": {
+          "description": "`(sent − unique) / sent · 100`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_burst_datagrams": {
+          "description": "Largest number of datagrams the pacer released back to back.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_loss_burst": {
+          "description": "Longest run of never-received seqs.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "missing": {
+          "description": "`sent − unique`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offered_mbps": {
+          "description": "Offered load, Mb/s.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "out_of_range": {
+          "description": "Arrivals with an impossible seq.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pacer_late_ms_mean": {
+          "description": "Mean timer lateness of the sender's pacing sleeps, ms.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "payload_bytes": {
+          "description": "Datagram size, header included.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rate_achieved": {
+          "description": "`offered ≥ 0.98 · target`.",
+          "type": "boolean"
+        },
+        "rcvbuf_bytes": {
+          "description": "`SO_RCVBUF` the receiver got.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "received_bytes": {
+          "description": "Unique payload bytes received.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "receiver": {
+          "$ref": "#/$defs/ReceiverStats",
+          "description": "The receiver's byte accounting (receiver timebase)."
+        },
+        "reordered": {
+          "description": "RFC 4737 reordered arrivals.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "send_errors": {
+          "description": "`send_to` errors.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sent": {
+          "description": "Datagrams whose `send_to` returned Ok.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sent_bytes": {
+          "description": "Payload bytes sent.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "target_mbps": {
+          "description": "Target (ramp: start) rate, Mb/s.",
+          "format": "double",
+          "type": "number"
+        },
+        "unique": {
+          "description": "Distinct seqs received.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "window_ms": {
+          "description": "Measurement window, ms.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "direction",
+        "payload_bytes",
+        "target_mbps",
+        "sent",
+        "unique",
+        "missing",
+        "dup",
+        "reordered",
+        "out_of_range",
+        "bad_datagrams",
+        "send_errors",
+        "max_loss_burst",
+        "rate_achieved",
+        "max_burst_datagrams",
+        "sent_bytes",
+        "received_bytes",
+        "goodput_bytes",
+        "window_ms",
+        "bucket_first_seq",
+        "bucket_loss",
+        "receiver",
+        "drain_ms",
+        "drained_by",
+        "foreign_dropped"
+      ],
+      "type": "object"
+    },
+    "VideoDatagrams": {
+      "description": "UDP datagram figures in the report.",
+      "properties": {
+        "dup": {
+          "description": "Repeats.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "loss_pct": {
+          "description": "`missing / sent · 100`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_loss_burst": {
+          "description": "Longest run of lost datagrams.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "missing": {
+          "description": "`sent − unique`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reordered": {
+          "description": "Reordered arrivals.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "send_errors": {
+          "description": "`send_to` failures.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sent": {
+          "description": "Datagrams whose `send_to` returned Ok.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unique": {
+          "description": "Distinct datagrams received.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sent",
+        "send_errors",
+        "unique",
+        "missing",
+        "dup",
+        "reordered",
+        "max_loss_burst"
+      ],
+      "type": "object"
+    },
+    "VideoFrame": {
+      "description": "One frame of the strip.",
+      "properties": {
+        "bytes": {
+          "description": "Frame size.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "delay_ms": {
+          "description": "`d_k`, the delay beyond the fastest frame, ms.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "frame_no": {
+          "description": "Frame number.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "keyframe": {
+          "description": "Keyframe flag.",
+          "type": "boolean"
+        },
+        "latency_ms": {
+          "description": "`raw − offset(complete)`, ms; `None` when dropped.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "spread_ms": {
+          "description": "First to last fragment, ms.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/VideoFrameState",
+          "description": "On time, late or dropped."
+        },
+        "warmup": {
+          "description": "Captured during the warmup (not counted).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "frame_no",
+        "keyframe",
+        "bytes",
+        "state",
+        "warmup"
+      ],
+      "type": "object"
+    },
+    "VideoFrameState": {
+      "description": "How a frame fared.",
+      "oneOf": [
+        {
+          "const": "on-time",
+          "description": "Complete and within the jitter buffer.",
+          "type": "string"
+        },
+        {
+          "const": "late",
+          "description": "Complete, later than the jitter buffer allows.",
+          "type": "string"
+        },
+        {
+          "const": "dropped",
+          "description": "Never completed.",
+          "type": "string"
+        }
+      ]
+    },
+    "VideoProfile": {
+      "description": "video profile: frame rate and nominal bitrate.",
+      "oneOf": [
+        {
+          "const": "720p30",
+          "description": "30 fps, 2.5 Mb/s.",
+          "type": "string"
+        },
+        {
+          "const": "1080p30",
+          "description": "30 fps, 6 Mb/s.",
+          "type": "string"
+        },
+        {
+          "const": "1080p60",
+          "description": "60 fps, 12 Mb/s.",
+          "type": "string"
+        },
+        {
+          "const": "4k30",
+          "description": "30 fps, 25 Mb/s.",
+          "type": "string"
+        }
+      ]
+    },
+    "VideoResults": {
+      "description": "`RunReport.results` of a `video` run.",
+      "properties": {
+        "bitrate_mbps": {
+          "description": "Bitrate, Mb/s.",
+          "format": "double",
+          "type": "number"
+        },
+        "connect_ms": {
+          "description": "`open_tcp` / `connect_quic` time, ms.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "datagrams": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VideoDatagrams"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "UDP only."
+        },
+        "delivered_fps": {
+          "description": "`on_time / (frames_sent / fps)`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "dropped": {
+          "description": "Counted frames dropped.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dropped_pct": {
+          "description": "`dropped / frames_sent · 100`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "foreign_dropped": {
+          "description": "Foreign connections, streams or datagrams the receiver dropped.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fps": {
+          "description": "Frames per second.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "frame_latency_ms": {
+          "$ref": "#/$defs/Distribution",
+          "description": "Frame latency of counted frames, ms (dropped ones as lost)."
+        },
+        "frame_spread_ms": {
+          "$ref": "#/$defs/Distribution",
+          "description": "First to last fragment of counted frames, ms (clock-free)."
+        },
+        "frame_spread_p50_ms": {
+          "description": "p50 of `frame_spread_ms`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "frames": {
+          "description": "The frame strip.",
+          "items": {
+            "$ref": "#/$defs/VideoFrame"
+          },
+          "type": "array"
+        },
+        "frames_sent": {
+          "description": "Counted frames sent.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "frames_stride": {
+          "description": "Every `frames_stride`-th frame is in the strip (1 = all), plus those not on time.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "frames_total": {
+          "description": "Frames sent in all.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "freeze_ms": {
+          "description": "Σ freeze length · 1000/fps.",
+          "format": "double",
+          "type": "number"
+        },
+        "freezes": {
+          "description": "Runs of ≥ 2 consecutive frames not on time.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "goodput_mbps": {
+          "description": "Receiver goodput after the warmup, Mb/s (§8.1).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "i_frame_bytes": {
+          "description": "Keyframe bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "keyframe_complete_ms": {
+          "$ref": "#/$defs/Distribution",
+          "description": "Frame latency of counted keyframes, ms."
+        },
+        "keyframe_complete_p50_ms": {
+          "description": "p50 of `keyframe_complete_ms`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "late": {
+          "description": "Counted frames late.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "late_pct": {
+          "description": "`late / frames_sent · 100`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "latency_uncertainty_ms": {
+          "description": "± on every latency figure: the clock offset uncertainty, ms.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_send_lag_ms": {
+          "description": "How far the sender fell behind its capture schedule at worst, ms.",
+          "format": "double",
+          "type": "number"
+        },
+        "offered_mbps": {
+          "description": "Offered load of the counted frames, Mb/s.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "on_time": {
+          "description": "Counted frames on time.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "p_frame_bytes": {
+          "description": "P-frame bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pacing": {
+          "$ref": "#/$defs/Pacing",
+          "description": "Paced or burst (UDP only)."
+        },
+        "received_bytes": {
+          "description": "Payload bytes received (warmup included).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "receiver": {
+          "$ref": "#/$defs/ReceiverStats",
+          "description": "The receiver accounting, responder time."
+        },
+        "relative_delay_ms": {
+          "$ref": "#/$defs/Distribution",
+          "description": "`d_k` of counted frames, ms (clock-free)."
+        },
+        "samples_ms": {
+          "description": "Raw counted frame latencies, ms, ascending (≤ 4000 order statistics).",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "sent_bytes": {
+          "description": "Payload bytes sent (warmup included).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stream_ack": {
+          "description": "TCP: the receiver's stream ack (payload bytes it counted).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "transport": {
+          "$ref": "#/$defs/VideoTransport",
+          "description": "UDP, QUIC or TCP."
+        },
+        "warmup_frames": {
+          "description": "Frames captured during the warmup (sent, not counted).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "transport",
+        "pacing",
+        "fps",
+        "bitrate_mbps",
+        "p_frame_bytes",
+        "i_frame_bytes",
+        "frames_total",
+        "warmup_frames",
+        "frames_sent",
+        "on_time",
+        "late",
+        "dropped",
+        "freezes",
+        "freeze_ms",
+        "frame_latency_ms",
+        "samples_ms",
+        "relative_delay_ms",
+        "frame_spread_ms",
+        "keyframe_complete_ms",
+        "sent_bytes",
+        "received_bytes",
+        "receiver",
+        "max_send_lag_ms",
+        "frames",
+        "frames_stride",
+        "foreign_dropped"
+      ],
+      "type": "object"
+    },
+    "VideoTransport": {
+      "description": "video transport.",
+      "oneOf": [
+        {
+          "const": "udp",
+          "description": "Fragmented datagrams.",
+          "type": "string"
+        },
+        {
+          "const": "quic",
+          "description": "One QUIC stream per frame.",
+          "type": "string"
+        },
+        {
+          "const": "tcp",
+          "description": "One TCP stream.",
+          "type": "string"
+        }
+      ]
+    },
+    "Workload": {
+      "description": "A workload name (the `\"workload\"` tag).",
+      "oneOf": [
+        {
+          "const": "path",
+          "description": "Path RTT and lifecycle timings.",
+          "type": "string"
+        },
+        {
+          "const": "tcp",
+          "description": "Raw TCP throughput / latency.",
+          "type": "string"
+        },
+        {
+          "const": "udp",
+          "description": "UDP datagrams: stream, echo, ramp.",
+          "type": "string"
+        },
+        {
+          "const": "quic",
+          "description": "QUIC streams: throughput / latency.",
+          "type": "string"
+        },
+        {
+          "const": "ws",
+          "description": "Session-plane WebSocket messages: request/reply, stream.",
+          "type": "string"
+        },
+        {
+          "const": "file-transfer",
+          "description": "`send_file`.",
+          "type": "string"
+        },
+        {
+          "const": "synced-store",
+          "description": "SyncedStore convergence.",
+          "type": "string"
+        },
+        {
+          "const": "http",
+          "description": "HTTP through the sidecar proxy or a raw listener.",
+          "type": "string"
+        },
+        {
+          "const": "video",
+          "description": "Synthetic video frames.",
+          "type": "string"
+        },
+        {
+          "const": "egress",
+          "description": "Egress route vs raw TCP.",
+          "type": "string"
+        }
+      ]
+    },
+    "WorkloadParams": {
+      "description": "Parameters of one run, tagged by `\"workload\"`.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "`path`.",
+          "properties": {
+            "count": {
+              "default": 20,
+              "description": "Pings, 2–200.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "interval_ms": {
+              "default": 250,
+              "description": "Spacing, 50–5000 ms; `count × interval_ms ≤ 300 s`.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workload": {
+              "const": "path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "workload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`tcp`.",
+          "properties": {
+            "count": {
+              "default": 200,
+              "description": "Latency samples, 10–10000.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "direction": {
+              "$ref": "#/$defs/Direction",
+              "default": "upload",
+              "description": "Upload, download or bidirectional (throughput)."
+            },
+            "duration_secs": {
+              "default": 10,
+              "description": "Measured seconds, 2–60.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mode": {
+              "$ref": "#/$defs/StreamMode",
+              "default": "throughput",
+              "description": "Throughput or latency."
+            },
+            "nodelay": {
+              "default": true,
+              "description": "`TCP_NODELAY` on both Rust sockets.",
+              "type": "boolean"
+            },
+            "payload_bytes": {
+              "default": 64,
+              "description": "Latency message size, 1–65536.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "streams": {
+              "default": 1,
+              "description": "Streams per direction, 1–16 (throughput).",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "warmup_count": {
+              "default": 10,
+              "description": "Discarded latency samples, 0–1000 and `< count`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "warmup_secs": {
+              "default": 1,
+              "description": "Unmeasured lead-in, 0–10 and `< duration_secs − 1`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workload": {
+              "const": "tcp",
+              "type": "string"
+            }
+          },
+          "required": [
+            "workload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`udp`.",
+          "properties": {
+            "direction": {
+              "$ref": "#/$defs/OneWayDirection",
+              "default": "upload",
+              "description": "Upload or download (stream, ramp)."
+            },
+            "duration_secs": {
+              "default": 10,
+              "description": "Seconds, 2–60.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mode": {
+              "$ref": "#/$defs/UdpMode",
+              "default": "stream",
+              "description": "Stream, echo or ramp."
+            },
+            "payload_bytes": {
+              "default": 1200,
+              "description": "Datagram payload including the 22-byte header, 30–1400.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pps": {
+              "default": 50,
+              "description": "Echo rate, 1–2000 datagrams/s.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rate_mbps": {
+              "default": 10.0,
+              "description": "Target rate, 0.1–1000 Mb/s; the start rate for ramp.",
+              "format": "double",
+              "type": "number"
+            },
+            "warmup_count": {
+              "default": 10,
+              "description": "Discarded echo samples, 0–1000 and `< pps × duration_secs`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "warmup_secs": {
+              "default": 1,
+              "description": "Unmeasured lead-in (stream, ramp), 0–10 and `< duration_secs − 1`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workload": {
+              "const": "udp",
+              "type": "string"
+            }
+          },
+          "required": [
+            "workload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`quic`.",
+          "properties": {
+            "count": {
+              "default": 200,
+              "description": "Latency samples, 10–10000.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "direction": {
+              "$ref": "#/$defs/Direction",
+              "default": "upload",
+              "description": "Upload, download or bidirectional (throughput)."
+            },
+            "duration_secs": {
+              "default": 10,
+              "description": "Measured seconds, 2–60.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mode": {
+              "$ref": "#/$defs/StreamMode",
+              "default": "throughput",
+              "description": "Throughput or latency."
+            },
+            "payload_bytes": {
+              "default": 64,
+              "description": "Latency message size, 1–65536.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "streams": {
+              "default": 4,
+              "description": "Streams per direction on one connection, 1–32.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "warmup_count": {
+              "default": 10,
+              "description": "Discarded latency samples, 0–1000 and `< count`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "warmup_secs": {
+              "default": 1,
+              "description": "Unmeasured lead-in, 0–10 and `< duration_secs − 1`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workload": {
+              "const": "quic",
+              "type": "string"
+            }
+          },
+          "required": [
+            "workload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`ws`.",
+          "properties": {
+            "concurrency": {
+              "default": 1,
+              "description": "Requests in flight (rr), 1–64.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "count": {
+              "default": 500,
+              "description": "Requests (rr), 10–100000; `count × payload_bytes ≤ 1 GiB`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "duration_secs": {
+              "default": 10,
+              "description": "Seconds (stream), 2–60.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mode": {
+              "$ref": "#/$defs/WsMode",
+              "default": "rr",
+              "description": "Request/reply or stream."
+            },
+            "payload_bytes": {
+              "default": 64,
+              "description": "Decoded payload: rr 0–1048576, stream 0–262144.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rate_per_sec": {
+              "default": null,
+              "description": "Messages per second (stream), 1–100000; `None` = as fast as backpressure allows.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "warmup_count": {
+              "default": 10,
+              "description": "Discarded requests (rr), 0–1000 and `< count`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workload": {
+              "const": "ws",
+              "type": "string"
+            }
+          },
+          "required": [
+            "workload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`file-transfer`.",
+          "properties": {
+            "iterations": {
+              "default": 3,
+              "description": "Transfers, 1–20; `size_bytes × iterations ≤ 4 GiB`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "size_bytes": {
+              "default": 10485760,
+              "description": "File size, 1024–1073741824 bytes.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workload": {
+              "const": "file-transfer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "workload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`synced-store`.",
+          "properties": {
+            "count": {
+              "default": 100,
+              "description": "Writes, 10–5000.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "mode": {
+              "$ref": "#/$defs/StoreMode",
+              "default": "pingpong",
+              "description": "Ping-pong or burst."
+            },
+            "payload_bytes": {
+              "default": 64,
+              "description": "Padding per write, 0–65536 bytes.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "warmup_count": {
+              "default": 5,
+              "description": "Discarded ping-pong samples, 0–1000 and `< count`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workload": {
+              "const": "synced-store",
+              "type": "string"
+            }
+          },
+          "required": [
+            "workload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`http`.",
+          "properties": {
+            "concurrency": {
+              "default": 4,
+              "description": "Workers, 1–64.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "connection": {
+              "$ref": "#/$defs/HttpConnection",
+              "default": "keepalive",
+              "description": "Keep-alive or a connection per request."
+            },
+            "duration_secs": {
+              "default": 10,
+              "description": "Measured seconds, 2–60.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_bytes": {
+              "default": 1024,
+              "description": "Response body, 0–10485760 bytes.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "target": {
+              "$ref": "#/$defs/HttpTarget",
+              "default": "proxy",
+              "description": "Through the sidecar proxy or a raw listener."
+            },
+            "warmup_secs": {
+              "default": 1,
+              "description": "Unmeasured lead-in, 0–10 and `< duration_secs − 1`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workload": {
+              "const": "http",
+              "type": "string"
+            }
+          },
+          "required": [
+            "workload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`video`.",
+          "properties": {
+            "bitrate_mbps": {
+              "default": null,
+              "description": "Bitrate override, 0.5–100 Mb/s.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "duration_secs": {
+              "default": 10,
+              "description": "Measured seconds, 2–60.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "fps": {
+              "default": null,
+              "description": "Frame-rate override, 1–120.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "gop": {
+              "default": 60,
+              "description": "Frames per GOP, 1–600 and `≤ fps × duration_secs`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "jitter_buffer_ms": {
+              "default": 100,
+              "description": "Playout deadline beyond the fastest frame, 0–1000 ms.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "keyframe_ratio": {
+              "default": 8,
+              "description": "Keyframe size ÷ P-frame size, 1–20.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pacing": {
+              "$ref": "#/$defs/Pacing",
+              "default": "paced",
+              "description": "Paced or burst."
+            },
+            "profile": {
+              "$ref": "#/$defs/VideoProfile",
+              "default": "1080p30",
+              "description": "Frame rate and nominal bitrate."
+            },
+            "transport": {
+              "$ref": "#/$defs/VideoTransport",
+              "default": "udp",
+              "description": "UDP, QUIC or TCP."
+            },
+            "warmup_secs": {
+              "default": 1,
+              "description": "Unmeasured lead-in, 0–10 and `< duration_secs − 1`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workload": {
+              "const": "video",
+              "type": "string"
+            }
+          },
+          "required": [
+            "workload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "`egress`.",
+          "properties": {
+            "direction": {
+              "$ref": "#/$defs/OneWayDirection",
+              "default": "upload",
+              "description": "Upload or download."
+            },
+            "duration_secs": {
+              "default": 10,
+              "description": "Measured seconds, 2–60.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "streams": {
+              "default": 1,
+              "description": "Streams, 1–8.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "warmup_secs": {
+              "default": 1,
+              "description": "Unmeasured lead-in, 0–10 and `< duration_secs − 1`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "workload": {
+              "const": "egress",
+              "type": "string"
+            }
+          },
+          "required": [
+            "workload"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WsMode": {
+      "description": "ws mode.",
+      "oneOf": [
+        {
+          "const": "rr",
+          "description": "Request/reply.",
+          "type": "string"
+        },
+        {
+          "const": "stream",
+          "description": "One-way message stream for a duration.",
+          "type": "string"
+        }
+      ]
+    },
+    "WsResults": {
+      "description": "`RunReport.results` of a `ws` run, tagged by `mode`.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/WsRrResults",
+          "description": "Request/reply.",
+          "properties": {
+            "mode": {
+              "const": "rr",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/WsStreamResults",
+          "description": "One-way stream.",
+          "properties": {
+            "mode": {
+              "const": "stream",
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WsRrResults": {
+      "description": "`results` of a ws rr run.",
+      "properties": {
+        "bad_replies": {
+          "description": "Replies with an unknown id or a payload of the wrong size.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "completed": {
+          "description": "Measured requests answered.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "concurrency": {
+          "description": "Requests in flight.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "count": {
+          "description": "Measured requests.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lag_dropped": {
+          "description": "Σ `Lagged(n)` on this side's `bench.ws` receiver.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "msgs_per_sec": {
+          "description": "Answered measured requests per second.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "payload_bytes": {
+          "description": "Decoded payload per request.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "peer_lag_dropped": {
+          "description": "Σ `Lagged(n)` on the responder's receiver.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rtt_ms": {
+          "$ref": "#/$defs/Distribution",
+          "description": "Round trips of the measured requests."
+        },
+        "samples_ms": {
+          "description": "Raw measured round trips in send order, ms (thinned to at most 5000).",
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "sent": {
+          "description": "Requests sent, warmup included.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeouts": {
+          "description": "Measured requests not answered within 10 s.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "warmup_count": {
+          "description": "Discarded requests before them.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "window_ms": {
+          "description": "First measured send → last measured answer, ms.",
+          "format": "double",
+          "type": "number"
+        },
+        "wire_bytes_per_msg": {
+          "description": "One `rr.req` envelope as `JsonCodec` encodes it, bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "payload_bytes",
+        "count",
+        "warmup_count",
+        "concurrency",
+        "sent",
+        "completed",
+        "timeouts",
+        "rtt_ms",
+        "samples_ms",
+        "window_ms",
+        "wire_bytes_per_msg",
+        "lag_dropped",
+        "peer_lag_dropped",
+        "bad_replies"
+      ],
+      "type": "object"
+    },
+    "WsStreamResults": {
+      "description": "`results` of a ws stream run.",
+      "properties": {
+        "bad_payload": {
+          "description": "Messages whose seq or payload did not decode.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "drop_pct": {
+          "description": "`missing ÷ sent · 100`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "dup": {
+          "description": "Repeated seqs.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "duration_secs": {
+          "description": "Sending time, s.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "goodput_mbps": {
+          "description": "Decoded payload over the receiver's window, Mb/s.",
+          "format": "double",
+          "type": "number"
+        },
+        "lag_dropped": {
+          "description": "Σ `Lagged(n)` on the receiver's subscription.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "missing": {
+          "description": "`sent − unique`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "msgs_per_sec": {
+          "description": "Unique messages per second over the receiver's window.",
+          "format": "double",
+          "type": "number"
+        },
+        "payload_bytes": {
+          "description": "Decoded payload per message.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rate_per_sec": {
+          "description": "Target rate; `None` = as fast as backpressure allows.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "received_bytes": {
+          "description": "Decoded payload bytes received (unique messages).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reordered": {
+          "description": "Unique seqs below an earlier maximum.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "router_dropped": {
+          "description": "`missing − lag_dropped`: lost before the subscription (the envelope\nrouter's own lag).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "saw_last_seq": {
+          "description": "The receiver finished on `last_seq` (false: on 2 s without messages).",
+          "type": "boolean"
+        },
+        "sent": {
+          "description": "Messages whose `send_typed` returned Ok.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sent_bytes": {
+          "description": "Payload bytes sent (`sent × payload_bytes`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sent_per_sec": {
+          "description": "Messages handed to `send_typed` per second while sending.",
+          "format": "double",
+          "type": "number"
+        },
+        "unique": {
+          "description": "Distinct seqs the receiver saw.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "window_ms": {
+          "description": "The receiver's first → last message, ms.",
+          "format": "double",
+          "type": "number"
+        },
+        "wire_bytes_per_msg": {
+          "description": "One envelope as `JsonCodec` encodes it, bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wire_mbps": {
+          "description": "`msgs_per_sec × wire_bytes_per_msg × 8 / 1e6`.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "payload_bytes",
+        "duration_secs",
+        "sent",
+        "unique",
+        "missing",
+        "dup",
+        "reordered",
+        "lag_dropped",
+        "router_dropped",
+        "msgs_per_sec",
+        "goodput_mbps",
+        "sent_per_sec",
+        "wire_bytes_per_msg",
+        "wire_mbps",
+        "window_ms",
+        "sent_bytes",
+        "received_bytes",
+        "bad_payload",
+        "saw_last_seq"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "truffle bench run report, schema v3 (RFC 027 §7.4). GENERATED from the Rust types in benchmark/engine; do not edit. `$defs` also holds every other type the app exchanges with the engine.",
+  "properties": {
+    "compare_key": {
+      "description": "16 hex: runs are trended and compared only within one key.",
+      "type": "string"
+    },
+    "duration_ms": {
+      "description": "Wall time of the run.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "error": {
+      "description": "Why it failed.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "error_code": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Error code when failed."
+    },
+    "finished_at": {
+      "description": "RFC 3339.",
+      "type": "string"
+    },
+    "git_dirty": {
+      "description": "Copy of `local.git_dirty`.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "git_sha": {
+      "description": "Copy of `local.git_sha`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "label": {
+      "description": "Params label.",
+      "type": "string"
+    },
+    "local": {
+      "$ref": "#/$defs/NodeEnv",
+      "description": "This side."
+    },
+    "methodology": {
+      "description": "`v3`, or an imported method tag (§7.5).",
+      "type": "string"
+    },
+    "network": {
+      "$ref": "#/$defs/NetworkInfo",
+      "description": "Path and clock."
+    },
+    "notes": {
+      "description": "Honesty notes and anything else people should know.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "overlapping_runs": {
+      "description": "Exempt runs (path, probe) that overlapped this one.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "params": {
+      "$ref": "#/$defs/WorkloadParams",
+      "description": "Params as validated and used by the responder."
+    },
+    "peer": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NodeEnv"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The other side (`None` for tsnet-bench imports and early failures)."
+    },
+    "resources": {
+      "$ref": "#/$defs/Resources",
+      "description": "CPU and memory."
+    },
+    "results": {
+      "description": "Workload-specific results (§8)."
+    },
+    "run_id": {
+      "description": "`^[A-Za-z0-9-]{1,64}$`.",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Always 3.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "series": {
+      "description": "Charts.",
+      "items": {
+        "$ref": "#/$defs/Series"
+      },
+      "type": "array"
+    },
+    "started_at": {
+      "description": "RFC 3339.",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/RunStatus",
+      "description": "Outcome."
+    },
+    "suite_id": {
+      "description": "Suite id when part of a suite.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "summary": {
+      "description": "Headline numbers.",
+      "items": {
+        "$ref": "#/$defs/SummaryItem"
+      },
+      "type": "array"
+    },
+    "tool": {
+      "$ref": "#/$defs/ReportTool",
+      "description": "Producing tool."
+    },
+    "tool_version": {
+      "description": "Engine version (`unknown` for imports that did not record one).",
+      "type": "string"
+    },
+    "truffle_version": {
+      "description": "truffle-core version.",
+      "type": "string"
+    },
+    "workload": {
+      "$ref": "#/$defs/Workload",
+      "description": "Workload."
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "tool",
+    "tool_version",
+    "truffle_version",
+    "methodology",
+    "workload",
+    "label",
+    "status",
+    "started_at",
+    "finished_at",
+    "duration_ms",
+    "compare_key",
+    "local",
+    "network",
+    "params",
+    "summary",
+    "results",
+    "series",
+    "resources",
+    "overlapping_runs",
+    "notes"
+  ],
+  "title": "RunReport",
+  "type": "object"
+}

@@ -1,0 +1,8 @@
+{
+  "auth_url": "https://login.tailscale.com/a/0123456789abcdef",
+  "error": null,
+  "local": null,
+  "since_ms": 1760601600000,
+  "state": "needs-login",
+  "tailscale_hostname": "truffle-truffle-bench-studio"
+}

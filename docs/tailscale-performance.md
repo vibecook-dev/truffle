@@ -1,49 +1,44 @@
 # Measuring the Tailscale stack
 
-Use the pinned Go toolchain and a release Rust build. Configure an ephemeral
-`TRUFFLE_TEST_AUTHKEY` in the environment or the repository `.env`. Never put
-keys in benchmark command lines or reports. The baseline Go command reads the
-environment only. Use an isolated test tailnet or scoped test-node ACLs.
+How to measure truffle — the methodology, every workload, the report format and
+the desktop app — now lives in [benchmark/README.md](../benchmark/README.md)
+(RFC 027). This page keeps the commands for a release-build measurement and the
+native Go/tsnet baseline, which has no Rust bridge.
 
-## Reproducible application workloads
+Use the pinned Go toolchain and a release Rust build. Never put keys in
+benchmark command lines or reports: `truffle-bench` reads `--auth-key-file`,
+`TRUFFLE_BENCH_AUTH_KEY`, `TRUFFLE_TEST_AUTHKEY` or the repository `.env`; its
+legacy `transport` subcommand reads only `TRUFFLE_TEST_AUTHKEY` (then
+`TS_AUTHKEY`) from the environment or `.env`; and `tsnet-bench` reads
+`TRUFFLE_TEST_AUTHKEY` from the environment only. Use an isolated test tailnet
+or scoped test-node ACLs.
+
+## Application workloads
 
 ```sh
 cargo build --locked -p truffle-bench --release
-cargo run --locked -p truffle-bench --release -- request-reply --count 500 --warmup 20
-cargo run --locked -p truffle-bench --release -- file-transfer --size 10M --iterations 10 --warmup 2
-cargo run --locked -p truffle-bench --release -- synced-store --scenario b2-concurrent --ops 1000
-cargo run --locked -p truffle-bench --release -- transport --protocol tcp --bytes 10485760 --iterations 10
-cargo run --locked -p truffle-bench --release -- transport --protocol quic --bytes 10485760 --iterations 10 --concurrency 4
+# Every workload, two hubs in one process (needs a key)
+cargo run --locked -p truffle-bench --release -- suite --profile standard --pair
+# Single workloads with overrides (needs a key)
+cargo run --locked -p truffle-bench --release -- pair ws --param count=500
+cargo run --locked -p truffle-bench --release -- pair file-transfer --param size_bytes=10485760 --param iterations=10
+cargo run --locked -p truffle-bench --release -- pair tcp --param streams=4
+cargo run --locked -p truffle-bench --release -- pair quic --param streams=4
 ```
 
-These pair runs put two tsnet nodes on **one host**. They measure bridge and
-application overhead, and provide useful smoke tests. They do not establish
-WAN throughput, NAT traversal quality, or maximum Tailscale performance.
-
-JSON schema 2 records the full source revision and tracked dirty state,
-platform, logical CPUs, build mode, actual sidecar SHA-256 and Go build info,
-workload parameters, and path probes before and after measurement. Keep the
-exact source diff when benchmarking a dirty tree. Each output has a unique ID;
-repeated runs never overwrite each other. Latencies are in milliseconds,
-throughputs in decimal MB/s. Raw samples retain fractional precision; summary
-quantiles use the nearest-rank method. Failed requests retain their outcome,
-and incomplete runs exit unsuccessfully. Do not compare only successful-sample
-percentiles without also checking failure counts and `valid`.
-
-Request/reply validates the sender, run ID, sequence, and payload. Warmups are
-excluded. File transfers validate both the returned and received SHA-256 and
-byte counts; verification and output deletion occur outside the timed interval.
-Each file-transfer sample times the sender through its ACK, then waits for the
-matching receiver completion before starting the next iteration. This excludes
-receiver shutdown delay from throughput while preventing overlapping samples
-from exhausting pending-offer limits. Missing or failed completion invalidates
-the run.
-Store runs fail unless both required views converge. Their convergence polling
-interval is 25 ms, so sub-25-ms comparisons are not meaningful.
+These pair runs put two tsnet nodes on **one host** (topology `same-process`).
+They measure bridge and application overhead, and make useful smoke tests. They
+do not establish WAN throughput, NAT traversal quality, or maximum Tailscale
+performance. For a real link, run `truffle-bench serve` on one machine and
+`truffle-bench run --peer <name> <workload>` (or the app) on the other; see
+[benchmark/README.md](../benchmark/README.md).
 
 ## Two hosts and a native baseline
 
-Choose a unique shared app ID. Start the server on host B, then the client on A:
+The legacy `transport` subcommand (schema 2) and `tsnet-bench` speak the same
+length/payload/checksum protocol, so together they isolate the cost of
+truffle's Rust bridge. Choose a unique shared app ID. Start the server on host
+B, then the client on A:
 
 ```sh
 # B
@@ -52,15 +47,19 @@ cargo run --locked -p truffle-bench --release -- transport --mode serve --protoc
 cargo run --locked -p truffle-bench --release -- transport --mode client --protocol tcp --app-id bench-run42 --peer server --iterations 20 --warmup 3 --concurrency 4
 ```
 
-Repeat with `--protocol quic` on both ends. Separate-process mode is labeled
-as such in the report: the caller must actually use different hosts. Each
-sample opens a new connection, recording connection establishment separately
-from transfer plus receiver acknowledgement. Concurrency creates independent
-connections and stresses ephemeral socket allocation. Aggregate throughput
-uses measured bytes divided by elapsed wall time for the complete measured
-batches. Both client and server hash the payload during the timed transfer;
-CPU cost therefore includes integrity validation. The server caps concurrent
-connections and applies per-connection deadlines.
+Repeat with `--protocol quic` on both ends. `transport` needs
+`TRUFFLE_TEST_AUTHKEY` (or `TS_AUTHKEY`) in the environment or `.env`; it does
+not read `TRUFFLE_BENCH_AUTH_KEY` and has no `--auth-key-file`. Separate-process mode is labeled as such in the report: the
+caller must actually use different hosts. Each sample opens a new connection,
+recording connection establishment separately from transfer plus receiver
+acknowledgement. Concurrency creates independent connections and stresses
+ephemeral socket allocation. Aggregate throughput uses measured bytes divided
+by elapsed wall time for the complete measured batches. Both client and server
+hash the payload during the timed transfer; CPU cost therefore includes
+integrity validation. The server caps concurrent connections and applies
+per-connection deadlines. Throughputs are decimal MB/s (the hub's importer
+converts them to Mb/s and labels them `fixed_size_mbps`, a different method
+from the v3 `goodput_mbps`).
 
 Compare against Go/tsnet without the Rust bridge, using the same two hosts,
 payload size, number of iterations and network conditions:
@@ -77,13 +76,10 @@ The baseline uses the same length/payload/checksum protocol and payload bytes.
 It runs sequential connections, so compare with Rust `--concurrency 1`.
 `go run` compilation is outside the measured intervals; prebuild it when
 collecting external process profiles. The native report includes actual module
-build info and raw Tailscale path probes.
+build info and raw Tailscale path probes. `truffle-bench report native.json`
+prints it, and the truffle bench app imports it as a "native Go/tsnet
+baseline" next to v3 runs.
 
-Run at least five trials on idle, powered machines. Keep OS, CPU, toolchains,
-sidecar hash, payload, concurrency, and placement constant. Exercise direct,
-peer-relay, and DERP paths using controlled test network conditions, and verify
-the probes describe the intended path. Probe snapshots cannot detect every
-mid-run transition. Record network conditions alongside the results. Collect
-CPU/RSS and profiles using the platform's profiler or `/usr/bin/time -l` on
-macOS (`/usr/bin/time -v` on Linux); include both sidecar and Rust processes.
-Do not attribute host-loopback or cached-file throughput to the physical link.
+Run hygiene (idle powered machines, repeated trials, constant toolchains and
+sidecar hash, checking which path carried the bytes) is in the methodology
+section of [benchmark/README.md](../benchmark/README.md#methodology).
