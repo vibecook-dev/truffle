@@ -404,12 +404,7 @@ impl SinkShared {
     /// Take a slot for a stream of `kind`; `false` when the run does not
     /// expect (more of) it.
     fn admit_kind(&self, kind: StreamKind) -> bool {
-        let take = |seen: &AtomicU32, limit: u32| {
-            seen.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                (n < limit).then_some(n + 1)
-            })
-            .is_ok()
-        };
+        let take = crate::workloads::common::take_slot;
         match kind {
             StreamKind::Upload => {
                 self.cfg.accepts_upload() && take(&self.uploads_seen, self.cfg.streams)

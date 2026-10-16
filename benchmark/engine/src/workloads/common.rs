@@ -18,7 +18,7 @@
 //!   ([`cpu_per_mb_item`], [`loaded_rtt_item`]) and small formatting helpers.
 
 use std::io;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
@@ -80,6 +80,21 @@ pub fn fill_per_mb(stats: &mut ResourceStats, goodput_bytes: Option<u64>) {
 /// A duration as milliseconds.
 pub fn dur_ms(d: Duration) -> f64 {
     d.as_secs_f64() * 1000.0
+}
+
+/// Take one of `limit` slots counted by `taken`: `true` and the count goes
+/// up, or `false` when all are taken. A compare-exchange loop rather than
+/// `fetch_update` (deprecated in Rust 1.99) or `try_update` (newer than the
+/// workspace MSRV).
+pub(crate) fn take_slot(taken: &AtomicU32, limit: u32) -> bool {
+    let mut n = taken.load(Ordering::Relaxed);
+    while n < limit {
+        match taken.compare_exchange_weak(n, n + 1, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return true,
+            Err(now) => n = now,
+        }
+    }
+    false
 }
 
 /// A series for `example_output()` fixtures: `values[i]` plotted at

@@ -116,10 +116,12 @@ for (const f of written) {
 }
 
 if (tauriArgs) {
-  const env = { ...process.env, ...gitEnv() };
+  const git = gitEnv();
+  const env = { ...process.env, ...git };
+  // Log only what gitEnv() computed, never values read from the environment.
   console.log(
-    `prepare-sidecar: tauri ${tauriArgs.join(' ')} (git ${env.TRUFFLE_BENCH_GIT_SHA?.slice(0, 12) ?? 'unknown'}${
-      env.TRUFFLE_BENCH_GIT_DIRTY === 'true' ? ', dirty' : ''
+    `prepare-sidecar: tauri ${tauriArgs.join(' ')} (git ${git.TRUFFLE_BENCH_GIT_SHA?.slice(0, 12) ?? 'unknown'}${
+      git.TRUFFLE_BENCH_GIT_DIRTY === 'true' ? ', dirty' : ''
     })`,
   );
   const bin = join(

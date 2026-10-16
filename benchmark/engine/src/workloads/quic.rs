@@ -1350,12 +1350,7 @@ async fn accept_loop(
             continue;
         }
         // Rule 2: the run's connections, no more.
-        let admitted = shared
-            .connections
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                (n < MAX_CONNECTIONS).then_some(n + 1)
-            })
-            .is_ok();
+        let admitted = crate::workloads::common::take_slot(&shared.connections, MAX_CONNECTIONS);
         if !admitted {
             r.count_foreign();
             conn.close();
