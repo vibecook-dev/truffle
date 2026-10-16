@@ -155,6 +155,11 @@ pub struct TailscaleProvider {
     /// unknown). Gates RFC 023 v2 proxy features so they fail loudly on
     /// old sidecars instead of being silently ignored on the wire.
     sidecar_protocol_version: Arc<std::sync::atomic::AtomicU32>,
+
+    /// OS process id of the running sidecar child (0 = none). Written by
+    /// [`GoSidecar`] at spawn and reset when the child exits or is killed,
+    /// so [`sidecar_pid`](Self::sidecar_pid) can read it without locking.
+    sidecar_pid: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl TailscaleProvider {
@@ -198,6 +203,22 @@ impl TailscaleProvider {
             local_tailscale_id: Arc::new(std::sync::RwLock::new(None)),
             proxy_error_tx,
             sidecar_protocol_version: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            sidecar_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+        }
+    }
+
+    /// The OS process id of the running Go sidecar.
+    ///
+    /// `None` before [`start`](crate::network::NetworkProvider::start)
+    /// spawns it, after [`stop`](crate::network::NetworkProvider::stop),
+    /// once the process has exited on its own (noticed within about a
+    /// second), and once its status can no longer be checked (a few failed
+    /// checks in a row, for example after it was reaped elsewhere). Lock-free
+    /// and synchronous, so it is cheap to poll.
+    pub fn sidecar_pid(&self) -> Option<u32> {
+        match self.sidecar_pid.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => None,
+            pid => Some(pid),
         }
     }
 
@@ -773,7 +794,8 @@ impl super::super::NetworkProvider for TailscaleProvider {
         };
 
         // Spawn the sidecar
-        let (sidecar, sidecar_rx) = GoSidecar::spawn(sidecar_config.clone()).await?;
+        let (sidecar, sidecar_rx) =
+            GoSidecar::spawn(sidecar_config.clone(), self.sidecar_pid.clone()).await?;
 
         // Create a channel for the event processor to signal when we're running
         let (started_tx, started_rx) = oneshot::channel();
@@ -1980,6 +2002,29 @@ mod diagnostic_tests {
         // Reject it before allocating a socket or sending a legacy command.
         assert!(matches!(provider.bind_udp(0).await,
             Err(NetworkError::Unsupported(message)) if message.contains("v6")));
+    }
+
+    #[test]
+    fn sidecar_pid_is_none_before_start() {
+        let provider = TailscaleProvider::new(TailscaleConfig {
+            binary_path: "/nonexistent/sidecar".into(),
+            app_id: "test".into(),
+            device_id: "device".into(),
+            device_name: "test".into(),
+            hostname: "truffle-test-device".into(),
+            state_dir: "unused".into(),
+            auth_key: None,
+            ephemeral: Some(true),
+            tags: None,
+            idle_timeout_secs: None,
+            login_allow: Vec::new(),
+        });
+        assert_eq!(provider.sidecar_pid(), None);
+        // The slot is what a spawned sidecar writes; 0 stays "no process".
+        provider
+            .sidecar_pid
+            .store(4242, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(provider.sidecar_pid(), Some(4242));
     }
 
     #[test]

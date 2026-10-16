@@ -54,14 +54,78 @@ pub enum FtMessage {
 // ---------------------------------------------------------------------------
 
 /// Result of a completed file transfer.
+///
+/// `#[non_exhaustive]`: produced only by truffle-core, so later fields can
+/// be added without breaking code outside the crate.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct TransferResult {
     /// Number of bytes transferred.
     pub bytes_transferred: u64,
     /// SHA-256 hash of the transferred file.
     pub sha256: String,
-    /// Elapsed time in seconds.
+    /// Elapsed time in seconds, end to end: peer resolution, hashing,
+    /// negotiation and the data transfer itself. See [`timings`](Self::timings)
+    /// for the individual phases.
     pub elapsed_secs: f64,
+    /// Per-phase timings of this transfer.
+    pub timings: TransferTimings,
+}
+
+/// Per-phase timings of a file transfer, in seconds.
+///
+/// [`TransferResult::elapsed_secs`] spans the whole call; these split it into
+/// the phases that matter for throughput, so `bytes / transfer_secs` is not
+/// diluted by the up-front hash or the OFFER/ACCEPT round trip. It is not a
+/// pure wire figure either: see the per-direction notes below. Each value is
+/// measured on one monotonic clock on the local side.
+///
+/// For [`send_file`](super::FileTransfer::send_file) (push):
+///
+/// - `hash_secs`: SHA-256 of the local file before the OFFER is sent.
+/// - `negotiate_secs`: OFFER sent → TCP data stream open (the peer's
+///   decision, its listener, the ACCEPT, and the TCP dial).
+/// - `transfer_secs`: first write to the data stream (the 72-byte
+///   `[size][sha256]` header that precedes the payload) → ACK read, or the ACK
+///   wait ending in a timeout or read error. It includes the receiver's
+///   verification and placement of the file, which precede its ACK. It also
+///   includes the receiving peer's per-connection accept handoff: the data
+///   stream opens once the local sidecar's tsnet dial completes, but the
+///   receiver's sidecar first resolves the dialler's identity (a LocalAPI
+///   WhoIs lookup, not cached) and only then bridges the connection to its
+///   listener, so the header and first data wait in buffers through that.
+///   This is a fixed cost per transfer, about 40 ms per new connection in
+///   same-host benchmark runs, of which the WhoIs is the likely main part;
+///   it dominates `transfer_secs` for small files.
+/// - `ack_ok`: the receiver's ACK byte was read. `false` means the transfer
+///   was still treated as successful because every byte was written, but the
+///   ACK never arrived (the connection closed early, or the 10 s ACK wait
+///   timed out, which `transfer_secs` then includes).
+///
+/// For [`pull_file`](super::FileTransfer::pull_file) the local side is the
+/// receiver: `hash_secs` is `0.0` (the file is hashed inline while it is
+/// received, inside `transfer_secs`); `negotiate_secs` runs from the
+/// PULL_REQUEST to the serving peer's TCP connection being accepted (it
+/// includes that peer hashing the file); `transfer_secs` runs from that
+/// accept to the ACK being written; and `ack_ok` is `true` once the ACK was
+/// written. Here the local side does the accept handoff described above, so
+/// its cost falls in `negotiate_secs`, not `transfer_secs`: push and pull
+/// `transfer_secs` are therefore not directly comparable.
+///
+/// `#[non_exhaustive]`: produced only by truffle-core, so later phases can be
+/// added without breaking code outside the crate (start from
+/// [`Default`] to build one).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct TransferTimings {
+    /// Time spent hashing the file before the transfer, in seconds.
+    pub hash_secs: f64,
+    /// OFFER sent → TCP data stream open, in seconds.
+    pub negotiate_secs: f64,
+    /// First data-stream write → ACK read (or the ACK wait's end), in seconds.
+    pub transfer_secs: f64,
+    /// Whether a valid ACK was read from the receiver.
+    pub ack_ok: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -286,4 +350,40 @@ pub enum FileTransferEvent {
         file_name: String,
         reason: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transfer_timings_default_is_zero_and_unacknowledged() {
+        let t = TransferTimings::default();
+        assert_eq!(t.hash_secs, 0.0);
+        assert_eq!(t.negotiate_secs, 0.0);
+        assert_eq!(t.transfer_secs, 0.0);
+        assert!(!t.ack_ok, "a default timing must not claim an ACK");
+    }
+
+    #[test]
+    fn transfer_timings_serde_round_trip() {
+        let t = TransferTimings {
+            hash_secs: 0.25,
+            negotiate_secs: 0.5,
+            transfer_secs: 1.5,
+            ack_ok: true,
+        };
+        let v = serde_json::to_value(t).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "hash_secs": 0.25,
+                "negotiate_secs": 0.5,
+                "transfer_secs": 1.5,
+                "ack_ok": true,
+            })
+        );
+        let back: TransferTimings = serde_json::from_value(v).unwrap();
+        assert_eq!(back, t);
+    }
 }

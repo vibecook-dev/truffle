@@ -6,6 +6,9 @@
 //! 4. Open raw TCP stream to the port advertised in ACCEPT
 //! 5. Stream `[size][sha256][file_bytes]` in 64KB chunks
 //! 6. Read ACK
+//!
+//! Steps 1, 2–4 and 5–6 are timed separately into the result's
+//! [`TransferTimings`].
 
 use std::time::Instant;
 
@@ -19,7 +22,7 @@ use crate::node::Node;
 
 use super::types::{
     FileTransferEvent, FtMessage, TransferDirection, TransferError, TransferProgress,
-    TransferResult,
+    TransferResult, TransferTimings,
 };
 
 /// Send a local file to a remote peer.
@@ -29,6 +32,11 @@ use super::types::{
 ///
 /// Emits [`FileTransferEvent::Progress`], [`FileTransferEvent::Completed`],
 /// or [`FileTransferEvent::Failed`] on the provided `event_tx` channel.
+///
+/// The result's [`TransferTimings`] split the call into hashing,
+/// negotiation and the data transfer. A missing ACK does not fail the
+/// transfer (every byte was written); it is reported as
+/// [`TransferTimings::ack_ok`] `== false`.
 pub async fn send_file<N: NetworkProvider + 'static>(
     node: &Node<N>,
     peer_id: &str,
@@ -70,6 +78,7 @@ pub async fn send_file<N: NetworkProvider + 'static>(
         "Hashing file (streaming)"
     );
     let token = uuid::Uuid::new_v4().to_string();
+    let hash_start = Instant::now();
     let sha256 = {
         let mut hasher = Sha256::new();
         let mut file = tokio::fs::File::open(local_path)
@@ -103,6 +112,7 @@ pub async fn send_file<N: NetworkProvider + 'static>(
         }
         hex::encode(hasher.finalize())
     };
+    let hash_secs = hash_start.elapsed().as_secs_f64();
 
     let file_name = std::path::Path::new(local_path)
         .file_name()
@@ -144,6 +154,8 @@ pub async fn send_file<N: NetworkProvider + 'static>(
         file_name: file_name.clone(),
     });
 
+    // Negotiation: OFFER sent → TCP data stream open.
+    let negotiate_start = Instant::now();
     let accept_port = crate::request_reply::send_and_wait(
         node,
         peer_id,
@@ -193,8 +205,16 @@ pub async fn send_file<N: NetworkProvider + 'static>(
     .await
     .map_err(|_| TransferError::Timeout)?
     .map_err(|e| TransferError::Node(format!("Failed to open TCP to port {accept_port}: {e}")))?;
+    let negotiate_secs = negotiate_start.elapsed().as_secs_f64();
 
     info!(port = accept_port, "TCP stream opened to peer");
+
+    // Transfer: first write to the data stream → ACK read (or the ACK wait
+    // ending), so the receiver's verify-and-place is inside the window. So is
+    // the receiving sidecar's per-connection accept handoff (WhoIs + bridge):
+    // `open_tcp` returns once our own dial completes, before the peer has the
+    // connection (see `TransferTimings`).
+    let transfer_start = Instant::now();
 
     // 6. Write header: [8-byte size][64-byte sha256_hex]
     stream.write_all(&file_size.to_be_bytes()).await?;
@@ -260,15 +280,17 @@ pub async fn send_file<N: NetworkProvider + 'static>(
     // 8. Read ACK (1 byte: 0x01 = OK, 0x00 = error)
     // Use a timeout because the Go bridge may close the connection before
     // the ACK byte propagates. If we time out after the full file was sent,
-    // treat it as success (the receiver verified the data).
+    // treat it as success but report it via `TransferTimings::ack_ok`: the
+    // receiver may have verified the data, but we never heard so.
     let mut ack = [0u8; 1];
     let ack_result = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         stream.read_exact(&mut ack),
     )
     .await;
+    let transfer_secs = transfer_start.elapsed().as_secs_f64();
 
-    match ack_result {
+    let ack_ok = match ack_result {
         Ok(Ok(_)) => {
             if ack[0] != 0x01 {
                 return Err(TransferError::IntegrityError {
@@ -276,17 +298,20 @@ pub async fn send_file<N: NetworkProvider + 'static>(
                     actual: "receiver reported integrity failure".to_string(),
                 });
             }
+            true
         }
         Ok(Err(e)) => {
             // Connection closed before ACK — the Go bridge may have torn down
             // the connection before the ACK byte propagated. Since we sent all
             // data successfully, log the issue but don't fail the transfer.
             warn!("ACK read failed (bridge may have closed early): {e}");
+            false
         }
         Err(_timeout) => {
             warn!("ACK read timed out after 10s (bridge may have closed early)");
+            false
         }
-    }
+    };
 
     let elapsed = start.elapsed().as_secs_f64();
     info!(
@@ -308,5 +333,11 @@ pub async fn send_file<N: NetworkProvider + 'static>(
         bytes_transferred: file_size,
         sha256,
         elapsed_secs: elapsed,
+        timings: TransferTimings {
+            hash_secs,
+            negotiate_secs,
+            transfer_secs,
+            ack_ok,
+        },
     })
 }
