@@ -1,6 +1,8 @@
 // Sign in: the whole window until the node runs (RFC 027 §11.3). With a saved state dir the
-// hub starts on its own and this says "Connecting as <device>"; the form shows otherwise, and
-// the login URL only on needs-login.
+// hub starts on its own and this says "Connecting as <device>"; the form shows otherwise, the
+// login URL only on needs-login, and the approval step on needs-approval (every sidecar reports
+// it; hubs on cores before `on_network_status` dropped it). The login step keeps its 30 s approval
+// hint as the fallback for when no approval event arrives.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useAppState, useAppStore } from '../state/context';
@@ -70,6 +72,40 @@ export function SignIn() {
         <span>Signing out…</span>
       </div>
     );
+  } else if (node.state === 'needs-approval') {
+    const waited = (now - node.since_ms) / 1000;
+    body = (
+      <div className="si-step">
+        <h1 className="si-title">Approve this device</h1>
+        <p className="si-lede">
+          Your tailnet requires device approval. Approve{' '}
+          <span className="mono si-host">{hostname}</span> in the Tailscale admin console, under
+          Machines.
+        </p>
+        <div className="inline">
+          <Button
+            variant="primary"
+            icon="arrow-up-right"
+            onClick={() => void store.openUrl(ADMIN_URL)}
+          >
+            Open admin console
+          </Button>
+        </div>
+        <div className="si-wait" role="status">
+          <Loader size={10} label="Waiting for approval" />
+          <span>
+            Waiting for approval <span className="mono">{fmtClock(waited)}</span>. This continues on
+            its own once the device is approved.
+          </span>
+        </div>
+        <p className="muted">An auth key created as pre-approved skips this step.</p>
+        <div className="si-foot">
+          <Button variant="quiet" size="small" onClick={() => void store.stopHub()}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    );
   } else if (node.state === 'needs-login' && node.auth_url) {
     const url = node.auth_url;
     const left = LOGIN_WINDOW_S - (now - node.since_ms) / 1000;
@@ -127,6 +163,7 @@ export function SignIn() {
             'The link has expired.'
           )}
         </p>
+        {/* the fallback for when no needs-approval arrives (hubs on older cores dropped it) */}
         {showApproval ? (
           <Notice
             title="Waiting for approval?"

@@ -97,6 +97,9 @@ describe('registry against the engine’s per-mode examples', () => {
           const item = report.summary.find((s) => s.key === k.key);
           expect(item, `KPI ${k.key} in summary [${summaryKeys(report)}]`).toBeDefined();
           expect(k.unit, `unit of ${k.key}`).toBe(item?.unit);
+          // one name for one measure in every view: "RTT p50", "RTT p50 under load", "Loss"
+          if (/^(loaded_)?rtt_/.test(k.key) || k.key === 'loss_pct')
+            expect(k.label, `label of ${k.key}`).toBe(item?.label);
           if (k.live) expect(live, `live key ${k.live} of KPI ${k.key}`).toContain(k.live);
         }
       });

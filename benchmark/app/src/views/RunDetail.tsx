@@ -12,7 +12,13 @@ import { Loader, Page, Section } from '../components/Misc';
 import { Icon } from '../components/Icon';
 import { useConstructionFlag } from '../charts/construction';
 import { LineChart } from '../charts';
-import { REGISTRY, lowerBoundOf, resultAt, type MainChartMeta } from '../workloads/registry';
+import {
+  REGISTRY,
+  labelOf,
+  lowerBoundOf,
+  resultAt,
+  type MainChartMeta,
+} from '../workloads/registry';
 import { DASH, fmtDuration, fmtNumber, fmtWhen, withUnit } from '../lib/format';
 import { trendable } from '../lib/compare';
 import type { Page as PageId } from '../hooks/useRoute';
@@ -138,7 +144,7 @@ export function RunDetail({ id, go }: { id: string; go: (p: PageId, id?: string)
   if (showLoaded && loaded)
     tables.push({
       key: 'loaded',
-      label: 'Round trip under load',
+      label: 'RTT under load',
       meta: 'pinged at 2 Hz',
       body: <DistributionTable d={loaded} />,
     });
@@ -227,7 +233,7 @@ export function RunDetail({ id, go }: { id: string; go: (p: PageId, id?: string)
             return (
               <Kpi
                 key={k.key}
-                label={k.label}
+                label={labelOf(k)}
                 value={bound ?? k.value}
                 bound={bound != null}
                 unit={k.unit}

@@ -44,6 +44,15 @@ use crate::workloads::{ResponderCtx, ResponderRun, RunCtx, WorkloadOutput};
 /// Whether this build offers `egress` (drives `PeerHello.workloads`).
 pub const IMPLEMENTED: bool = true;
 
+/// The Progress sample keys a run with these params can set: the
+/// initiator's own and the responder's `tick`s, which the hub merges in.
+/// [`live_keys`](super::live_keys) adds the path sampler's `loaded_rtt_ms`
+/// for time-based runs; `live-keys.json` in the schema fixtures is built
+/// from it.
+pub fn live_keys(p: &EgressParams) -> Vec<&'static str> {
+    super::tcp::throughput_live_keys(direction(p.direction))
+}
+
 /// `prepare.client`: the tcp sink's (nothing beyond the params).
 pub type Client = tcp::Client;
 

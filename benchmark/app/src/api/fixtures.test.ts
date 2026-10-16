@@ -81,6 +81,7 @@ import hubEventRemoteRun from '../../../schema/fixtures/hub-event-remote-run.jso
 import importResult from '../../../schema/fixtures/import-result.json';
 import nodeStateError from '../../../schema/fixtures/node-state-error.json';
 import nodeStateIdle from '../../../schema/fixtures/node-state-idle.json';
+import nodeStateNeedsApproval from '../../../schema/fixtures/node-state-needs-approval.json';
 import nodeStateNeedsLogin from '../../../schema/fixtures/node-state-needs-login.json';
 import nodeStateRunning from '../../../schema/fixtures/node-state-running.json';
 import nodeStateStarting from '../../../schema/fixtures/node-state-starting.json';
@@ -342,6 +343,7 @@ const modeReports: Record<string, unknown> = {
 const nodeStates = exactly<NodeState>()({
   'node-state-error.json': nodeStateError,
   'node-state-idle.json': nodeStateIdle,
+  'node-state-needs-approval.json': nodeStateNeedsApproval,
   'node-state-needs-login.json': nodeStateNeedsLogin,
   'node-state-running.json': nodeStateRunning,
   'node-state-starting.json': nodeStateStarting,
@@ -469,6 +471,7 @@ const NODE_STATES = allOf<NodeStateName>()([
   'idle',
   'starting',
   'needs-login',
+  'needs-approval',
   'running',
   'stopping',
   'stopped',
@@ -646,6 +649,7 @@ const SUMMARY_KEYS = keysOf<RunSummary>()({
   run_id: true,
   suite_id: true,
   workload: true,
+  mode: true,
   label: true,
   status: true,
   error_code: true,
@@ -800,6 +804,21 @@ function checkSummary(v: unknown) {
   oneOf(BUILD_PROFILES, s.build_profile, 'build_profile');
   oneOf(TOOLS, s.tool, 'tool');
   for (const f of s.flags as unknown[]) oneOf(RUN_FLAGS, f, 'flags');
+  if (s.mode !== null) expect(typeof s.mode, 'mode').toBe('string');
+}
+
+/** live-keys.json: every per-mode example's name → the sample keys that mode can set. */
+function checkLiveKeys(v: unknown) {
+  const m = obj(v);
+  expect(
+    Object.keys(m)
+      .map((k) => `report-${k}.json`)
+      .sort(),
+  ).toEqual(Object.keys(MODE_EXAMPLES).sort());
+  for (const [mode, keys] of Object.entries(m)) {
+    expect(Array.isArray(keys), mode).toBe(true);
+    for (const k of keys as unknown[]) expect(typeof k, `${mode} key`).toBe('string');
+  }
 }
 
 function checkSuiteProfile(v: unknown) {
@@ -868,6 +887,7 @@ const CHECKS: [RegExp, (v: unknown) => void][] = [
     },
   ],
   [/^run-summary\.json$/, checkSummary],
+  [/^live-keys\.json$/, checkLiveKeys],
   [
     /^settings\.json$/,
     (v) => {

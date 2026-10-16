@@ -58,6 +58,19 @@ use crate::workloads::{ResponderCtx, ResponderRun, RunCtx, WorkloadOutput};
 /// Whether this build offers `synced-store` (drives `PeerHello.workloads`).
 pub const IMPLEMENTED: bool = true;
 
+/// The Progress sample keys a run with these params can set: the
+/// initiator's own and the responder's `tick`s, which the hub merges in.
+/// [`live_keys`](super::live_keys) adds the path sampler's `loaded_rtt_ms`
+/// for time-based runs; `live-keys.json` in the schema fixtures is built
+/// from it.
+pub fn live_keys(p: &StoreParams) -> Vec<&'static str> {
+    match p.mode {
+        StoreMode::Pingpong => vec!["convergence_ms", "convergence_p50_ms"],
+        // a burst is over in well under a second: nothing live
+        StoreMode::Burst => Vec::new(),
+    }
+}
+
 /// How convergence is labelled (§8.2 synced-store).
 pub const LABEL_ESTIMATE: &str = "RTT/2 estimate";
 

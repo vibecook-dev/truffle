@@ -19,6 +19,7 @@ import { fmtDuration, fmtWhen, plural } from '../lib/format';
 import { MOD, useViewActions } from '../hooks/useShortcuts';
 import type { Page as PageId } from '../hooks/useRoute';
 import { Headline, StatusOf, workloadLabel } from './History';
+import { FLAG_TIPS } from '../lib/compare';
 import { phaseWords } from './RunParts';
 
 const COOLDOWN_MS = 1000;
@@ -364,9 +365,14 @@ export function Suite({ go }: { go: (p: PageId, id?: string) => void }) {
                       <Status kind="done">All ok</Status>
                     )}
                   </div>
-                  <span className="caption muted">
+                  <span className="caption muted sg-meta">
                     {fmtWhen(g.started)} · {plural(g.runs.length, 'run')} ·{' '}
                     {g.runs[0]?.peer_name ?? 'no peer'}
+                    {g.runs.some((r) => r.flags.includes('debug')) ? (
+                      <span className="chip strong" title={FLAG_TIPS.debug}>
+                        debug
+                      </span>
+                    ) : null}
                   </span>
                   <ul className="suite-runs">
                     {g.runs.map((r) => (
@@ -383,7 +389,7 @@ export function Suite({ go }: { go: (p: PageId, id?: string) => void }) {
                           />
                           <span className="sr-w">{workloadLabel(r.workload)}</span>
                           <span className="sr-h">
-                            <Headline run={r} />
+                            <Headline run={r} short />
                           </span>
                         </button>
                       </li>

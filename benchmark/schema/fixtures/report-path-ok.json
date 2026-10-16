@@ -392,19 +392,19 @@
   "summary": [
     {
       "better": "lower",
-      "key": "rtt_min_ms",
-      "label": "RTT min",
-      "uncertainty": null,
-      "unit": "ms",
-      "value": 1.17
-    },
-    {
-      "better": "lower",
       "key": "rtt_p50_ms",
       "label": "RTT p50",
       "uncertainty": null,
       "unit": "ms",
       "value": 1.24
+    },
+    {
+      "better": "lower",
+      "key": "rtt_min_ms",
+      "label": "RTT min",
+      "uncertainty": null,
+      "unit": "ms",
+      "value": 1.17
     },
     {
       "better": "lower",

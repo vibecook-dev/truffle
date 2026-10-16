@@ -100,7 +100,7 @@
     "topology": "separate-hosts"
   },
   "notes": [
-    "proxy keepalive above concurrency 2 includes upstream reconnects (Go MaxIdleConnsPerHost = 2)",
+    "the sidecar's proxy reconnected upstream: 9 upstream connections for 4 keep-alive workers (sidecars before protocol 8 keep only 2 idle connections per host)",
     "ended during the running phase"
   ],
   "overlapping_runs": 0,
@@ -166,7 +166,7 @@
   "series": [
     {
       "key": "req_per_sec",
-      "label": "Requests/s",
+      "label": "Requests per second",
       "points": [
         [
           649.999872,

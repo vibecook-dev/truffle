@@ -71,6 +71,25 @@ use crate::WS_NS;
 /// Whether this build offers `ws` (drives `PeerHello.workloads`).
 pub const IMPLEMENTED: bool = true;
 
+/// The Progress sample keys a run with these params can set: the
+/// initiator's own and the responder's `tick`s, which the hub merges in.
+/// [`live_keys`](super::live_keys) adds the path sampler's `loaded_rtt_ms`
+/// for time-based runs; `live-keys.json` in the schema fixtures is built
+/// from it.
+pub fn live_keys(p: &WsParams) -> Vec<&'static str> {
+    match p.mode {
+        WsMode::Rr => vec!["rtt_ms", "rtt_p50_ms", "msgs_per_sec"],
+        // the sender's rate; the rest are the responder's ticks
+        WsMode::Stream => vec![
+            "sent_msgs_per_sec",
+            "msgs_per_sec",
+            "goodput_mbps",
+            "drop_pct",
+            "received_msgs",
+        ],
+    }
+}
+
 /// Note on every ws stream run (§8.2 ws stream).
 pub const NOTE_LOSSLESS: &str =
     "the WebSocket itself is lossless, so every drop happens at a receiver";

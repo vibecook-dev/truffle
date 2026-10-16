@@ -285,7 +285,7 @@ const durationFields = <T extends { duration_secs: number; warmup_secs: number }
 /** RTT under load: the run's p50 afterwards, the path sampler's latest ping while it runs. */
 const LOADED_RTT_KPI: KpiMeta = {
   key: 'loaded_rtt_p50_ms',
-  label: 'Round trip under load',
+  label: 'RTT p50 under load',
   unit: 'ms',
   live: KEY_LOADED_RTT,
   liveSub: 'last ping',
@@ -312,9 +312,9 @@ const throughputKpis = (bidirectional: boolean, connect = true): KpiMeta[] => [
 ];
 
 const latencyKpis: KpiMeta[] = [
-  { key: 'rtt_p50_ms', label: 'Round trip p50', unit: 'ms', live: 'rtt_p50_ms' },
-  { key: 'rtt_p99_ms', label: 'Round trip p99', unit: 'ms' },
-  { key: 'rtt_max_ms', label: 'Slowest', unit: 'ms' },
+  { key: 'rtt_p50_ms', label: 'RTT p50', unit: 'ms', live: 'rtt_p50_ms' },
+  { key: 'rtt_p99_ms', label: 'RTT p99', unit: 'ms' },
+  { key: 'rtt_max_ms', label: 'RTT max', unit: 'ms' },
 ];
 
 const goodputMain = (p: { direction?: string }): MainChartMeta =>
@@ -334,16 +334,16 @@ const goodputMain = (p: { direction?: string }): MainChartMeta =>
       };
 
 const rttMain: MainChartMeta = {
-  title: 'Round trips',
+  title: 'RTT',
   unit: 'ms',
-  series: [{ key: 'rtt_ms', label: 'Round trip' }],
+  series: [{ key: 'rtt_ms', label: 'RTT' }],
   guides: [
     { label: 'p50', key: 'rtt_p50_ms' },
     { label: 'p99', key: 'rtt_p99_ms' },
   ],
 };
 
-const RTT_DIST: DistMeta = { key: 'rtt_ms', title: 'Round trips', unit: 'ms' };
+const RTT_DIST: DistMeta = { key: 'rtt_ms', title: 'RTT', unit: 'ms' };
 
 const throughputFacts: FactMeta[] = [
   { key: 'bytes_total', label: 'Payload received', format: 'bytes' },
@@ -455,14 +455,14 @@ const path = define<'path'>({
   kpis: () => [
     {
       key: 'rtt_p50_ms',
-      label: 'Round trip p50',
+      label: 'RTT p50',
       unit: 'ms',
       live: 'rtt_ms',
       liveSub: 'last ping',
     },
-    { key: 'rtt_min_ms', label: 'Fastest', unit: 'ms' },
-    { key: 'rtt_max_ms', label: 'Slowest', unit: 'ms' },
-    { key: 'loss_pct', label: 'Lost', unit: '%' },
+    { key: 'rtt_min_ms', label: 'RTT min', unit: 'ms' },
+    { key: 'rtt_max_ms', label: 'RTT max', unit: 'ms' },
+    { key: 'loss_pct', label: 'Loss', unit: '%' },
   ],
   headline: () => 'rtt_p50_ms',
   main: () => ({ ...rttMain, title: 'Pings', guides: [{ label: 'p50', key: 'rtt_p50_ms' }] }),
@@ -634,7 +634,7 @@ const tcp = define<'tcp'>({
             : `I open ${plural(p.streams, 'TCP stream')} and ${p.direction === 'upload' ? 'write to the peer' : 'the peer writes to me'} for ${p.warmup_secs + p.duration_secs} s. The ${p.direction === 'upload' ? 'peer' : 'app on this device'} is the receiver, so the number is what arrived, not what was sent.`,
           `Goodput is payload bits per second, counted in 250 ms buckets after the ${p.warmup_secs} s warmup. Headers don’t count.`,
           'Connect is how long open_tcp takes: sidecar IPC, the tailnet handshake and the bridge handoff.',
-          'Round trip under load comes from pinging the peer twice a second while the data flows.',
+          'RTT under load comes from pinging the peer twice a second while the data flows.',
         ]
       : [
           `I send ${p.count} messages of ${fmtBytes(p.payload_bytes)} on one stream and the peer echoes each one. A round trip runs from my write to the reply, on one clock.`,
@@ -770,9 +770,9 @@ const udp = define<'udp'>({
   kpis: (p) =>
     p.mode === 'echo'
       ? [
-          { key: 'rtt_p50_ms', label: 'Round trip p50', unit: 'ms', live: 'rtt_p50_ms' },
-          { key: 'rtt_p99_ms', label: 'Round trip p99', unit: 'ms' },
-          { key: 'loss_pct', label: 'Lost', unit: '%', live: 'loss_pct' },
+          { key: 'rtt_p50_ms', label: 'RTT p50', unit: 'ms', live: 'rtt_p50_ms' },
+          { key: 'rtt_p99_ms', label: 'RTT p99', unit: 'ms' },
+          { key: 'loss_pct', label: 'Loss', unit: '%', live: 'loss_pct' },
         ]
       : p.mode === 'ramp'
         ? [
@@ -783,12 +783,12 @@ const udp = define<'udp'>({
               live: 'max_sustainable_mbps',
             },
             { key: 'offered_mbps', label: 'Offered', unit: 'Mb/s', live: 'offered_mbps' },
-            { key: 'loss_pct', label: 'Lost', unit: '%', live: 'loss_pct' },
+            { key: 'loss_pct', label: 'Loss', unit: '%', live: 'loss_pct' },
           ]
         : [
             { key: 'goodput_mbps', label: 'Goodput', unit: 'Mb/s', live: 'goodput_mbps' },
             { key: 'offered_mbps', label: 'Offered', unit: 'Mb/s', live: 'offered_mbps' },
-            { key: 'loss_pct', label: 'Lost', unit: '%', live: 'loss_pct' },
+            { key: 'loss_pct', label: 'Loss', unit: '%', live: 'loss_pct' },
             { key: 'jitter_ms', label: 'Jitter', unit: 'ms', live: 'jitter_ms' },
           ],
   headline: (p) =>
@@ -1158,8 +1158,8 @@ const ws = define<'ws'>({
   kpis: (p) =>
     p.mode === 'rr'
       ? [
-          { key: 'rtt_p50_ms', label: 'Round trip p50', unit: 'ms', live: 'rtt_p50_ms' },
-          { key: 'rtt_p99_ms', label: 'Round trip p99', unit: 'ms' },
+          { key: 'rtt_p50_ms', label: 'RTT p50', unit: 'ms', live: 'rtt_p50_ms' },
+          { key: 'rtt_p99_ms', label: 'RTT p99', unit: 'ms' },
           {
             key: 'msgs_per_sec',
             label: 'Requests per second',
@@ -1540,7 +1540,7 @@ const http = define<'http'>({
       integer: true,
       hint: (p) =>
         p.target === 'proxy' && p.connection === 'keepalive' && p.concurrency > 2
-          ? 'Above 2, the proxy reconnects upstream.'
+          ? 'Sidecars before protocol 8 reconnect upstream above 2.'
           : '',
     },
     ...durationFields<HttpParams>(),
@@ -1602,13 +1602,9 @@ const http = define<'http'>({
           'The peer’s sidecar: a WhoIs per connection, then its loopback bridge',
           'A Rust handler on the peer’s listen_tcp port',
         ],
-  // the engine's two notes, under the engine's conditions and in its words
+  // the engine's WhoIs note, under the engine's condition and in its words; its proxy
+  // reconnect note depends on what the peer's server saw, so only the report carries it
   notes: (p) => [
-    ...(p.target === 'proxy' && p.connection === 'keepalive' && p.concurrency > 2
-      ? [
-          'Proxy keepalive above concurrency 2 includes upstream reconnects (Go MaxIdleConnsPerHost = 2).',
-        ]
-      : []),
     ...(p.connection === 'new' ? ['New: one WhoIs per request on both paths.'] : []),
     p.target === 'proxy'
       ? 'The proxy’s WhoIs is cached for 60 s; the server checks the injected Tailscale-Node-Id.'
@@ -2061,8 +2057,9 @@ export function paramsLabel(p: WorkloadParams): string {
 
 /**
  * Each workload's headline summary keys, in priority order: the first one a run's summary has is
- * its headline (its mode decides which it has). The engine orders most summaries headline first,
- * but not path's (`rtt_min_ms` leads).
+ * its headline (its mode decides which it has). The engine orders summaries headline first, but
+ * path reports from before 2026-10-16 lead with `rtt_min_ms`, and a udp ramp without a limit has
+ * a null headline.
  */
 const HEADLINE_KEYS: Record<WorkloadKind, string[]> = {
   path: ['rtt_p50_ms'],
@@ -2077,6 +2074,16 @@ const HEADLINE_KEYS: Record<WorkloadKind, string[]> = {
   egress: ['goodput_mbps'],
 };
 
+/**
+ * The mode of a run's params, as the engine's `RunSummary.mode` has it: `params.mode` for tcp,
+ * udp, quic, ws and synced-store; null for the workloads without modes.
+ */
+export function modeOf(p: WorkloadParams | null | undefined): string | null {
+  if (!p) return null;
+  const m = (p as unknown as { mode?: unknown }).mode;
+  return typeof m === 'string' ? m : null;
+}
+
 /** The headline of a run: its workload's headline key, else the summary's first item. */
 export function headlineOf(run: { workload: string; summary: SummaryItem[] }): SummaryItem | null {
   for (const k of HEADLINE_KEYS[run.workload as WorkloadKind] ?? []) {
@@ -2084,6 +2091,59 @@ export function headlineOf(run: { workload: string; summary: SummaryItem[] }): S
     if (item) return item;
   }
   return run.summary[0] ?? null;
+}
+
+/** A mode as the form's mode switch names it, in a sentence: "throughput", "request/reply". */
+export function modeWord(meta: WorkloadMeta, mode: string | null): string | null {
+  if (mode == null) return null;
+  const f = meta.fields.find((x) => x.key === 'mode');
+  const label = f?.kind === 'enum' ? f.options.find((o) => o.value === mode)?.label : null;
+  return (label ?? mode).toLowerCase();
+}
+
+/** "a throughput", "an echo". */
+export const withArticle = (w: string) => `${/^[aeiou]/i.test(w) ? 'an' : 'a'} ${w}`;
+
+/**
+ * Short names for headline values where the summary's label is a sentence: the Overview card has
+ * one line beside its number (the unit says the rest), and Run detail keeps the full label.
+ */
+const SHORT_LABELS: Record<string, string> = {
+  goodput_mbps: 'Goodput',
+  max_sustainable_mbps: 'Max at ≤ 2% loss',
+  msgs_per_sec: 'Messages',
+  req_per_sec: 'Requests',
+  convergence_p50_ms: 'Convergence p50',
+  final_echo_ms: 'Last echo',
+};
+
+/**
+ * The engine's names, since 2026-10-16, for summary keys it used to name differently ("Round trip
+ * p50", "Slowest round trip", "Requests/s", "Lost"): reports keep the label they were written
+ * with, and `labelOf` reads older ones the way new ones say it, so one table never names one
+ * measure two ways.
+ */
+const LABELS: Record<string, string> = {
+  rtt_p50_ms: 'RTT p50',
+  rtt_p99_ms: 'RTT p99',
+  rtt_max_ms: 'RTT max',
+  rtt_min_ms: 'RTT min',
+  loaded_rtt_p50_ms: 'RTT p50 under load',
+  req_per_sec: 'Requests per second',
+  loss_pct: 'Loss',
+};
+
+/** A summary item's label as the current engine writes it (see LABELS). */
+export function labelOf(item: Pick<SummaryItem, 'key' | 'label'>): string {
+  return LABELS[item.key] ?? item.label;
+}
+
+/**
+ * A headline's label for one line beside its value: the short name above, else the summary's
+ * label without a trailing parenthesis ("Convergence p50 (RTT/2 estimate)" → "Convergence p50").
+ */
+export function shortLabelOf(item: Pick<SummaryItem, 'key' | 'label'>): string {
+  return SHORT_LABELS[item.key] ?? labelOf(item).replace(/\s*\([^)]*\)\s*$/, '');
 }
 
 /** A value at a dotted path in results. */

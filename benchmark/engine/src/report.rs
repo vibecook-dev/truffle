@@ -362,6 +362,7 @@ impl RunReport {
             run_id: self.run_id.clone(),
             suite_id: self.suite_id.clone(),
             workload: self.workload,
+            mode: self.params.mode().map(str::to_string),
             label: self.label.clone(),
             status: self.status,
             error_code: self.error_code,

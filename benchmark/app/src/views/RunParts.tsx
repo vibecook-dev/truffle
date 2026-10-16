@@ -342,7 +342,7 @@ export function distributionOf(
   if (!meta.timeBased(params)) return null;
   const tl = report?.network.path_timeline ?? [];
   return {
-    title: 'Round trip under load',
+    title: 'RTT under load',
     unit: 'ms',
     dist: report?.network.loaded_rtt_ms ?? null,
     samples: tl.length ? tl.map((x) => x.rtt_ms ?? Infinity) : null,
@@ -377,7 +377,7 @@ export function PanelView({ panel, data }: { panel: Panel; data: RunData }): Rea
       const prevVals = data.prev?.network.path_timeline.map((x) => x.rtt_ms ?? Infinity);
       return (
         <CdfChart
-          title="Round trip under load"
+          title="RTT under load"
           meta={
             vals.length ? `${vals.length} pings at 2 Hz` : 'Pinged twice a second during the run'
           }
@@ -853,7 +853,8 @@ const ENV_ROWS: { k: string; f: (e: NodeEnv) => ReactNode; long?: boolean }[] = 
   { k: 'truffle', f: (e) => e.truffle_version },
   {
     k: 'Build',
-    f: (e) => (e.build_profile === 'debug' ? <span className="chip flag">debug</span> : 'release'),
+    f: (e) =>
+      e.build_profile === 'debug' ? <span className="chip strong">debug</span> : 'release',
   },
   { k: 'rustc', f: (e) => e.rustc ?? DASH },
   { k: 'Git', f: (e) => (e.git_sha ? `${e.git_sha}${e.git_dirty ? ' (dirty)' : ''}` : DASH) },

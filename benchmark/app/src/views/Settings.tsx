@@ -157,7 +157,7 @@ export function Settings() {
                   'Build',
                   info ? (
                     info.build_profile === 'debug' ? (
-                      <span className="chip flag">debug</span>
+                      <span className="chip strong">debug</span>
                     ) : (
                       'release'
                     )

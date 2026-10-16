@@ -7,7 +7,8 @@ import react from '@vitejs/plugin-react';
 /**
  * Dev server only: `GET /__dev-reports` answers every `*.json` report under
  * benchmark/app/dev-reports/ (gitignored) as one array, for the browser mock's `?real=1`, which
- * then serves real engine reports to History, Run detail, Compare and Overview. It is a
+ * then serves real engine reports to History, Run detail, Compare and Overview; `?dir=<name>`
+ * (the mock's `?real_dir=`) serves one subfolder's only. It is a
  * `configureServer` hook (`apply: 'serve'`), so a build never sees the folder.
  */
 function devReports(): Plugin {
@@ -21,10 +22,13 @@ function devReports(): Plugin {
     name: 'truffle-bench-dev-reports',
     apply: 'serve',
     configureServer(server) {
-      server.middlewares.use('/__dev-reports', (_req, res) => {
+      server.middlewares.use('/__dev-reports', (req, res) => {
         let reports: unknown[] = [];
         try {
-          reports = walk(root).map((f) => JSON.parse(readFileSync(f, 'utf8')) as unknown);
+          // ?dir=<subfolder>: one folder's reports only (a plain name, never a path out)
+          const dir = new URL(req.url ?? '/', 'http://x').searchParams.get('dir');
+          const from = dir && /^[\w.-]+$/.test(dir) && dir !== '..' ? join(root, dir) : root;
+          reports = walk(from).map((f) => JSON.parse(readFileSync(f, 'utf8')) as unknown);
         } catch {
           // no folder, or a file that isn't JSON: serve what there is
         }

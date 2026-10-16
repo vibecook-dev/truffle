@@ -346,6 +346,12 @@ fn spawn_event_printer(hub: &Arc<Hub>, verbose_peers: bool) -> tokio::task::Join
                             );
                         }
                     }
+                    NodeStatus::NeedsApproval => eprintln!(
+                        "[node] waiting for approval: approve {} in the Tailscale admin console:\n\n    {}\n\n\
+                         (or use an auth key created as pre-approved)",
+                        st.tailscale_hostname.as_deref().unwrap_or("this device"),
+                        truffle_bench::TAILSCALE_ADMIN_MACHINES_URL
+                    ),
                     NodeStatus::Running => {
                         if let Some(l) = &st.local {
                             eprintln!(
@@ -844,7 +850,7 @@ pub async fn suite(args: SuiteArgs, cli_out: &Option<PathBuf>) -> ExitCode {
     }
     // Keep the pair alive for the whole suite.
     let mut pair_holder = None;
-    let (hub, peer) = if args.pair {
+    let (hub, peer, printer) = if args.pair {
         match start_pair(
             args.node.auth_key_file.as_deref(),
             args.node.sidecar.clone(),
@@ -855,7 +861,7 @@ pub async fn suite(args: SuiteArgs, cli_out: &Option<PathBuf>) -> ExitCode {
                 let hub = p.initiator.clone();
                 let peer = p.responder_ref().to_string();
                 pair_holder = Some(p);
-                (hub, peer)
+                (hub, peer, None)
             }
             Err(e) => {
                 eprintln_err(&e);
@@ -871,10 +877,15 @@ pub async fn suite(args: SuiteArgs, cli_out: &Option<PathBuf>) -> ExitCode {
             }
         };
         let hub = Hub::new(cfg);
+        // Subscribe before starting, as serve/run/peers do: the sign-in URL
+        // and the device-approval step are only ever announced while the
+        // hub starts, and the event stream does not replay them.
+        let printer = spawn_event_printer(&hub, false);
         if let Err(e) = start_hub(&hub).await {
             if e.code != ErrorCode::Cancelled {
                 eprintln_err(&e);
             }
+            printer.abort();
             return ExitCode::FAILURE;
         }
         let peer = args.peer.clone().unwrap_or_default();
@@ -884,12 +895,12 @@ pub async fn suite(args: SuiteArgs, cli_out: &Option<PathBuf>) -> ExitCode {
             if let Err(e) = refuse_debug_peer(&hub, &peer).await {
                 eprintln_err(&e);
                 hub.stop().await;
+                printer.abort();
                 return ExitCode::FAILURE;
             }
         }
-        (hub, peer)
+        (hub, peer, Some(printer))
     };
-    let printer = (pair_holder.is_none()).then(|| spawn_event_printer(&hub, false));
     let suite_id = uuid::Uuid::new_v4().to_string();
     let canceller = spawn_canceller(&hub, suite_id.clone());
     let dir = out_dir(cli_out);

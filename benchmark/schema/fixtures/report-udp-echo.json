@@ -744,7 +744,7 @@
   "series": [
     {
       "key": "rtt_ms",
-      "label": "Round trip",
+      "label": "RTT",
       "points": [
         [
           649.999872,
@@ -2954,7 +2954,7 @@
     {
       "better": "lower",
       "key": "rtt_p50_ms",
-      "label": "Round trip p50",
+      "label": "RTT p50",
       "uncertainty": null,
       "unit": "ms",
       "value": 0.718
@@ -2962,7 +2962,7 @@
     {
       "better": "lower",
       "key": "rtt_p99_ms",
-      "label": "Round trip p99",
+      "label": "RTT p99",
       "uncertainty": null,
       "unit": "ms",
       "value": 1.5550000000000002
@@ -2970,7 +2970,7 @@
     {
       "better": "lower",
       "key": "loss_pct",
-      "label": "Lost",
+      "label": "Loss",
       "uncertainty": null,
       "unit": "%",
       "value": 0.1851851851851852

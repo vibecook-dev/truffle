@@ -1937,6 +1937,11 @@
           "type": "string"
         },
         {
+          "const": "needs-approval",
+          "description": "The tailnet has device approval on and an admin has not approved this\ndevice (`tailscale_hostname`) yet. The node keeps waiting and runs as\nsoon as it is approved in the Tailscale admin console (Machines).\nEvery sidecar reports it (`tsnet:needsApproval`, since RFC 008 phase\n2); cores before `NodeBuilder::on_network_status` dropped the event,\nso hubs built on them stay in `needs-login` or `starting` instead.",
+          "type": "string"
+        },
+        {
           "const": "running",
           "description": "The node is up; `local` is set.",
           "type": "string"
@@ -3210,6 +3215,14 @@
         "label": {
           "description": "Params label.",
           "type": "string"
+        },
+        "mode": {
+          "default": null,
+          "description": "The workload's mode (`params.mode`: `throughput`, `latency`, `echo`,\n`rr`, `pingpong`, …), or `None` for a workload without modes. The app\npicks the latest run of the mode its form is in from this.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "overlapping_runs": {
           "description": "Other runs sharing the machine.",

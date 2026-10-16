@@ -637,6 +637,12 @@ button.card:hover {
   border-color: var(--rule);
   background: var(--ground-sunken);
 }
+/* a flag that changes what every number means (a debug build): ink, never redline */
+.chip.strong {
+  border-color: var(--ink);
+  background: transparent;
+  color: var(--ink);
+}
 
 /* keyboard key: JY.Kbd carries its own style; this is the small inline version (base.css .kbd) */
 .kbd {

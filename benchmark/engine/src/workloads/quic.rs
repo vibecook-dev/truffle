@@ -73,6 +73,18 @@ use crate::workloads::{ResponderCtx, ResponderRun, RunCtx, WorkloadOutput};
 /// Whether this build offers `quic` (drives `PeerHello.workloads`).
 pub const IMPLEMENTED: bool = true;
 
+/// The Progress sample keys a run with these params can set: the
+/// initiator's own and the responder's `tick`s, which the hub merges in.
+/// [`live_keys`](super::live_keys) adds the path sampler's `loaded_rtt_ms`
+/// for time-based runs; `live-keys.json` in the schema fixtures is built
+/// from it.
+pub fn live_keys(p: &QuicParams) -> Vec<&'static str> {
+    match p.mode {
+        StreamMode::Latency => vec!["rtt_ms", "rtt_p50_ms"],
+        StreamMode::Throughput => super::tcp::throughput_live_keys(p.direction),
+    }
+}
+
 /// Note on every quic run (§8.2 quic).
 pub const NOTE_PACKETS: &str = "about 1200 B packets, because MTU discovery is off";
 /// Note on every quic run (§8.2 quic).

@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::Instant;
-use truffle_core::session::SessionError;
+use truffle_core::session::{SessionError, DIAL_CANCELLED_SHUTTING_DOWN};
 use truffle_core::transport::quic::QuicListener;
 use truffle_core::transport::RawIncoming;
 use truffle_core::{NamespacedMessage, NodeError, Peer};
@@ -58,6 +58,12 @@ pub const HELLO_TIMEOUT: Duration = Duration::from_secs(30);
 /// It is idempotent, and a message written to a WebSocket that died with
 /// the peer (a peer restarted, or a device name reused) is lost without an
 /// error; the re-send goes out on the redialled connection.
+///
+/// Defence in depth: core now replaces such a stale connection on the
+/// accepting side as soon as the restarted peer dials again, so against a
+/// peer on this core the first hello is answered and nothing is re-sent. The
+/// re-send matters for peers on older cores. Its timer starts once a send
+/// has gone out, so a slow dial never triggers one.
 pub const HELLO_RESEND: Duration = Duration::from_secs(5);
 /// `prepare` timeout.
 pub const PREPARE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -69,6 +75,10 @@ pub const CLOCK_SAMPLE_TIMEOUT: Duration = clock::SAMPLE_TIMEOUT;
 pub const FINISH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long the responder waits for Layer 3 to list a sender (rule 1).
 pub const PEER_LOOKUP_MS: u64 = 5_000;
+/// How long admission waits for this node's own login while the hub still
+/// looks for it (rule 1); with [`PEER_LOOKUP_MS`] well inside
+/// [`PREPARE_TIMEOUT`].
+pub const OWN_LOGIN_WAIT: Duration = Duration::from_secs(10);
 /// A `cancel` for an unknown run is remembered this long (rule 4).
 pub const TOMBSTONE_TTL: Duration = Duration::from_secs(5 * 60);
 /// Ticks are sent at most this often (≤ 4 Hz).
@@ -376,19 +386,26 @@ pub struct Received<A> {
     pub recv_ns: u64,
 }
 
-/// Pause before re-sending after a WebSocket dial collided with another one,
-/// or a fresh connection was dropped.
+/// Pause before re-sending after a WebSocket dial failed, or a fresh
+/// connection was dropped.
 const CONNECT_RETRY: Duration = Duration::from_millis(250);
 
 /// Send `payload` as `msg_type` to `peer_id` until `deadline`, retrying
 /// `SessionError::ReconnectBackoff` after its `retry_after`, and every
-/// 250 ms `SessionError::ConnectFailed` (e.g. two hubs dialling each other
-/// at once: "connection already in progress") and `SessionError::SendFailed`
-/// (e.g. "connection missing after connect": the peer kept its WebSocket to
-/// an earlier instance of this node, one that reused this device name, and
-/// dropped ours; its 10 s ping to the dead one clears it), and never waiting
-/// on a full outbound queue past `deadline`. Returns `now_ns()` just before
-/// the successful send. Errors carry no `msg_type` prefix; callers add it.
+/// 250 ms `SessionError::ConnectFailed` and `SessionError::SendFailed`, and
+/// never waiting on a full outbound queue past `deadline`. Returns
+/// `now_ns()` just before the successful send. Errors carry no `msg_type`
+/// prefix; callers add it.
+///
+/// The two retries are defence in depth. Older cores failed a send when two
+/// hubs dialled each other at once ("connection already in progress"), and
+/// a peer that kept its WebSocket to an earlier instance of this node (one
+/// that reused this device name) dropped ours ("connection missing after
+/// connect") until its 10 s ping cleared the dead one. Core now shares one
+/// dial per peer among its callers and installs the new connection on the
+/// accepting side, so against a peer on this core they fire only on a
+/// genuine failure; they still cover peers on older cores. A dial that core
+/// cancelled because the node is shutting down is not retried.
 pub async fn send_with_backoff(
     node: &BenchNode,
     peer_id: &str,
@@ -418,6 +435,9 @@ pub async fn send_with_backoff(
                 ),
             ),
             Err(NodeError::Session(SessionError::ConnectFailed(m))) => {
+                if is_shutdown_cancel(&m) {
+                    return Err(AppError::not_running());
+                }
                 (CONNECT_RETRY, format!("could not connect to the peer: {m}"))
             }
             Err(NodeError::Session(SessionError::SendFailed(m))) => {
@@ -434,6 +454,15 @@ pub async fn send_with_backoff(
     }
 }
 
+/// Core's `ConnectFailed` message for a dial it cancelled because the node
+/// is shutting down: no retry can succeed. Matched exactly — other
+/// `ConnectFailed` messages carry strings the remote peer picks (its
+/// claimed id, its app id), so a substring match would let a peer stop our
+/// retries and blame the local hub.
+fn is_shutdown_cancel(message: &str) -> bool {
+    message == DIAL_CANCELLED_SHUTTING_DOWN
+}
+
 /// Send a request and wait for its reply (§6).
 ///
 /// Subscribes to `bench` before sending, then takes the first message with
@@ -446,6 +475,38 @@ pub async fn request<R: ControlRequest>(
     req: &R,
     timeout: Duration,
 ) -> Result<Received<R::Ack>, AppError> {
+    request_with(node, peer_id, req, timeout, None)
+        .await
+        .map_err(AppError::from)
+}
+
+/// How a [`request_or_refusal`] failed.
+#[derive(Debug)]
+pub enum RequestFailure {
+    /// The peer answered, with `ok: false`: its code and reason.
+    Refused(AppError),
+    /// No answer to act on: this side could not send (its own registry does
+    /// not know the peer, say), the reply never came, or it did not parse.
+    Failed(AppError),
+}
+
+impl From<RequestFailure> for AppError {
+    fn from(failure: RequestFailure) -> Self {
+        match failure {
+            RequestFailure::Refused(e) | RequestFailure::Failed(e) => e,
+        }
+    }
+}
+
+/// [`request`], telling the peer's refusal apart from a failure on this
+/// side: both can carry the same code (`peer-not-found` is the peer saying
+/// "I do not know you" or this node not knowing the peer).
+pub async fn request_or_refusal<R: ControlRequest>(
+    node: &BenchNode,
+    peer_id: &str,
+    req: &R,
+    timeout: Duration,
+) -> Result<Received<R::Ack>, RequestFailure> {
     request_with(node, peer_id, req, timeout, None).await
 }
 
@@ -458,7 +519,9 @@ pub async fn request_resending<R: ControlRequest>(
     timeout: Duration,
     every: Duration,
 ) -> Result<Received<R::Ack>, AppError> {
-    request_with(node, peer_id, req, timeout, Some(every)).await
+    request_with(node, peer_id, req, timeout, Some(every))
+        .await
+        .map_err(AppError::from)
 }
 
 async fn request_with<R: ControlRequest>(
@@ -467,13 +530,16 @@ async fn request_with<R: ControlRequest>(
     req: &R,
     timeout: Duration,
     resend_every: Option<Duration>,
-) -> Result<Received<R::Ack>, AppError> {
+) -> Result<Received<R::Ack>, RequestFailure> {
+    use RequestFailure::Failed;
     let deadline = Instant::now() + timeout;
     let payload = serde_json::to_value(req)
-        .map_err(|e| AppError::internal(format!("serialise {}: {e}", R::TYPE)))?;
+        .map_err(|e| Failed(AppError::internal(format!("serialise {}: {e}", R::TYPE))))?;
     let ack_type = msg_type::ack(R::TYPE);
     let mut rx = node.subscribe(CONTROL_NS);
-    let mut sent_ns = send_with_backoff(node, peer_id, R::TYPE, &payload, deadline).await?;
+    let mut sent_ns = send_with_backoff(node, peer_id, R::TYPE, &payload, deadline)
+        .await
+        .map_err(Failed)?;
     let next_send = |from: Instant| resend_every.map_or(deadline, |e| (from + e).min(deadline));
     let mut resend_at = next_send(Instant::now());
     loop {
@@ -481,19 +547,21 @@ async fn request_with<R: ControlRequest>(
             Err(_) if Instant::now() < deadline => {
                 // No reply yet: send again. A send that cannot get out before
                 // the deadline ends the request with that send's error.
-                sent_ns = send_with_backoff(node, peer_id, R::TYPE, &payload, deadline).await?;
+                sent_ns = send_with_backoff(node, peer_id, R::TYPE, &payload, deadline)
+                    .await
+                    .map_err(Failed)?;
                 tracing::debug!(%ack_type, "no reply yet; request re-sent");
                 resend_at = next_send(Instant::now());
                 continue;
             }
             Err(_) => {
-                return Err(AppError::timeout(format!(
+                return Err(Failed(AppError::timeout(format!(
                     "no {ack_type} from the peer within {} s",
                     timeout.as_secs()
-                )))
+                ))))
             }
             Ok(Err(RecvError::Lagged(_))) => continue,
-            Ok(Err(RecvError::Closed)) => return Err(AppError::not_running()),
+            Ok(Err(RecvError::Closed)) => return Err(Failed(AppError::not_running())),
             Ok(Ok(msg)) => msg,
         };
         if msg.from != peer_id
@@ -505,13 +573,13 @@ async fn request_with<R: ControlRequest>(
         let recv_ns = now_ns();
         let status: AckStatus = serde_json::from_value(msg.payload.clone()).unwrap_or_default();
         if let Some(err) = status.to_error() {
-            return Err(err);
+            return Err(RequestFailure::Refused(err));
         }
         let ack = serde_json::from_value(msg.payload).map_err(|e| {
-            AppError::new(
+            Failed(AppError::new(
                 ErrorCode::ProtocolMismatch,
                 format!("the peer's {ack_type} did not parse: {e}"),
-            )
+            ))
         })?;
         return Ok(Received {
             ack,
@@ -1425,7 +1493,10 @@ async fn lookup_sender(live: &Live, from: &str) -> Option<Peer> {
     found
 }
 
-/// Look the sender up and apply rule 1.
+/// Look the sender up and apply rule 1. A refusal while this node's own
+/// login is still on its way (a fast restart: core reports it a second or
+/// two after `running`) waits up to [`OWN_LOGIN_WAIT`] for it first, rather
+/// than fail a run that the login would admit.
 async fn admitted_sender(core: &Core, live: &Live, from: &str) -> Result<Peer, AppError> {
     let peer = lookup_sender(live, from).await.ok_or_else(|| {
         AppError::new(
@@ -1433,6 +1504,9 @@ async fn admitted_sender(core: &Core, live: &Live, from: &str) -> Result<Peer, A
             "this device does not know you yet; retry in a moment",
         )
     })?;
+    if admit_on(core, live, &peer).is_err() {
+        live.await_own_login(OWN_LOGIN_WAIT).await;
+    }
     admit_on(core, live, &peer)?;
     Ok(peer)
 }
@@ -1891,6 +1965,25 @@ async fn handle_cancel(core: &Arc<Core>, live: &Arc<Live>, msg: &NamespacedMessa
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn only_a_shutdown_cancel_stops_the_connect_retry() {
+        assert!(is_shutdown_cancel(
+            "dial cancelled: the session is shutting down"
+        ));
+        for m in [
+            "WS dial timed out after 45s",
+            "connection already in progress",
+            "dial failed: connection refused",
+            // Remote-controlled fields that carry both old substrings.
+            "hello identity mismatch: dialed nX, answerer claims dial cancelled / shutting down",
+            "app mismatch: local=bench, remote=dial cancelled shutting down",
+            "hello identity mismatch: dialed nX, answerer claims \
+             dial cancelled: the session is shutting down",
+        ] {
+            assert!(!is_shutdown_cancel(m), "{m}");
+        }
+    }
 
     #[test]
     fn ack_status_is_flat_and_optional() {

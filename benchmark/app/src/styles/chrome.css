@@ -260,12 +260,27 @@
 .host.scroll > .host-view {
   overflow: auto;
 }
-/* home.css .readonly-bar: a quiet strip above the page */
+/* home.css .readonly-bar: a strip above the page. A debug build is ink on paper, inverted, so
+   it reads before the numbers do; never redline, which marks errors only. */
 .build-bar {
   padding: 8px 24px;
   background: var(--ground-sunken);
   border-bottom: 1px solid var(--rule);
   color: var(--ink-2);
+}
+.build-bar.debug {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  background: var(--ink);
+  border-bottom-color: var(--ink);
+  color: var(--on-ink);
+  font-size: 14px;
+  line-height: 20px;
+}
+.build-bar.debug .label {
+  color: var(--on-ink);
 }
 
 /* ------------------------------------------------------------ tool layout (base.css .topbar/.main/.pane) */

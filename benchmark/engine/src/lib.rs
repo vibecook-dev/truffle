@@ -76,6 +76,9 @@ pub const WS_NS: &str = "bench.ws";
 pub const PROTOCOL: u32 = 1;
 /// Engine version, recorded in reports and hellos.
 pub const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The Tailscale admin console's machine list, where a device waiting in
+/// [`NodeStatus::NeedsApproval`] is approved.
+pub const TAILSCALE_ADMIN_MACHINES_URL: &str = "https://login.tailscale.com/admin/machines";
 
 #[cfg(test)]
 mod tests {

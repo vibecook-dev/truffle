@@ -131,6 +131,8 @@ export type NodeStateName =
   | 'idle'
   | 'starting'
   | 'needs-login'
+  /** The tailnet requires device approval and an admin has not approved this device yet. */
+  | 'needs-approval'
   | 'running'
   | 'stopping'
   | 'stopped'
@@ -1126,6 +1128,11 @@ export interface RunSummary {
   run_id: string;
   suite_id: string | null;
   workload: WorkloadKind;
+  /**
+   * `params.mode` (`throughput`, `latency`, `stream`, `echo`, `ramp`, `rr`, `pingpong`, `burst`)
+   * for tcp, udp, quic, ws and synced-store; null for the workloads without modes.
+   */
+  mode: string | null;
   label: string;
   status: RunStatus;
   error_code: ErrorCode | null;

@@ -2,7 +2,7 @@
 // for Compare, imports from the picker or a drop, and delete with a confirmation.
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import type { PathLabel, RunSummary, Tool, WorkloadKind } from '../api';
+import type { BuildProfile, PathLabel, RunSummary, Tool, WorkloadKind } from '../api';
 import { useAppState, useAppStore } from '../state/context';
 import { load, save } from '../hooks/storage';
 import { Button, ConfirmButton } from '../components/Button';
@@ -13,8 +13,8 @@ import { Page, Section } from '../components/Misc';
 import { Status } from '../components/Status';
 import { Icon } from '../components/Icon';
 import { useConstructionFlag } from '../charts/construction';
-import { REGISTRY, WORKLOAD_ORDER, headlineOf } from '../workloads/registry';
-import { FLAG_TIPS, FLAG_WORDS, flagsOf } from '../lib/compare';
+import { REGISTRY, WORKLOAD_ORDER, headlineOf, labelOf, shortLabelOf } from '../workloads/registry';
+import { FLAG_TIPS, FLAG_WORDS, flagsOf, type Flag } from '../lib/compare';
 import { DASH, fmtNumber, fmtWhen, plural, withUnit } from '../lib/format';
 import type { Page as PageId } from '../hooks/useRoute';
 
@@ -62,39 +62,58 @@ export function workloadLabel(w: string): string {
   return REGISTRY[w as WorkloadKind]?.label ?? w;
 }
 
+/** A run's headline value and its label; `short` for a narrow column (the Suite card). */
 export function Headline({
   run,
+  short,
 }: {
   run: Pick<RunSummary, 'workload' | 'summary' | 'status' | 'error_code'>;
+  short?: boolean;
 }) {
   const h = headlineOf(run);
   if (run.status === 'failed' && (h?.value == null || !h))
     return <span className="bad mono">{run.error_code?.replace(/-/g, ' ') ?? 'failed'}</span>;
   if (!h) return <>{DASH}</>;
   return (
-    <span className="hl" title={h.label}>
+    <span className="hl" title={labelOf(h)}>
       <span className="hl-v">{withUnit(fmtNumber(h.value), h.unit)}</span>
-      <span className="hl-l">{h.label}</span>
+      <span className="hl-l">{short ? shortLabelOf(h) : labelOf(h)}</span>
     </span>
   );
 }
 
-export function Flags({ run }: { run: RunSummary }) {
+/** The chip class of a flag: debug changes what every number means, so it reads first. */
+function flagClass(f: Flag): string {
+  if (f === 'debug') return 'chip strong';
+  return f === 'imported' || f === 'cli' || f === 'partial' ? 'chip quiet' : 'chip flag';
+}
+
+export function Flags({ run }: { run: Pick<RunSummary, 'flags' | 'tool' | 'overlapping_runs'> }) {
   const flags = flagsOf(run);
   if (!flags.length) return null;
   return (
     <span className="flags">
       {flags.map((f) => (
-        <span
-          key={f}
-          className={`chip${f === 'imported' || f === 'cli' || f === 'partial' ? ' quiet' : ' flag'}`}
-          title={FLAG_TIPS[f]}
-        >
+        <span key={f} className={flagClass(f)} title={FLAG_TIPS[f]}>
           {f === 'overlap' ? `overlap ${run.overlapping_runs}` : FLAG_WORDS[f]}
         </span>
       ))}
     </span>
   );
+}
+
+/**
+ * A build profile as a fact: "release" in plain mono, a debug build as the same chip History
+ * flags debug runs with (its numbers are not comparable with release), unknown as a dash.
+ */
+export function BuildOf({ profile }: { profile: BuildProfile | null | undefined }) {
+  if (profile === 'debug')
+    return (
+      <span className="chip strong" title={FLAG_TIPS.debug}>
+        debug
+      </span>
+    );
+  return profile === 'release' ? <>release</> : <>{DASH}</>;
 }
 
 export function History({ go }: { go: (p: PageId, id?: string) => void }) {

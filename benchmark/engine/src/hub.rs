@@ -2,8 +2,8 @@
 //!
 //! A [`Hub`] is created idle ([`Hub::new`]; [`Hub::subscribe`] works at
 //! once), started with [`Hub::start`] (which emits `starting`,
-//! `needs-login`, `running` or `error`), and stopped with [`Hub::stop`] in
-//! any state. While running it:
+//! `needs-login`, `needs-approval`, `running` or `error`), and stopped with
+//! [`Hub::stop`] in any state. While running it:
 //!
 //! - holds an exclusive lock on `<state_dir>/hub.lock` (`state-in-use`);
 //! - answers peers through the responder ([`crate::control`]);
@@ -11,7 +11,10 @@
 //! - says `hello` to every online same-app peer when it appears or comes
 //!   back, caches the reply, and publishes [`HubEvent::Peers`] (debounced to
 //!   250 ms);
-//! - re-emits `needs-login` when the node asks for re-authentication.
+//! - re-emits `needs-login` when the node asks for re-authentication;
+//! - shows `needs-approval` while the tailnet waits for an admin to approve
+//!   the device (core's `NetworkStatusEvent::NeedsApproval`, which every
+//!   sidecar reports).
 //!
 //! [`Hub::run`] executes the §6 initiator flow and always returns a
 //! [`RunReport`] (failures are `status: failed` with an `error_code`);
@@ -61,6 +64,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use truffle_core::file_transfer::OverwritePolicy;
 use truffle_core::network::tailscale::TailscaleProvider;
+use truffle_core::network::NetworkStatusEvent;
 use truffle_core::session::PeerEvent;
 use truffle_core::{FileTransferEvent, Node, Peer, TransferDirection};
 
@@ -493,6 +497,10 @@ pub(crate) struct Live {
     /// The login read from the LocalAPI when the sidecar's start event did
     /// not carry one (see [`resolve_login`]).
     login_fallback: RwLock<Option<String>>,
+    /// Set while [`resolve_login`] looks for this node's own login.
+    login_pending: AtomicBool,
+    /// Notified when [`resolve_login`] ends, with or without the login.
+    login_settled: Notify,
     pub(crate) offers: Arc<OfferRouter>,
     /// Fires on `stop`: every background task and responder run.
     pub(crate) cancel: CancellationToken,
@@ -518,6 +526,28 @@ impl Live {
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone()
         })
+    }
+
+    /// Wait up to `limit` for this node's own login while [`resolve_login`]
+    /// still looks for it (after a fast restart it can arrive a second or
+    /// two after `running`). Returns at once when the login is known or no
+    /// lookup is running.
+    pub(crate) async fn await_own_login(&self, limit: Duration) {
+        let settled = self.login_settled.notified();
+        if self.local_login().is_some() || !self.login_pending.load(Ordering::SeqCst) {
+            return;
+        }
+        tokio::select! {
+            _ = settled => {}
+            _ = tokio::time::sleep(limit) => {}
+            _ = self.cancel.cancelled() => {}
+        }
+    }
+
+    /// [`resolve_login`] is done: wake [`await_own_login`](Self::await_own_login).
+    fn settle_login(&self) {
+        self.login_pending.store(false, Ordering::SeqCst);
+        self.login_settled.notify_waiters();
     }
 
     /// This hub's hello template.
@@ -630,12 +660,25 @@ impl Core {
         Some(truffle_core::tailscale_hostname(&app, &name))
     }
 
-    fn set_state(&self, mut st: NodeState) {
+    fn set_state(&self, st: NodeState) {
+        self.set_state_if(st, |_| true);
+    }
+
+    /// Enter `st` if the current state passes `when`, checked and replaced
+    /// under one lock (a status event racing `start` must not overwrite
+    /// `running`). The event goes out under the lock too, so subscribers
+    /// see states in the order they were entered. Returns whether it did.
+    fn set_state_if(&self, mut st: NodeState, when: impl FnOnce(NodeStatus) -> bool) -> bool {
         if st.tailscale_hostname.is_none() {
             st.tailscale_hostname = self.tailscale_hostname();
         }
-        *lock(&self.state) = st.clone();
+        let mut cur = lock(&self.state);
+        if !when(cur.state) {
+            return false;
+        }
+        *cur = st.clone();
         self.emit(HubEvent::Node(Box::new(st)));
+        true
     }
 
     fn state(&self) -> NodeState {
@@ -903,6 +946,13 @@ async fn peer_watch(core: Arc<Core>, live: Arc<Live>) {
 fn reauth(core: &Arc<Core>, live: &Arc<Live>, url: String) {
     let mut st = NodeState::new(NodeStatus::NeedsLogin);
     st.auth_url = Some(url);
+    await_running_again(core, live, st);
+}
+
+/// Show `st` (`needs-login`, `needs-approval`) while running, then poll
+/// health until the node is running again and emit `running`. A newer call
+/// supersedes an older one (`reauth_epoch`).
+fn await_running_again(core: &Arc<Core>, live: &Arc<Live>, st: NodeState) {
     core.set_state(st);
     let epoch = core.reauth_epoch.fetch_add(1, Ordering::SeqCst) + 1;
     let core = core.clone();
@@ -916,6 +966,9 @@ fn reauth(core: &Arc<Core>, live: &Arc<Live>, url: String) {
             if core.reauth_epoch.load(Ordering::SeqCst) != epoch {
                 return;
             }
+            // Exactly `Running`: the sidecar's later state change, not the
+            // `running` core recorded at start, which no later event has
+            // replaced when the sidecar only just asked for this.
             let health = live2.node.health().await;
             if health.state == "Running" {
                 let mut local = live2.local();
@@ -931,7 +984,64 @@ fn reauth(core: &Arc<Core>, live: &Arc<Live>, url: String) {
     });
 }
 
-/// When the LocalAPI is asked for the login after a start without one.
+/// Whether a health state says the node runs: core records `running` once
+/// started, and the sidecar's later state changes as Tailscale's backend
+/// states (`Running`, `NeedsLogin`, `NeedsMachineAuth`, …).
+fn is_running(health_state: &str) -> bool {
+    health_state.eq_ignore_ascii_case("running")
+}
+
+/// The node's own network status changed ([`NodeBuilder::on_network_status`],
+/// live from the start of `build()`). Every sidecar reports `NeedsApproval`;
+/// `LoginKnown` needs sidecar protocol 8.
+///
+/// [`NodeBuilder::on_network_status`]: truffle_core::NodeBuilder::on_network_status
+fn on_network_status(core: &Arc<Core>, event: NetworkStatusEvent) {
+    // `LoginKnown` is taken by `resolve_login`, which only runs when the
+    // login was unknown once the node was built; later variants are ignored.
+    if matches!(event, NetworkStatusEvent::NeedsApproval) {
+        needs_approval(core);
+    }
+}
+
+/// The tailnet has device approval on and this device waits for an admin.
+/// `build()` keeps waiting meanwhile (and fails after 5 minutes with an
+/// error naming the approval), so show `needs-approval` until it returns.
+fn needs_approval(core: &Arc<Core>) {
+    let Some(live) = core.live() else {
+        let shown = core.set_state_if(NodeState::new(NodeStatus::NeedsApproval), |cur| {
+            matches!(
+                cur,
+                NodeStatus::Starting | NodeStatus::NeedsLogin | NodeStatus::NeedsApproval
+            )
+        });
+        if shown {
+            tracing::warn!(
+                hostname = core.tailscale_hostname().as_deref().unwrap_or("?"),
+                "waiting for device approval in the Tailscale admin console"
+            );
+        }
+        return;
+    };
+    // Running already: a late delivery of the event that preceded `running`,
+    // or the node fell back to waiting for approval. Only the second shows.
+    let core = core.clone();
+    let live2 = live.clone();
+    live.tracker.spawn(async move {
+        if !is_running(&live2.node.health().await.state) {
+            await_running_again(&core, &live2, NodeState::new(NodeStatus::NeedsApproval));
+        }
+    });
+}
+
+/// How long [`resolve_login`] waits on core alone before asking the
+/// LocalAPI itself. Sidecars since protocol 8 keep polling for the login
+/// (every 500 ms, for up to a minute) and core reports it as
+/// [`NetworkStatusEvent::LoginKnown`]; seen live about 1.8 s after a fast
+/// restart.
+const LOGIN_CORE_GRACE: Duration = Duration::from_secs(5);
+
+/// When the LocalAPI is asked for the login, after [`LOGIN_CORE_GRACE`].
 const LOGIN_RETRY: [Duration; 8] = [
     Duration::from_millis(250),
     Duration::from_millis(500),
@@ -943,49 +1053,118 @@ const LOGIN_RETRY: [Duration; 8] = [
     Duration::from_secs(13),
 ];
 
-/// The sidecar's start event carried no login (seen after a fast restart
-/// from saved state: the node is Running before its netmap names the self
-/// user, and core takes the login only from that event, so it stays
-/// unknown). Admission refuses every peer while the login is unknown
-/// (§6 rule 1), so read it from the LocalAPI (`/localapi/v0/status`) a few
-/// times in the background, about 33 s in all; once known, update the local
+/// What [`core_login`] saw.
+enum CoreLogin {
+    Known(String),
+    NotYet,
+    Cancelled,
+}
+
+/// Wait until `until` for core to know this node's login: at once from
+/// `local_info()`, or from a [`NetworkStatusEvent::LoginKnown`] on `status`
+/// (subscribed before the first check, so none is missed).
+async fn core_login(
+    live: &Live,
+    status: &mut broadcast::Receiver<NetworkStatusEvent>,
+    until: Instant,
+) -> CoreLogin {
+    use tokio::sync::broadcast::error::RecvError;
+    loop {
+        if let Some(login) = live.node.local_info().login_name {
+            return CoreLogin::Known(login);
+        }
+        let ev = tokio::select! {
+            _ = live.cancel.cancelled() => return CoreLogin::Cancelled,
+            _ = tokio::time::sleep_until(until) => return CoreLogin::NotYet,
+            ev = status.recv() => ev,
+        };
+        match ev {
+            Ok(NetworkStatusEvent::LoginKnown { login_name }) => {
+                return CoreLogin::Known(login_name)
+            }
+            // Another status, or missed ones: `local_info()` has the truth.
+            Ok(_) | Err(RecvError::Lagged(_)) => {}
+            // The provider is gone: nothing more will come from core.
+            Err(RecvError::Closed) => {
+                tokio::select! {
+                    _ = live.cancel.cancelled() => return CoreLogin::Cancelled,
+                    _ = tokio::time::sleep_until(until) => return CoreLogin::NotYet,
+                }
+            }
+        }
+    }
+}
+
+/// The node came up without knowing its own login (a fast restart from
+/// saved state: the node is Running before its netmap names the self user).
+/// Admission refuses every peer while the login is unknown (§6 rule 1).
+///
+/// Core now handles the root cause: sidecars since protocol 8 keep polling
+/// and send the login in a later status, which core turns into
+/// [`NetworkStatusEvent::LoginKnown`] (and `local_info()`), so this waits on
+/// that event for [`LOGIN_CORE_GRACE`] without polling anything. Only then,
+/// as defence in depth for older sidecars, does it read the login from the
+/// LocalAPI (`/localapi/v0/status`) a few times (about 33 s in all), still
+/// taking core's answer if that comes first. Once known: update the local
 /// info and hello, emit `running` again, re-hello every online peer (their
 /// cached view of us said "does not accept runs from you") and republish
 /// the peers (`same_login`).
-async fn resolve_login(core: Arc<Core>, live: Arc<Live>) {
-    let mut found = None;
+async fn resolve_login(
+    core: Arc<Core>,
+    live: Arc<Live>,
+    mut status: broadcast::Receiver<NetworkStatusEvent>,
+) {
+    /// Settles the lookup on every way out, cancellation included.
+    struct Settle<'a>(&'a Live);
+    impl Drop for Settle<'_> {
+        fn drop(&mut self) {
+            self.0.settle_login();
+        }
+    }
+    let _settle = Settle(&live);
     let started = Instant::now();
-    for wait in LOGIN_RETRY {
-        tokio::select! {
-            _ = live.cancel.cancelled() => return,
-            _ = tokio::time::sleep(wait) => {}
-        }
-        if let Some(login) = live.node.local_info().login_name {
-            tracing::info!(
-                after_ms = started.elapsed().as_millis() as u64,
-                "login known from the sidecar"
-            );
-            found = Some(login);
-            break;
-        }
-        match live.localapi().await {
-            Ok(api) => match api.self_login().await {
-                Ok(Some(login)) => {
-                    tracing::info!(
-                        after_ms = started.elapsed().as_millis() as u64,
-                        "login known from the LocalAPI status"
-                    );
-                    *live
-                        .login_fallback
-                        .write()
-                        .unwrap_or_else(PoisonError::into_inner) = Some(login.clone());
-                    found = Some(login);
+    let from_core = |login: String| {
+        tracing::info!(
+            after_ms = started.elapsed().as_millis() as u64,
+            "login known from the sidecar"
+        );
+        login
+    };
+    let mut found = match core_login(&live, &mut status, started + LOGIN_CORE_GRACE).await {
+        CoreLogin::Known(login) => Some(from_core(login)),
+        CoreLogin::Cancelled => return,
+        CoreLogin::NotYet => None,
+    };
+    if found.is_none() {
+        tracing::debug!("the sidecar has not reported the login; asking the LocalAPI");
+        for wait in LOGIN_RETRY {
+            match core_login(&live, &mut status, Instant::now() + wait).await {
+                CoreLogin::Known(login) => {
+                    found = Some(from_core(login));
                     break;
                 }
-                Ok(None) => {}
-                Err(e) => tracing::debug!(error = %e, "login lookup: LocalAPI status failed"),
-            },
-            Err(e) => tracing::debug!(error = %e, "login lookup: LocalAPI unavailable"),
+                CoreLogin::Cancelled => return,
+                CoreLogin::NotYet => {}
+            }
+            match live.localapi().await {
+                Ok(api) => match api.self_login().await {
+                    Ok(Some(login)) => {
+                        tracing::info!(
+                            after_ms = started.elapsed().as_millis() as u64,
+                            "login known from the LocalAPI status"
+                        );
+                        *live
+                            .login_fallback
+                            .write()
+                            .unwrap_or_else(PoisonError::into_inner) = Some(login.clone());
+                        found = Some(login);
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::debug!(error = %e, "login lookup: LocalAPI status failed"),
+                },
+                Err(e) => tracing::debug!(error = %e, "login lookup: LocalAPI unavailable"),
+            }
         }
     }
     let Some(login) = found else {
@@ -1003,11 +1182,11 @@ async fn resolve_login(core: Arc<Core>, live: Arc<Live>) {
         local.login_name = Some(login);
         local.clone()
     };
-    if core.state().state == NodeStatus::Running {
-        let mut st = NodeState::new(NodeStatus::Running);
-        st.local = Some(local);
-        core.set_state(st);
-    }
+    // Runs waiting in admission for the login can go ahead now.
+    live.settle_login();
+    let mut st = NodeState::new(NodeStatus::Running);
+    st.local = Some(local);
+    core.set_state_if(st, |cur| cur == NodeStatus::Running);
     for p in live.node.peers().await {
         if p.online {
             spawn_hello(&core, &live, &p);
@@ -1136,7 +1315,8 @@ impl Hub {
     }
 
     /// Start the node: lock the state dir, resolve the sidecar, build the
-    /// node (emitting `needs-login` for every login URL), then install the
+    /// node (emitting `needs-login` for every login URL and `needs-approval`
+    /// while an admin has yet to approve the device), then install the
     /// offer router and start the responder, the hello cache and the peers
     /// publisher. Emits `running` on success and `error` on failure.
     /// Returns once running (or failed); [`stop`](Self::stop) aborts it.
@@ -1188,6 +1368,16 @@ impl Hub {
                 return Err(fail(core, e));
             }
         };
+        // Live from the start of build() until the node is dropped: shows
+        // `needs-approval` while build() waits for an admin. Every sidecar
+        // sends the event (cores before this hook dropped it); the sign-in
+        // hint stays as the fallback when none arrives.
+        let weak = Arc::downgrade(core);
+        let builder = builder.on_network_status(move |event| {
+            if let Some(core) = weak.upgrade() {
+                on_network_status(&core, event);
+            }
+        });
         let weak = Arc::downgrade(core);
         let on_auth = move |url: String| {
             if let Some(core) = weak.upgrade() {
@@ -1213,6 +1403,9 @@ impl Hub {
             }
         };
         let hub_start_ms = t0.elapsed().as_millis() as u64;
+        // Subscribed before reading the identity, so a login that arrives in
+        // between still reaches `resolve_login`.
+        let status = node.on_network_status();
         let identity = node.local_info();
         let health = HealthSummary::from(node.health().await);
         let local = LocalInfo::from_identity(&identity, health, &sidecar, Some(hub_start_ms));
@@ -1243,11 +1436,13 @@ impl Hub {
             node,
             hello: RwLock::new(hello),
             login_fallback: RwLock::new(None),
+            login_pending: AtomicBool::new(!login_known),
+            login_settled: Notify::new(),
             offers,
             cancel,
             tracker,
             localapi: tokio::sync::Mutex::new(None),
-            local: Mutex::new(local.clone()),
+            local: Mutex::new(local),
             running_at: Instant::now(),
             sidecar_path: sidecar,
             hub_start_ms,
@@ -1260,13 +1455,19 @@ impl Hub {
         live.tracker.spawn(peer_watch(core.clone(), live.clone()));
         live.tracker
             .spawn(peers_publisher(core.clone(), live.clone()));
+        // Publish Running BEFORE the login lookup starts. The lookup checks
+        // core at once and only updates a node that is already Running
+        // (`set_state_if`), so started first it could find the login, fail
+        // that check against Starting, and then lose to this snapshot taken
+        // without the login. Reading `live.local` (not the earlier `local`)
+        // keeps anything already learned.
+        let mut st = NodeState::new(NodeStatus::Running);
+        st.local = Some(lock(&live.local).clone());
+        core.set_state(st);
         if !login_known {
             live.tracker
-                .spawn(resolve_login(core.clone(), live.clone()));
+                .spawn(resolve_login(core.clone(), live.clone(), status));
         }
-        let mut st = NodeState::new(NodeStatus::Running);
-        st.local = Some(local);
-        core.set_state(st);
         Ok(())
     }
 
@@ -1308,7 +1509,10 @@ impl Hub {
         let Some(live) = live else {
             lc.lock = None;
             let st = core.state().state;
-            if matches!(st, NodeStatus::Starting | NodeStatus::NeedsLogin) {
+            if matches!(
+                st,
+                NodeStatus::Starting | NodeStatus::NeedsLogin | NodeStatus::NeedsApproval
+            ) {
                 core.set_state(NodeState::new(NodeStatus::Stopped));
             }
             return;
@@ -2370,9 +2574,11 @@ impl std::fmt::Debug for Pair {
 
 /// A fresh hello from `hub` to its pair sibling, tried up to
 /// [`PAIR_HELLO_ATTEMPTS`] times. Each attempt already re-sends within its
-/// 30 s; a further attempt covers a WebSocket dial that stayed stuck (the
-/// session refuses new dials while one is in flight, "connection already in
-/// progress") past an attempt's deadline.
+/// 30 s. Defence in depth: a further attempt covered a WebSocket dial that
+/// stayed stuck past an attempt's deadline while older cores refused every
+/// other dial to that peer ("connection already in progress"). Core now
+/// shares one bounded dial per peer among its callers, so a further attempt
+/// only runs after a genuine failure (both hubs in a pair run this core).
 async fn pair_hello(hub: &Hub, peer_id: &str) -> Result<PeerHello, AppError> {
     let mut attempt = 1;
     loop {
@@ -3285,6 +3491,152 @@ mod tests {
             *lock(&pair.responder.core.watchdog) = None;
 
             pair.stop().await;
+        }
+    }
+}
+
+/// The approval step and the late login end to end, against a scripted
+/// stand-in for a protocol-8 sidecar.
+#[cfg(all(test, unix))]
+mod network_status_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Approval wait, then running without a login, then (1.5 s later, after
+    /// `start` returned) the follow-up running status with it. Answers every
+    /// `tsnet:listen` and ignores the rest.
+    const SCRIPT: &str = r#"#!/bin/sh
+read start
+echo '{"event":"tsnet:needsApproval"}'
+sleep 0.4
+echo '{"event":"tsnet:status","data":{"state":"running","hostname":"truffle-truffle-bench-approval","dnsName":"truffle-truffle-bench-approval.tailnet.ts.net","tailscaleIP":"100.64.0.9","nodeId":"nSELF","protocolVersion":8}}'
+( sleep 1.5; echo '{"event":"tsnet:status","data":{"state":"running","hostname":"truffle-truffle-bench-approval","dnsName":"truffle-truffle-bench-approval.tailnet.ts.net","tailscaleIP":"100.64.0.9","loginName":"alice@example.com","protocolVersion":8}}' ) &
+while read line; do
+  case "$line" in
+    *'"tsnet:listen"'*)
+      rid=$(printf '%s' "$line" | sed -n 's/.*"requestId":"\([^"]*\)".*/\1/p')
+      port=$(printf '%s' "$line" | sed -n 's/.*"port":\([0-9]*\).*/\1/p')
+      echo "{\"event\":\"tsnet:listening\",\"data\":{\"port\":$port,\"requestId\":\"$rid\"}}"
+      ;;
+  esac
+done
+"#;
+
+    #[tokio::test]
+    async fn approval_shows_then_the_late_login_arrives_without_the_localapi() {
+        let dir = tempfile::tempdir().unwrap();
+        let sidecar = dir.path().join("fake-sidecar.sh");
+        std::fs::write(&sidecar, SCRIPT).unwrap();
+        std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut cfg = HubConfig::defaults(Tool::Cli, None, dir.path().join("data"))
+            .with_device_name("approval");
+        cfg.state_dir = dir.path().join("state");
+        cfg.sidecar_path = Some(sidecar);
+        let hub = Hub::new(cfg);
+        let mut events = hub.subscribe();
+
+        tokio::time::timeout(Duration::from_secs(20), hub.start())
+            .await
+            .expect("start must finish once the device is approved")
+            .expect("start");
+        // Admission waits for the login that is still on its way (it comes
+        // ~1.5 s later), not for the whole limit.
+        let waiter = {
+            let live = hub.core.live().expect("running");
+            assert!(live.local_login().is_none(), "the login comes later");
+            tokio::spawn(async move {
+                let t0 = Instant::now();
+                live.await_own_login(Duration::from_secs(10)).await;
+                (t0.elapsed(), live.local_login())
+            })
+        };
+
+        let mut states = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut login = None;
+        while login.is_none() && Instant::now() < deadline {
+            if let Ok(Ok(HubEvent::Node(st))) =
+                tokio::time::timeout(Duration::from_millis(200), events.recv()).await
+            {
+                if st.state == NodeStatus::NeedsApproval {
+                    assert_eq!(
+                        st.tailscale_hostname.as_deref(),
+                        Some("truffle-truffle-bench-approval"),
+                        "the approval step names the device"
+                    );
+                }
+                login = st.local.as_ref().and_then(|l| l.login_name.clone());
+                states.push(st.state);
+            }
+        }
+        assert_eq!(
+            states,
+            [
+                NodeStatus::Starting,
+                NodeStatus::NeedsApproval,
+                NodeStatus::Running,
+                NodeStatus::Running,
+            ],
+            "approval, running, then running again with the login"
+        );
+        assert_eq!(login.as_deref(), Some("alice@example.com"));
+        let (waited, seen) = waiter.await.unwrap();
+        assert!(waited < Duration::from_secs(5), "waited {waited:?}");
+        assert_eq!(seen.as_deref(), Some("alice@example.com"));
+        let live = hub.core.live().expect("running");
+        assert!(!live.login_pending.load(Ordering::SeqCst));
+        // Known now: no wait at all.
+        let t0 = Instant::now();
+        live.await_own_login(Duration::from_secs(10)).await;
+        assert!(t0.elapsed() < Duration::from_millis(50));
+        assert_eq!(live.local_login().as_deref(), Some("alice@example.com"));
+        assert_eq!(
+            live.hello().login_name.as_deref(),
+            Some("alice@example.com")
+        );
+        assert!(
+            live.login_fallback
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_none(),
+            "core reported the login; the LocalAPI fallback must not have run"
+        );
+        drop(live);
+
+        // A late copy of the approval event while running changes nothing.
+        on_network_status(&hub.core, NetworkStatusEvent::NeedsApproval);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(hub.state().state, NodeStatus::Running);
+
+        hub.stop().await;
+        assert_eq!(hub.state().state, NodeStatus::Stopped);
+    }
+
+    #[test]
+    fn approval_never_replaces_running_or_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = Hub::new(
+            HubConfig::defaults(Tool::Cli, None, dir.path().join("data"))
+                .with_device_name("approval"),
+        );
+        for (from, shown) in [
+            (NodeStatus::Starting, true),
+            (NodeStatus::NeedsLogin, true),
+            (NodeStatus::NeedsApproval, true),
+            (NodeStatus::Running, false),
+            (NodeStatus::Stopping, false),
+            (NodeStatus::Stopped, false),
+            (NodeStatus::Error, false),
+            (NodeStatus::Idle, false),
+        ] {
+            hub.core.set_state(NodeState::new(from));
+            needs_approval(&hub.core);
+            let now = hub.state().state;
+            assert_eq!(
+                now == NodeStatus::NeedsApproval,
+                shown,
+                "{from:?} → {now:?}"
+            );
         }
     }
 }

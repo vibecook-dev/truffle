@@ -11,9 +11,11 @@
 //!   10, each only once its module sets `IMPLEMENTED = true`, so the test
 //!   tightens on its own as workloads land.
 //!
-//! Every run must end `ok` and satisfy the §12 invariants.
+//! Every run must end `ok` and satisfy the §12 invariants, and set only the
+//! live keys `workloads::live_keys` declares for it.
 
-use std::sync::Arc;
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 use truffle_bench::workloads;
@@ -134,9 +136,30 @@ async fn live_pair() {
 
     let mut failures = Vec::new();
     for (w, p) in plan {
-        let report = pair
-            .run(uuid::Uuid::new_v4().to_string(), p, Arc::new(|_| {}))
-            .await;
+        // Every live key the run sets must be one `live_keys` declares (the
+        // app's live-keys.json fixture is built from it).
+        let seen = Arc::new(Mutex::new(BTreeSet::<String>::new()));
+        let declared = workloads::live_keys(&p);
+        let sink = {
+            let seen = seen.clone();
+            Arc::new(move |prog: truffle_bench::Progress| {
+                let mut seen = seen.lock().unwrap();
+                seen.extend(prog.samples.into_iter().map(|s| s.key));
+            })
+        };
+        let report = pair.run(uuid::Uuid::new_v4().to_string(), p, sink).await;
+        let undeclared: Vec<String> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|k| !declared.contains(&k.as_str()))
+            .cloned()
+            .collect();
+        if !undeclared.is_empty() {
+            failures.push(format!(
+                "{w}: live keys {undeclared:?} are not in workloads::live_keys {declared:?}"
+            ));
+        }
         eprintln!(
             "[live_pair] {w}: {:?} {}",
             report.status,

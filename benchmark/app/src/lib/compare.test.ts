@@ -9,6 +9,7 @@ import {
   keyedParams,
   liveBasis,
   sameKeyedParams,
+  shownRunOf,
   trendable,
   unkeyedParams,
 } from './compare';
@@ -41,6 +42,32 @@ function report(over: Record<string, unknown> = {}): RunReport {
   };
   return { ...base, ...over } as unknown as RunReport;
 }
+
+describe('the run a benchmark view shows', () => {
+  const run = (id: string, mode: string | null, over: Partial<RunSummary> = {}) =>
+    ({ run_id: id, workload: 'tcp', mode, tool: 'truffle-bench-app', ...over }) as RunSummary;
+  // newest first, as runs_list returns them
+  const runs = [
+    run('lat-2', 'latency'),
+    run('imported-tp', 'throughput', { tool: 'imported' }),
+    run('tp-1', 'throughput'),
+    run('lat-1', 'latency'),
+    run('udp-1', 'stream', { workload: 'udp' }),
+  ];
+  it('is the newest run of the workload in the form’s mode, never an imported one', () => {
+    expect(shownRunOf(runs, 'tcp', 'throughput')).toEqual({ latest: runs[2], other: null });
+    expect(shownRunOf(runs, 'tcp', 'latency')).toEqual({ latest: runs[0], other: null });
+  });
+  it('links the newest run of another mode when the form’s mode has none', () => {
+    expect(shownRunOf(runs, 'udp', 'echo')).toEqual({ latest: null, other: runs[4] });
+    expect(shownRunOf(runs, 'quic', 'latency')).toEqual({ latest: null, other: null });
+  });
+  it('takes the newest run for a workload without modes, or a summary without one', () => {
+    const plain = [run('p-2', null, { workload: 'path' }), run('p-1', null, { workload: 'path' })];
+    expect(shownRunOf(plain, 'path', null).latest?.run_id).toBe('p-2');
+    expect(shownRunOf([run('old', null)], 'tcp', 'latency').latest?.run_id).toBe('old');
+  });
+});
 
 describe('compare', () => {
   it('lists the compare_key fields that differ, ignoring durations and counts', () => {
@@ -165,6 +192,25 @@ describe('compare', () => {
     ]);
     expect(d[0].pct).toBeCloseTo(50);
     expect(deltas([item('x', 100)], [item('x', 100.5)])[0].verdict).toBe('same');
+  });
+
+  it('names each value the way today’s engine does, even in older reports', () => {
+    const old = (key: string, label: string): SummaryItem => ({ ...item(key, 1), label });
+    const d = deltas(
+      [old('rtt_p50_ms', 'Round trip p50'), old('req_per_sec', 'Requests/s')],
+      [
+        old('loaded_rtt_p50_ms', 'RTT under load (p50)'),
+        old('loss_pct', 'Lost'),
+        old('goodput_mbps', 'Goodput'),
+      ],
+    );
+    expect(Object.fromEntries(d.map((x) => [x.key, x.label]))).toEqual({
+      rtt_p50_ms: 'RTT p50',
+      req_per_sec: 'Requests per second',
+      loaded_rtt_p50_ms: 'RTT p50 under load',
+      loss_pct: 'Loss',
+      goodput_mbps: 'Goodput',
+    });
   });
 
   it('shows the engine’s flags the other columns don’t, and keeps rate-limited runs out of trends', () => {

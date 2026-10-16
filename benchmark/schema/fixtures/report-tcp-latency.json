@@ -352,7 +352,7 @@
   "series": [
     {
       "key": "rtt_ms",
-      "label": "Round trip",
+      "label": "RTT",
       "points": [
         [
           412.0,
@@ -1206,7 +1206,7 @@
     {
       "better": "lower",
       "key": "rtt_p50_ms",
-      "label": "Round trip p50",
+      "label": "RTT p50",
       "uncertainty": null,
       "unit": "ms",
       "value": 0.24530000000000002
@@ -1214,7 +1214,7 @@
     {
       "better": "lower",
       "key": "rtt_p99_ms",
-      "label": "Round trip p99",
+      "label": "RTT p99",
       "uncertainty": null,
       "unit": "ms",
       "value": 0.6527
@@ -1222,7 +1222,7 @@
     {
       "better": "lower",
       "key": "rtt_max_ms",
-      "label": "Slowest round trip",
+      "label": "RTT max",
       "uncertainty": null,
       "unit": "ms",
       "value": 0.6605

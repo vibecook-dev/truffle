@@ -1,0 +1,123 @@
+{
+  "egress": [
+    "goodput_mbps",
+    "loaded_rtt_ms",
+    "sent_mbps"
+  ],
+  "file-transfer": [
+    "e2e_mbps",
+    "hash_ms",
+    "iterations_done",
+    "negotiate_ms",
+    "transfer_ms",
+    "wire_mbps"
+  ],
+  "http-direct-new": [
+    "error_pct",
+    "latency_p50_ms",
+    "loaded_rtt_ms",
+    "req_per_sec"
+  ],
+  "http-proxy-keepalive": [
+    "error_pct",
+    "latency_p50_ms",
+    "loaded_rtt_ms",
+    "req_per_sec"
+  ],
+  "path": [
+    "rtt_ms"
+  ],
+  "quic-latency": [
+    "rtt_ms",
+    "rtt_p50_ms"
+  ],
+  "quic-throughput": [
+    "goodput_mbps",
+    "loaded_rtt_ms",
+    "sent_mbps"
+  ],
+  "synced-store-burst": [],
+  "synced-store-pingpong": [
+    "convergence_ms",
+    "convergence_p50_ms"
+  ],
+  "tcp-latency": [
+    "rtt_ms",
+    "rtt_p50_ms"
+  ],
+  "tcp-throughput-bidirectional": [
+    "download_mbps",
+    "goodput_mbps",
+    "loaded_rtt_ms",
+    "sent_mbps",
+    "upload_mbps"
+  ],
+  "tcp-throughput-upload": [
+    "goodput_mbps",
+    "loaded_rtt_ms",
+    "sent_mbps"
+  ],
+  "udp-echo": [
+    "loaded_rtt_ms",
+    "loss_pct",
+    "rtt_ms",
+    "rtt_p50_ms"
+  ],
+  "udp-ramp": [
+    "goodput_mbps",
+    "jitter_ms",
+    "loaded_rtt_ms",
+    "loss_pct",
+    "max_sustainable_mbps",
+    "offered_mbps",
+    "target_mbps"
+  ],
+  "udp-stream": [
+    "goodput_mbps",
+    "jitter_ms",
+    "loaded_rtt_ms",
+    "loss_pct",
+    "offered_mbps"
+  ],
+  "video-quic": [
+    "clock_uncertainty_ms",
+    "delivered_fps",
+    "dropped_pct",
+    "frame_latency_ms",
+    "frame_latency_p50_ms",
+    "frames_done",
+    "frames_sent",
+    "freezes",
+    "goodput_mbps",
+    "late_pct",
+    "loaded_rtt_ms",
+    "offered_mbps"
+  ],
+  "video-udp": [
+    "clock_uncertainty_ms",
+    "delivered_fps",
+    "dropped_pct",
+    "frame_latency_ms",
+    "frame_latency_p50_ms",
+    "frames_done",
+    "frames_sent",
+    "freezes",
+    "goodput_mbps",
+    "late_pct",
+    "loaded_rtt_ms",
+    "offered_mbps"
+  ],
+  "ws-rr": [
+    "msgs_per_sec",
+    "rtt_ms",
+    "rtt_p50_ms"
+  ],
+  "ws-stream": [
+    "drop_pct",
+    "goodput_mbps",
+    "loaded_rtt_ms",
+    "msgs_per_sec",
+    "received_msgs",
+    "sent_msgs_per_sec"
+  ]
+}

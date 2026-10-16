@@ -28,7 +28,8 @@ import reportVideoQuic from '../../../schema/fixtures/report-video-quic.json';
 import reportVideoUdp from '../../../schema/fixtures/report-video-udp.json';
 import reportWsRr from '../../../schema/fixtures/report-ws-rr.json';
 import reportWsStream from '../../../schema/fixtures/report-ws-stream.json';
-import { KEY_LOADED_RTT, type RunReport, type WorkloadKind, type WorkloadParams } from './types';
+import liveKeys from '../../../schema/fixtures/live-keys.json';
+import type { RunReport, WorkloadKind, WorkloadParams } from './types';
 
 export interface ModeExample {
   workload: WorkloadKind;
@@ -104,93 +105,16 @@ export function exampleFor(p: WorkloadParams): RunReport {
   }
 }
 
-const THROUGHPUT_LIVE = ['goodput_mbps', 'sent_mbps', KEY_LOADED_RTT];
-
 /**
- * The Progress sample keys each mode sets while it runs, by example: the initiator's own samples,
- * the responder's ticks (merged in by the hub), and the path sampler's latest round trip
- * (`loaded_rtt_ms`) in every time-based mode. Read from benchmark/engine/src/workloads/*.rs (the
- * engine has no fixture for them); the registry's live keys and the mock's samples must be among
- * them.
+ * The Progress sample keys each mode can set, by example file name: the engine's
+ * `workloads::live_keys()` (the initiator's own samples, the responder's ticks the hub merges in,
+ * and the path sampler's `loaded_rtt_ms` in every time-based mode), which its `schema_is_current`
+ * test writes to benchmark/schema/fixtures/live-keys.json. The registry's live keys and the
+ * mock's samples must be among them.
  */
-export const LIVE_KEYS: Record<string, string[]> = {
-  'report-path.json': ['rtt_ms'],
-  'report-tcp-throughput-upload.json': THROUGHPUT_LIVE,
-  'report-tcp-throughput-bidirectional.json': [...THROUGHPUT_LIVE, 'upload_mbps', 'download_mbps'],
-  'report-tcp-latency.json': ['rtt_ms', 'rtt_p50_ms'],
-  'report-udp-stream.json': [
-    'goodput_mbps',
-    'loss_pct',
-    'jitter_ms',
-    'offered_mbps',
-    'target_mbps',
-    KEY_LOADED_RTT,
-  ],
-  'report-udp-echo.json': ['rtt_ms', 'rtt_p50_ms', 'loss_pct', KEY_LOADED_RTT],
-  'report-udp-ramp.json': [
-    'goodput_mbps',
-    'loss_pct',
-    'jitter_ms',
-    'offered_mbps',
-    'target_mbps',
-    'max_sustainable_mbps',
-    KEY_LOADED_RTT,
-  ],
-  'report-quic-throughput.json': THROUGHPUT_LIVE,
-  'report-quic-latency.json': ['rtt_ms', 'rtt_p50_ms'],
-  'report-ws-rr.json': ['rtt_ms', 'rtt_p50_ms', 'msgs_per_sec'],
-  'report-ws-stream.json': [
-    'msgs_per_sec',
-    'goodput_mbps',
-    'drop_pct',
-    'received_msgs',
-    'sent_msgs_per_sec',
-    KEY_LOADED_RTT,
-  ],
-  'report-file-transfer.json': [
-    'wire_mbps',
-    'e2e_mbps',
-    'hash_ms',
-    'negotiate_ms',
-    'transfer_ms',
-    'iterations_done',
-  ],
-  'report-synced-store-pingpong.json': ['convergence_ms', 'convergence_p50_ms'],
-  'report-synced-store-burst.json': [],
-  'report-http-proxy-keepalive.json': [
-    'req_per_sec',
-    'latency_p50_ms',
-    'error_pct',
-    KEY_LOADED_RTT,
-  ],
-  'report-http-direct-new.json': ['req_per_sec', 'latency_p50_ms', 'error_pct', KEY_LOADED_RTT],
-  'report-video-udp.json': [
-    'frames_done',
-    'delivered_fps',
-    'late_pct',
-    'dropped_pct',
-    'freezes',
-    'frame_latency_ms',
-    'frame_latency_p50_ms',
-    'goodput_mbps',
-    'frames_sent',
-    'offered_mbps',
-    'clock_uncertainty_ms',
-    KEY_LOADED_RTT,
-  ],
-  'report-video-quic.json': [
-    'frames_done',
-    'delivered_fps',
-    'late_pct',
-    'dropped_pct',
-    'freezes',
-    'frame_latency_ms',
-    'frame_latency_p50_ms',
-    'goodput_mbps',
-    'frames_sent',
-    'offered_mbps',
-    'clock_uncertainty_ms',
-    KEY_LOADED_RTT,
-  ],
-  'report-egress.json': THROUGHPUT_LIVE,
-};
+export const LIVE_KEYS: Record<string, string[]> = Object.fromEntries(
+  Object.entries(liveKeys as Record<string, string[]>).map(([mode, keys]) => [
+    `report-${mode}.json`,
+    keys,
+  ]),
+);

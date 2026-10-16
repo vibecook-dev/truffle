@@ -92,6 +92,28 @@ use crate::workloads::{ResponderCtx, ResponderRun, RunCtx, WorkloadOutput};
 /// Whether this build offers `udp` (drives `PeerHello.workloads`).
 pub const IMPLEMENTED: bool = true;
 
+/// The Progress sample keys a run with these params can set: the
+/// initiator's own and the responder's `tick`s, which the hub merges in.
+/// [`live_keys`](super::live_keys) adds the path sampler's `loaded_rtt_ms`
+/// for time-based runs; `live-keys.json` in the schema fixtures is built
+/// from it.
+pub fn live_keys(p: &UdpParams) -> Vec<&'static str> {
+    if p.mode == UdpMode::Echo {
+        return vec!["rtt_ms", "rtt_p50_ms", "loss_pct"];
+    }
+    // The receiver's goodput, loss and jitter (ticked on upload); the
+    // sender's offered rate, and its target (ticked on download; on upload
+    // only a ramp sets it).
+    let mut keys = vec!["goodput_mbps", "loss_pct", "jitter_ms", "offered_mbps"];
+    if p.mode == UdpMode::Ramp || p.direction == OneWayDirection::Download {
+        keys.push("target_mbps");
+    }
+    if p.mode == UdpMode::Ramp {
+        keys.push("max_sustainable_mbps");
+    }
+    keys
+}
+
 /// `SO_RCVBUF` receivers ask for.
 const RCVBUF_BYTES: usize = 4 << 20;
 /// Receive buffer (payloads are at most 1400 B).
@@ -2140,7 +2162,7 @@ fn echo_output(
         results: to_value(&Results::Echo(Box::new(results)))?,
         series: vec![Series {
             key: "rtt_ms".into(),
-            label: "Round trip".into(),
+            label: "RTT".into(),
             unit: "ms".into(),
             points,
             warmup_ms,
@@ -2153,21 +2175,9 @@ fn echo_output(
 
 fn echo_summary(r: &EchoResults) -> Vec<SummaryItem> {
     vec![
-        item(
-            "rtt_p50_ms",
-            "Round trip p50",
-            r.rtt_ms.p50,
-            "ms",
-            Better::Lower,
-        ),
-        item(
-            "rtt_p99_ms",
-            "Round trip p99",
-            r.rtt_ms.p99,
-            "ms",
-            Better::Lower,
-        ),
-        item("loss_pct", "Lost", r.loss_pct, "%", Better::Lower),
+        item("rtt_p50_ms", "RTT p50", r.rtt_ms.p50, "ms", Better::Lower),
+        item("rtt_p99_ms", "RTT p99", r.rtt_ms.p99, "ms", Better::Lower),
+        item("loss_pct", "Loss", r.loss_pct, "%", Better::Lower),
     ]
 }
 

@@ -16,18 +16,22 @@
 // imported reports.
 //
 // Dev-only URL switches (all optional):
-//   ?mock=fresh | connecting | needs-login | error   sign-in state at launch (default: signed in)
-//   ?mock_elapsed=40     seconds already spent on the login URL
+//   ?mock=fresh | connecting | needs-login | needs-approval | error
+//                        sign-in state at launch (default: signed in)
+//   ?mock_elapsed=40     seconds already spent on the login URL (or waiting for approval)
+//   ?approval=1          the tailnet requires device approval: sign-in waits ~6 s in needs-approval
 //   ?active=tcp          a run of that workload is already going (exercises runs_active/run_attach)
 //   ?active_at=6         …and has been for this many seconds
 //   ?active_suite=smoke  a suite is already going (exercises reattaching to a suite)
 //   ?measured=1          another device is measuring this one
 //   ?peers=none | one    no peers, or a single online peer
 //   ?build=debug         the app reports a debug build
+//   ?peer_build=debug    studio (the default target) runs a debug build
 //   ?fail=tcp            the next run of that workload fails part way (the peer stops answering)
 //   ?theme=dark | light  initial theme setting
 //   ?history=none        start with no runs
 //   ?real=1              dev only: History serves the real reports in benchmark/app/dev-reports/
+//   ?real_dir=two-machine  …only those in that subfolder
 
 import type { Api, Subscription, Unsubscribe } from './api';
 import type {
@@ -92,6 +96,7 @@ import suiteStandard from '../../../schema/fixtures/suite-profile-standard.json'
 import {
   REGISTRY,
   WORKLOAD_ORDER,
+  modeOf,
   paramsLabel,
   validateParams,
   videoFps,
@@ -107,15 +112,19 @@ const q = new URLSearchParams(
 );
 const SCENARIO = q.get('mock') ?? 'signed-in';
 const ELAPSED = Number(q.get('mock_elapsed') ?? 0);
+const APPROVAL = q.get('approval') === '1';
 const ACTIVE = q.get('active') as WorkloadKind | null;
 const ACTIVE_AT = Number(q.get('active_at') ?? 6);
 const ACTIVE_SUITE = q.get('active_suite');
 const MEASURED = q.get('measured') === '1';
 const PEERS_MODE = q.get('peers') ?? 'all';
 const BUILD: BuildProfile = q.get('build') === 'debug' ? 'debug' : 'release';
+const PEER_BUILD: BuildProfile = q.get('peer_build') === 'debug' ? 'debug' : 'release';
 const NO_HISTORY = q.get('history') === 'none';
 /** Dev only: serve the real reports in benchmark/app/dev-reports/ (see vite.config.ts). */
 const REAL = import.meta.env.DEV && q.get('real') === '1';
+/** With ?real=1: only the reports in this subfolder of dev-reports/ (e.g. ?real_dir=two-machine). */
+const REAL_DIR = q.get('real_dir');
 let FAIL = q.get('fail') as WorkloadKind | null;
 const THEME = (
   ['light', 'dark'].includes(q.get('theme') ?? '') ? q.get('theme') : 'system'
@@ -243,7 +252,7 @@ const STUDIO: Machine = {
   cpus: 24,
   login: LOGIN,
   app: 'truffle-bench-app',
-  build: 'release',
+  build: PEER_BUILD,
   fingerprint: 'a17c44e09b3d5f12',
   rtt: 2.1,
   tcp: 612,
@@ -548,8 +557,6 @@ const NOTE = {
   rampLowerBound:
     'the ramp ended before reaching a loss limit: max_sustainable_mbps is a lower bound (raise duration_secs or rate_mbps)',
   wsLossless: 'the WebSocket itself is lossless, so every drop happens at a receiver',
-  httpReconnects:
-    'proxy keepalive above concurrency 2 includes upstream reconnects (Go MaxIdleConnsPerHost = 2)',
   httpWhois: 'new: one WhoIs per request on both paths',
   videoPacing:
     'pacing applies to UDP fragments; over TCP and QUIC each frame is written whole at its capture time',
@@ -962,8 +969,10 @@ function udpModel(
         { key: 'offered_mbps', value: r2(off) },
         { key: 'loss_pct', value: r3(lp) },
         { key: 'jitter_ms', value: r3(m.jitter * (1 + R.gauss() * 0.1)) },
-        { key: 'target_mbps', value: r2(rate) },
       ];
+      // the sender's target: ticked by the peer on download; on upload only a ramp sets it
+      if (p.mode === 'ramp' || p.direction === 'download')
+        out.push({ key: 'target_mbps', value: r2(rate) });
       if (p.mode === 'ramp') out.push({ key: 'max_sustainable_mbps', value: r1(maxOk) });
       return [...out, ...loadedRtt(ps, t)];
     },
@@ -1446,17 +1455,15 @@ function wsStreamModel(p: Extract<WorkloadParams, { workload: 'ws' }>, m: Machin
 
 function httpModel(p: Extract<WorkloadParams, { workload: 'http' }>, m: Machine, R: Rng): Model {
   const warm = p.warmup_secs * 1000;
-  // a new tailnet connection costs ~41 ms, one at a time across workers (seen live)
-  const connect = p.connection === 'new' ? 41 * Math.min(p.concurrency, 4) * 0.97 : 0;
+  // a new tailnet connection costs ~0.5 ms since sidecar protocol 8 (~41 ms, one at a time
+  // across workers, before it: the LocalAPI token lookup on every WhoIs)
+  const connect = p.connection === 'new' ? 0.5 : 0;
   const lat =
     m.rtt +
     (p.target === 'proxy' ? 0.3 : 0.25) +
     connect +
     ((p.response_bytes * 8) / (m.tcp * 1e6)) * 1000;
-  const rate =
-    (Math.min(p.concurrency, 12) / lat) *
-    1000 *
-    (p.target === 'proxy' && p.connection === 'keepalive' && p.concurrency > 2 ? 0.86 : 1);
+  const rate = (Math.min(p.concurrency, 12) / lat) * 1000;
   const pts: [number, number][] = [];
   const latency: number[] = [];
   const ps = sampler(R, m, 0.8, null);
@@ -1485,9 +1492,7 @@ function httpModel(p: Extract<WorkloadParams, { workload: 'http' }>, m: Machine,
       const kept = upTo(cutMs)(pts);
       const after = kept.filter(([t]) => t > warm).map(([, v]) => v);
       const d = dist(latency);
-      const reconnects = p.target === 'proxy' && p.connection === 'keepalive' && p.concurrency > 2;
       const notes: string[] = [];
-      if (reconnects) notes.push(NOTE.httpReconnects);
       if (p.connection === 'new') notes.push(NOTE.httpWhois);
       const connects = p.connection === 'new' ? latency.map((x) => x * 0.96) : [];
       return {
@@ -1510,10 +1515,7 @@ function httpModel(p: Extract<WorkloadParams, { workload: 'http' }>, m: Machine,
           samples_total: latency.length,
           connect_ms: p.connection === 'new' ? median(connects) : null,
           connect: dist(connects),
-          connections_opened:
-            p.connection === 'new'
-              ? attempts
-              : p.concurrency + (reconnects ? Math.round(attempts * 0.03) : 0),
+          connections_opened: p.connection === 'new' ? attempts : p.concurrency,
           body_bytes: attempts * p.response_bytes,
           goodput_mbps: r2(((mean(after) ?? 0) * p.response_bytes * 8) / 1e6),
           warmup_requests: Math.round(rate * p.warmup_secs),
@@ -2038,6 +2040,7 @@ function summaryOf(r: RunReport): RunSummary {
     run_id: r.run_id,
     suite_id: r.suite_id,
     workload: r.workload,
+    mode: modeOf(r.params),
     label: r.label,
     status: r.status,
     error_code: r.error_code,
@@ -2363,7 +2366,7 @@ export function createMockApi(): Api {
   const emit = (e: HubEvent) => listeners.forEach((l) => l(e));
   const history: RunReport[] = REAL ? [] : seedHistory();
   if (REAL)
-    void fetch('/__dev-reports')
+    void fetch(REAL_DIR ? `/__dev-reports?dir=${encodeURIComponent(REAL_DIR)}` : '/__dev-reports')
       .then((r) => r.json() as Promise<RunReport[]>)
       .then((reports) => {
         history.push(...reports);
@@ -2452,6 +2455,14 @@ export function createMockApi(): Api {
     }
   };
 
+  /** ?approval=1: an admin approves the device ~6 s after it starts waiting. */
+  const awaitApproval = () => {
+    setNode({ state: 'needs-approval' });
+    window.setTimeout(() => {
+      if (node.state === 'needs-approval') goRunning();
+    }, 6000);
+  };
+
   // initial state
   node = {
     state: 'idle',
@@ -2466,6 +2477,13 @@ export function createMockApi(): Api {
       ...node,
       state: 'needs-login',
       auth_url: AUTH_URL,
+      tailscale_hostname: `truffle-truffle-bench-${ME.device_name}`,
+      since_ms: Date.now() - ELAPSED * 1000,
+    };
+  } else if (SCENARIO === 'needs-approval') {
+    node = {
+      ...node,
+      state: 'needs-approval',
       tailscale_hostname: `truffle-truffle-bench-${ME.device_name}`,
       since_ms: Date.now() - ELAPSED * 1000,
     };
@@ -2768,7 +2786,7 @@ export function createMockApi(): Api {
       if (req.device_name) settings = { ...settings, device_name: req.device_name };
       setNode({ state: 'starting' });
       if (req.auth_key) {
-        window.setTimeout(goRunning, 1200);
+        window.setTimeout(APPROVAL ? awaitApproval : goRunning, 1200);
       } else {
         window.setTimeout(() => {
           if (node.state === 'starting') setNode({ state: 'needs-login', auth_url: AUTH_URL });
@@ -2792,7 +2810,8 @@ export function createMockApi(): Api {
       if (!url.startsWith('https://')) return reject('invalid-params', 'Only https links open.');
       if (url === AUTH_URL && node.state === 'needs-login') {
         window.setTimeout(() => {
-          if (node.state === 'needs-login' && SCENARIO !== 'needs-login') goRunning();
+          if (node.state === 'needs-login' && SCENARIO !== 'needs-login')
+            (APPROVAL ? awaitApproval : goRunning)();
         }, 4000);
       }
     },

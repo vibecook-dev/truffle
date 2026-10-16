@@ -79,6 +79,33 @@ use crate::workloads::{ResponderCtx, ResponderRun, RunCtx, WorkloadOutput};
 /// Whether this build offers `tcp` (drives `PeerHello.workloads`).
 pub const IMPLEMENTED: bool = true;
 
+/// The Progress sample keys a run with these params can set: the
+/// initiator's own and the responder's `tick`s, which the hub merges in.
+/// [`live_keys`](super::live_keys) adds the path sampler's `loaded_rtt_ms`
+/// for time-based runs; `live-keys.json` in the schema fixtures is built
+/// from it.
+pub fn live_keys(p: &TcpParams) -> Vec<&'static str> {
+    match p.mode {
+        StreamMode::Latency => vec!["rtt_ms", "rtt_p50_ms"],
+        StreamMode::Throughput => throughput_live_keys(p.direction),
+    }
+}
+
+/// [`run_throughput`]'s live keys (tcp, quic throughput and egress share
+/// them): the sender's `sent_mbps`; `goodput_mbps` from the responder's
+/// ticks on upload and from this side on download; both ways, the ticked
+/// `upload_mbps`, this side's `download_mbps` and their sum as
+/// `goodput_mbps`.
+pub(crate) fn throughput_live_keys(direction: Direction) -> Vec<&'static str> {
+    match direction {
+        Direction::Upload => vec!["sent_mbps", "goodput_mbps"],
+        Direction::Download => vec!["goodput_mbps"],
+        Direction::Bidirectional => {
+            vec!["sent_mbps", "upload_mbps", "download_mbps", "goodput_mbps"]
+        }
+    }
+}
+
 /// How long one `open_tcp` (or egress connect) may take.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long streams may run past their data period before the run fails.
@@ -1379,22 +1406,16 @@ const NAGLE_NOTE: &str = "Nagle exists only on the two Rust loopback sockets. In
 
 fn latency_summary(d: &Distribution) -> Vec<SummaryItem> {
     vec![
-        item("rtt_p50_ms", "Round trip p50", d.p50, "ms", Better::Lower),
-        item("rtt_p99_ms", "Round trip p99", d.p99, "ms", Better::Lower),
-        item(
-            "rtt_max_ms",
-            "Slowest round trip",
-            d.max,
-            "ms",
-            Better::Lower,
-        ),
+        item("rtt_p50_ms", "RTT p50", d.p50, "ms", Better::Lower),
+        item("rtt_p99_ms", "RTT p99", d.p99, "ms", Better::Lower),
+        item("rtt_max_ms", "RTT max", d.max, "ms", Better::Lower),
     ]
 }
 
 fn rtt_series(points: Vec<(f64, f64)>, warmup_ms: Option<f64>) -> Series {
     Series {
         key: "rtt_ms".into(),
-        label: "Round trip".into(),
+        label: "RTT".into(),
         unit: "ms".into(),
         points,
         warmup_ms,

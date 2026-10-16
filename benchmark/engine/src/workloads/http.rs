@@ -63,6 +63,15 @@ use crate::workloads::{ResponderCtx, ResponderRun, RunCtx, WorkloadOutput};
 /// `http` is implemented.
 pub const IMPLEMENTED: bool = true;
 
+/// The Progress sample keys a run with these params can set: the
+/// initiator's own and the responder's `tick`s, which the hub merges in.
+/// [`live_keys`](super::live_keys) adds the path sampler's `loaded_rtt_ms`
+/// for time-based runs; `live-keys.json` in the schema fixtures is built
+/// from it.
+pub fn live_keys(_p: &HttpParams) -> Vec<&'static str> {
+    vec!["req_per_sec", "latency_p50_ms", "error_pct"]
+}
+
 /// A request (connect included in `new` mode) that takes longer is a timeout.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// First proxy port: `P = 20000 + (run_tag % 10000)`.
@@ -82,9 +91,22 @@ const BUCKET_NS: u64 = 250_000_000;
 /// After a failed connect in keep-alive mode, wait this long before retrying.
 const RECONNECT_PAUSE: Duration = Duration::from_millis(20);
 
-/// §8.2 http note for proxy keep-alive above two workers.
-pub const NOTE_PROXY_KEEPALIVE: &str =
-    "proxy keepalive above concurrency 2 includes upstream reconnects (Go MaxIdleConnsPerHost = 2)";
+/// §8.2 http note for proxy keep-alive above two workers when the peer's
+/// server reported no connection count: sidecars before protocol 8 keep only
+/// two idle upstream connections per host (Go's default
+/// `MaxIdleConnsPerHost`), so more workers reconnect upstream; protocol 8
+/// keeps 64.
+pub const NOTE_PROXY_KEEPALIVE: &str = "proxy keepalive above concurrency 2 includes upstream \
+     reconnects on sidecars before protocol 8 (Go MaxIdleConnsPerHost = 2)";
+
+/// §8.2 http note when the peer's server saw more upstream connections from
+/// the proxy than there were keep-alive workers.
+pub fn note_proxy_reconnects(upstream: u64, workers: u32) -> String {
+    format!(
+        "the sidecar's proxy reconnected upstream: {upstream} upstream connections for {workers} \
+         keep-alive workers (sidecars before protocol 8 keep only 2 idle connections per host)"
+    )
+}
 /// §8.2 http note for `new` connections.
 pub const NOTE_NEW: &str = "new: one WhoIs per request on both paths";
 
@@ -1209,7 +1231,7 @@ fn rate_series(records: &[Record], w: &Window, warmup_secs: u32) -> Series {
         .collect();
     Series {
         key: "req_per_sec".into(),
-        label: "Requests/s".into(),
+        label: "Requests per second".into(),
         unit: "req/s".into(),
         points,
         warmup_ms: (warmup_secs > 0).then(|| w.rel_ms(w.warm_end_ns)),
@@ -1273,7 +1295,7 @@ fn assemble(
     let summary = vec![
         SummaryItem::new(
             "req_per_sec",
-            "Requests/s",
+            "Requests per second",
             req_per_sec,
             "req/s",
             Better::Higher,
@@ -1295,11 +1317,17 @@ fn assemble(
         SummaryItem::new("error_pct", "Errors", error_pct, "%", Better::Lower),
     ];
     let mut notes = Vec::new();
-    if p.target == HttpTarget::Proxy
-        && p.connection == HttpConnection::Keepalive
-        && p.concurrency > 2
-    {
-        notes.push(NOTE_PROXY_KEEPALIVE.to_string());
+    if p.target == HttpTarget::Proxy && p.connection == HttpConnection::Keepalive {
+        // What the peer's server saw decides; without it, say what older
+        // sidecars do.
+        match server.as_ref() {
+            Some(s) if s.connections > u64::from(p.concurrency) => {
+                notes.push(note_proxy_reconnects(s.connections, p.concurrency));
+            }
+            Some(_) => {}
+            None if p.concurrency > 2 => notes.push(NOTE_PROXY_KEEPALIVE.to_string()),
+            None => {}
+        }
     }
     if p.connection == HttpConnection::New {
         notes.push(NOTE_NEW.to_string());
@@ -1563,8 +1591,9 @@ pub fn example_output() -> WorkloadOutput {
     out
 }
 
-/// Direct target, a new connection per request, 4 workers: each new
-/// tailnet connection waits its turn (~40 ms each), so ~24 req/s at ~160 ms.
+/// Direct target, a new connection per request, 4 workers, as sidecars
+/// before protocol 8 ran it: each new tailnet connection waited its turn
+/// (~40 ms each), so ~24 req/s at ~160 ms.
 fn example_direct_new() -> WorkloadOutput {
     let p = HttpParams {
         target: HttpTarget::Direct,
@@ -1927,6 +1956,48 @@ mod tests {
         assert!(r.attempts > 1000);
         assert!(r.samples_ms.len() <= 40);
         assert!(out.summary.iter().all(|s| s.value.is_some()));
+        // 9 upstream connections for 4 workers.
+        assert_eq!(out.notes, vec![note_proxy_reconnects(9, 4)]);
+    }
+
+    #[test]
+    fn the_reconnect_note_follows_what_the_server_saw() {
+        let p = HttpParams {
+            target: HttpTarget::Proxy,
+            connection: HttpConnection::Keepalive,
+            concurrency: 16,
+            ..HttpParams::default()
+        };
+        let w = Window {
+            origin_ns: 0,
+            data_start_ns: 0,
+            warm_end_ns: 0,
+            end_ns: 1_000_000_000,
+        };
+        let seen = |connections: u64| Stats {
+            connections,
+            ..Stats::default()
+        };
+        // A protocol-8 sidecar keeps one upstream connection per worker.
+        let out = assemble(&p, 1, &[], &[], 0, &w, Some(seen(16)));
+        assert!(out.notes.is_empty(), "{:?}", out.notes);
+        // An older one reconnects.
+        let out = assemble(&p, 1, &[], &[], 0, &w, Some(seen(16_167)));
+        assert_eq!(out.notes, vec![note_proxy_reconnects(16_167, 16)]);
+        // No server stats: the hedged note, above two workers only.
+        let out = assemble(&p, 1, &[], &[], 0, &w, None);
         assert_eq!(out.notes, vec![NOTE_PROXY_KEEPALIVE.to_string()]);
+        let two = HttpParams {
+            concurrency: 2,
+            ..p.clone()
+        };
+        assert!(assemble(&two, 1, &[], &[], 0, &w, None).notes.is_empty());
+        // Direct keep-alive never gets it.
+        let direct = HttpParams {
+            target: HttpTarget::Direct,
+            ..p
+        };
+        let out = assemble(&direct, 1, &[], &[], 0, &w, Some(seen(99)));
+        assert!(out.notes.is_empty());
     }
 }

@@ -77,6 +77,29 @@ use crate::workloads::{ResponderCtx, ResponderRun, RunCtx, WorkloadOutput};
 /// `video` is implemented.
 pub const IMPLEMENTED: bool = true;
 
+/// The Progress sample keys a run with these params can set: the
+/// initiator's own and the responder's `tick`s, which the hub merges in.
+/// [`live_keys`](super::live_keys) adds the path sampler's `loaded_rtt_ms`
+/// for time-based runs; `live-keys.json` in the schema fixtures is built
+/// from it.
+pub fn live_keys(_p: &VideoParams) -> Vec<&'static str> {
+    vec![
+        // the sender
+        "clock_uncertainty_ms",
+        "frames_sent",
+        "offered_mbps",
+        // the receiver's ticks
+        "frames_done",
+        "delivered_fps",
+        "late_pct",
+        "dropped_pct",
+        "freezes",
+        "frame_latency_ms",
+        "frame_latency_p50_ms",
+        "goodput_mbps",
+    ]
+}
+
 /// `results.frames` keeps every frame up to this many (§8.2).
 pub const MAX_STRIP: usize = 3600;
 /// Raw latency samples kept in `results.samples_ms`.

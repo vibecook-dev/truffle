@@ -14,6 +14,7 @@ import { Page, Section } from '../components/Misc';
 import { Status } from '../components/Status';
 import { useConstructionFlag } from '../charts/construction';
 import { fmtAgo, fmtConnection, fmtNumber, fmtOs, plural, DASH } from '../lib/format';
+import { BuildOf } from './History';
 
 export function Peers() {
   const store = useAppStore();
@@ -67,7 +68,7 @@ export function Peers() {
     },
     {
       key: 'rtt',
-      label: 'Round trip',
+      label: 'RTT',
       num: true,
       render: (p) => (p.rtt_ms == null ? DASH : `${fmtNumber(p.rtt_ms)} ms`),
     },
@@ -78,18 +79,20 @@ export function Peers() {
         p.hello ? (
           <span className="mono">
             {p.hello.app.replace('truffle-bench-', '')} {p.hello.tool_version}
-            {p.hello.build_profile === 'debug' ? (
-              <>
-                {' '}
-                <span className="chip flag">debug</span>
-              </>
-            ) : (
-              <span className="muted"> release</span>
-            )}
           </span>
         ) : (
           DASH
         ),
+    },
+    {
+      key: 'build',
+      label: 'Build',
+      // its own column: a debug peer makes every run against it unrepresentative
+      render: (p) => (
+        <span className="mono">
+          <BuildOf profile={p.hello?.build_profile} />
+        </span>
+      ),
     },
     {
       key: 'host',
@@ -196,7 +199,7 @@ export function Peers() {
                 ['Hostname', peer.hostname, true],
                 ['Login', peer.login_name ?? DASH, true],
                 ['Path', peer.online ? fmtConnection(peer.connection) : 'offline', true],
-                ['Round trip', peer.rtt_ms == null ? DASH : `${fmtNumber(peer.rtt_ms)} ms`, true],
+                ['RTT', peer.rtt_ms == null ? DASH : `${fmtNumber(peer.rtt_ms)} ms`, true],
               ]}
             />
           </article>
@@ -207,7 +210,7 @@ export function Peers() {
                   ? [
                       ['Tool', `${h.app} ${h.tool_version}`, true],
                       ['truffle', h.truffle_version, true],
-                      ['Build', h.build_profile, true],
+                      ['Build', <BuildOf profile={h.build_profile} />, true],
                       [
                         'System',
                         `${fmtOs(h.os)} ${h.arch}${h.logical_cpus ? ` · ${h.logical_cpus} CPUs` : ''}`,

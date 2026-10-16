@@ -57,6 +57,22 @@ use crate::workloads::{ResponderCtx, ResponderRun, RunCtx, WorkloadOutput};
 /// `file-transfer` is implemented.
 pub const IMPLEMENTED: bool = true;
 
+/// The Progress sample keys a run with these params can set: the
+/// initiator's own and the responder's `tick`s, which the hub merges in.
+/// [`live_keys`](super::live_keys) adds the path sampler's `loaded_rtt_ms`
+/// for time-based runs; `live-keys.json` in the schema fixtures is built
+/// from it.
+pub fn live_keys(_p: &FileTransferParams) -> Vec<&'static str> {
+    vec![
+        "wire_mbps",
+        "e2e_mbps",
+        "hash_ms",
+        "negotiate_ms",
+        "transfer_ms",
+        "iterations_done",
+    ]
+}
+
 /// How long the initiator waits for an iteration's `ft.done` (§8.2).
 pub const FT_DONE_TIMEOUT: Duration = Duration::from_secs(60);
 /// After a failed `send_file`, how long to wait for the responder's view.

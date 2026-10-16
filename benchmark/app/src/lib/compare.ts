@@ -8,6 +8,7 @@ import type {
   SummaryItem,
   WorkloadParams,
 } from '../api/types';
+import { labelOf } from '../workloads/registry';
 
 /** Run-length fields compare_key leaves out, unless `unkeyedParams` keeps one (§7.4). */
 export const UNKEYED_PARAMS = new Set([
@@ -141,7 +142,8 @@ export function deltas(a: SummaryItem[], b: SummaryItem[]): Delta[] {
     }
     return {
       key,
-      label: meta.label,
+      // Older reports keep the label they were written with; show today's.
+      label: labelOf(meta),
       unit: meta.unit,
       better: meta.better,
       a: va,
@@ -207,6 +209,22 @@ export function liveBasis(
     sameKeyedParams(history.params, live.params)
     ? history
     : null;
+}
+
+/**
+ * The run a benchmark view shows when no run of this window is going: the newest of the workload
+ * (never an imported one) in the form's mode, so a latency result never sits under a throughput
+ * form. `other` is the newest run of another mode when there is none in this one, for a link.
+ * A summary without a mode (an older engine) matches any mode.
+ */
+export function shownRunOf(
+  runs: RunSummary[],
+  workload: string,
+  mode: string | null,
+): { latest: RunSummary | null; other: RunSummary | null } {
+  const mine = runs.filter((r) => r.workload === workload && r.tool !== 'imported');
+  const latest = mine.find((r) => mode == null || r.mode == null || r.mode === mode) ?? null;
+  return { latest, other: latest || mode == null ? null : (mine[0] ?? null) };
 }
 
 /** Both sides' build profiles as one, as `RunSummary.build_profile` has it (debug wins). */

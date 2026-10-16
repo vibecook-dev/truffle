@@ -7,7 +7,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { RunReport, WorkloadParams } from '../api';
-import { liveBasis } from '../lib/compare';
+import { combinedProfile, liveBasis, shownRunOf } from '../lib/compare';
 import { useAppState, useAppStore } from '../state/context';
 import { runBlockReason, type LiveRun } from '../state/store';
 import { useConstructionFlag } from '../charts/construction';
@@ -32,12 +32,17 @@ import { MOD, useViewActions } from '../hooks/useShortcuts';
 import {
   editParams,
   lowerBoundOf,
+  modeOf,
+  modeWord,
+  paramsLabel,
   textOf,
   validateParams,
   visibleFields,
+  withArticle,
   type FieldMeta,
   type WorkloadMeta,
 } from '../workloads/registry';
+import { Flags } from './History';
 import type { Page } from '../hooks/useRoute';
 import {
   DistributionTable,
@@ -71,6 +76,19 @@ const BAD_WHEN_HIGH = new Set(['loss_pct', 'drop_pct', 'dropped_pct', 'error_pct
 
 const terminal = (p: string) => p === 'done' || p === 'failed' || p === 'cancelled';
 
+/** Dev only, for screenshots: ?form_mode=latency starts the form in that mode. */
+const DEV_FORM_MODE =
+  import.meta.env.DEV && typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.search).get('form_mode')
+    : null;
+
+function initialParams(meta: WorkloadMeta): WorkloadParams {
+  const f = meta.fields.find((x) => x.key === 'mode');
+  if (!DEV_FORM_MODE || f?.kind !== 'enum' || !f.options.some((o) => o.value === DEV_FORM_MODE))
+    return meta.defaults;
+  return { ...(meta.defaults as object), mode: DEV_FORM_MODE } as WorkloadParams;
+}
+
 export function BenchmarkFrame({
   meta,
   go,
@@ -83,18 +101,28 @@ export function BenchmarkFrame({
   const construction = useConstructionFlag();
   const target = store.target();
 
-  const [params, setParams] = useState<WorkloadParams>(meta.defaults);
-  const [preset, setPreset] = useState<string>(
-    meta.presets.find((p) => p.id === 'default')?.id ?? meta.presets[0]?.id ?? '',
+  const [params, setParams] = useState<WorkloadParams>(() => initialParams(meta));
+  const [preset, setPreset] = useState<string>(() =>
+    params === meta.defaults
+      ? (meta.presets.find((p) => p.id === 'default')?.id ?? meta.presets[0]?.id ?? '')
+      : '',
   );
   const [bad, setBad] = useState<Record<string, boolean>>({});
 
-  // the run on screen: this window's latest run of the workload, else the latest in history
+  // the run on screen: this window's run of the workload while it runs, or once done if it is in
+  // the form's mode; else the newest run in history in the form's mode (shownRunOf)
+  const formMode = modeOf(params);
   const liveId = s.current[meta.id];
-  const live: LiveRun | null = liveId ? (s.live[liveId] ?? null) : null;
-  const latest = useMemo(
-    () => s.runs.find((r) => r.workload === meta.id && r.tool !== 'imported') ?? null,
-    [s.runs, meta.id],
+  const liveAny: LiveRun | null = liveId ? (s.live[liveId] ?? null) : null;
+  const liveGoing = !!liveAny && !liveAny.report && !liveAny.error && !terminal(liveAny.phase);
+  const liveMode = modeOf(liveAny?.params ?? liveAny?.report?.params);
+  const live: LiveRun | null =
+    liveAny && (liveGoing || formMode == null || liveMode == null || liveMode === formMode)
+      ? liveAny
+      : null;
+  const { latest, other: otherMode } = useMemo(
+    () => shownRunOf(s.runs, meta.id, formMode),
+    [s.runs, meta.id, formMode],
   );
   const [history, setHistory] = useState<RunReport | null>(null);
   const latestId = latest?.run_id ?? null;
@@ -198,8 +226,48 @@ export function BenchmarkFrame({
       : '';
 
   const J = jy();
+  const word = modeWord(meta, formMode);
+  const shownSummary = report ? (s.runs.find((r) => r.run_id === report.run_id) ?? null) : null;
+  const shownStrip = running ? (
+    <ShownRun eyebrow="This run" label={unknownParams ? null : paramsLabel(shownParams)}>
+      <span className="caption muted">{live?.peer_name}</span>
+    </ShownRun>
+  ) : report ? (
+    <ShownRun
+      eyebrow={live ? 'This run' : word ? `Latest ${word} run` : 'Latest run'}
+      label={report.label}
+      flags={
+        shownSummary ? (
+          <Flags run={shownSummary} />
+        ) : combinedProfile(report.local.build_profile, report.peer?.build_profile) === 'debug' ? (
+          <span className="chip strong">debug</span>
+        ) : null
+      }
+    >
+      <span className="caption muted">
+        {[report.peer?.device_name, report.network.path_label].filter(Boolean).join(' · ')}
+      </span>
+      <span className="mono muted">{fmtWhen(report.started_at)}</span>
+    </ShownRun>
+  ) : otherMode ? (
+    <ShownRun eyebrow={`No ${word} run yet`} label={null}>
+      <span className="caption muted">
+        The latest {meta.label} run is {withArticle(modeWord(meta, otherMode.mode) ?? 'other')} run:{' '}
+        {otherMode.label}, {fmtWhen(otherMode.started_at)}.
+      </span>
+      <Button
+        size="small"
+        variant="quiet"
+        trailingIcon="arrow-right"
+        onClick={() => go('history', otherMode.run_id)}
+      >
+        Open that run
+      </Button>
+    </ShownRun>
+  ) : null;
   const centre = (
     <div className="bf-centre">
+      {shownStrip}
       {meta.notice ? (
         <Notice kind="quiet" title={meta.notice.title}>
           {meta.notice.text}
@@ -442,7 +510,7 @@ export function BenchmarkFrame({
         </span>
       ) : (
         <span className="bf-state">
-          <Status kind="waiting">No run yet</Status>
+          <Status kind="waiting">{word ? `No ${word} run yet` : 'No run yet'}</Status>
         </span>
       );
     return (
@@ -558,6 +626,33 @@ export function BenchmarkFrame({
       </div>
     );
   }
+}
+
+/**
+ * Which run the view shows, above its numbers: what it is (this run, the latest run in the form's
+ * mode, or none in that mode yet), its label in Jost at reading size, and its flags.
+ */
+function ShownRun({
+  eyebrow,
+  label,
+  flags,
+  children,
+}: {
+  eyebrow: string;
+  label: string | null;
+  flags?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="bf-shown" data-measure="shown run">
+      <span className="label">{eyebrow}</span>
+      <div className="bf-shown-row">
+        {label ? <span className="bf-shown-label">{label}</span> : null}
+        {flags ?? null}
+        <span className={`bf-shown-meta${label ? '' : ' alone'}`}>{children}</span>
+      </div>
+    </div>
+  );
 }
 
 function ParamField({

@@ -180,8 +180,8 @@ Or `just app-dev` and `just app-build`.
   --out-dir`, CI artefacts, the app's data folder) into `benchmark/app/dev-reports/`
   (gitignored; subfolders are fine) and open `http://127.0.0.1:47183/?real=1`:
   History, Run detail, Compare and Overview then show those reports instead of the
-  mock's. The dev server reads the folder on each load (`/__dev-reports`); a build
-  never sees it.
+  mock's; `&real_dir=<subfolder>` shows one subfolder only. The dev server reads the
+  folder on each load (`/__dev-reports`); a build never sees it.
 - `app:build` first runs `scripts/prepare-sidecar.mjs`, which builds the Go sidecar
   (`CGO_ENABLED=0 go build -ldflags "-s -w"`) into `src-tauri/binaries/` (gitignored),
   then `tauri build` with `src-tauri/tauri.bundle.conf.json`. The bundle lands in
@@ -247,7 +247,9 @@ TRUFFLE_BENCH_SELFTEST_PARAMS='[{"workload":"path"},{"workload":"tcp","duration_
 
 **Signing in.** "Sign in with Tailscale" shows the login URL (Open, Copy) and adds
 a device named after the machine to your tailnet. If your tailnet requires device
-approval, approve it in the admin console. For tests, `TRUFFLE_BENCH_AUTH_KEY` in
+approval, sign-in says so and offers "Open admin console"; approve the device there
+and it continues on its own (every sidecar reports approval; older hubs, whose
+core dropped that event, only hint at it after 30 s). For tests, `TRUFFLE_BENCH_AUTH_KEY` in
 the app's environment signs in without a browser (dev and test only); a tagged key
 makes a tagged device, which pairs with a `truffle-bench serve` that also uses a key.
 
@@ -295,7 +297,7 @@ none); `schema/fixtures/report-<mode>.json` holds a generated example of each.
 
 | Workload | Variants (params) | Measures | Summary keys |
 |---|---|---|---|
-| `path` | `count`, `interval_ms` | Disco ping RTT and which path answered; start-up costs | `rtt_min_ms`, `rtt_p50_ms`, `rtt_max_ms`, `loss_pct` (results also hold `first_rtt_ms`, `hub_start_ms`, `discovery_ms`, `ws_connect_ms`) |
+| `path` | `count`, `interval_ms` | Disco ping RTT and which path answered; start-up costs | `rtt_p50_ms`, `rtt_min_ms`, `rtt_max_ms`, `loss_pct` (results also hold `first_rtt_ms`, `hub_start_ms`, `discovery_ms`, `ws_connect_ms`) |
 | `tcp` | `mode` throughput \| latency; `direction` upload \| download \| bidirectional; `streams`; `nodelay` | Raw TCP over `open_tcp` / `listen_tcp` | throughput: `goodput_mbps`, `connect_ms`, `cpu_ms_per_mb`, `loaded_rtt_p50_ms`, plus `upload_mbps`, `download_mbps` when bidirectional; latency: `rtt_p50_ms`, `rtt_p99_ms`, `rtt_max_ms` |
 | `udp` | `mode` stream \| echo \| ramp; `direction`; `payload_bytes`; `rate_mbps`; `pps` | Datagrams over `bind_udp`: paced load, loss, reorder, jitter | stream: `goodput_mbps`, `offered_mbps`, `loss_pct`, `jitter_ms`, `cpu_ms_per_mb`; echo: `rtt_p50_ms`, `rtt_p99_ms`, `loss_pct`; ramp: `max_sustainable_mbps`, `offered_mbps`, `loss_pct` |
 | `quic` | as tcp, `streams` default 4 | QUIC over `connect_quic`, one stream per worker | throughput: as tcp, plus a flow-control ceiling note; latency: `rtt_p50_ms`, `rtt_p99_ms`, `rtt_max_ms`, `connect_ms` |
@@ -499,6 +501,12 @@ UPDATE_SCHEMA=1 cargo test --locked -p truffle-bench schema_is_current
 ```
 
 The app's TypeScript types are checked against the same fixtures (vitest + `tsc`).
+`fixtures/live-keys.json` lists the Progress sample keys each mode can set
+(`workloads::live_keys`: the initiator's own, the responder's ticks and the path
+sampler's `loaded_rtt_ms`); the app's live KPIs and charts may read only those, and
+the `live_pair` test fails if a run sets a key its mode doesn't declare. Summary
+labels name one measure one way everywhere: `RTT p50`, `RTT p99`, `RTT max`,
+`RTT p50 under load`, `Loss`.
 
 | Field | Holds |
 |---|---|
@@ -553,13 +561,146 @@ The app bundle itself is not built in CI.
 
 ## What we found so far
 
+- [Core fixes, same host: before and after (2026-10-16)](#core-fixes-same-host-before-and-after-2026-10-16)
+- [Same host, release builds (2026-10-16)](#same-host-release-builds-2026-10-16)
+- [Two machines, first run (2026-10-16)](#two-machines-first-run-2026-10-16)
+- [Getting a fair two-machine number](#getting-a-fair-two-machine-number)
+
+### Core fixes, same host: before and after (2026-10-16)
+
+The core and sidecar change that follows the hub commits on `feat/benchmark-hub`
+(`feat(core)`, sidecar protocol 8) fixes the root causes the hub had worked around.
+These are **same-host numbers on one Mac** (release builds, `pair` mode), measured
+on **2026-10-16** two ways:
+
+- the `full` suite before (12:04 UTC) and after (18:22 UTC), one run per item;
+- an interleaved A/B in one window (18:29–18:54 UTC): the hub commit `997c0bd`
+  against the change, alternating, medians shown. 16 items got 2 runs per side;
+  TCP upload with 1 and 4 streams, egress and HTTP direct keep-alive got 4 more
+  (6 per side). QUIC throughput and TCP bidirectional had 2 runs per side.
+
+Not every suite move above 15% was rerun. These remain **unconfirmed single runs**:
+TCP latency 32 KiB with Nagle on (p50 +31%, 1.31 → 1.72 ms; p99 +34%), UDP stream
+jitter at 1200 / 1252 / 1253 B (+70% / +120% / +72%), video frame latency p50 over
+QUIC and TCP (−26%), SyncedStore burst write (+18%), and some p99 and max tails
+(for example TCP latency 1 KiB p99 +39%, HTTP proxy keep-alive 2 workers p99
++27%). The UDP ramp item is not
+comparable between the two suites: before ran from 10 Mb/s for 10 s, after from
+50 Mb/s for 30 s.
+
+| Item (connection set-up first) | Before | After | Change |
+|---|---|---|---|
+| HTTP proxy, new connection per request, 4 workers | 24.6 req/s, p50 140 ms, p99 199 ms | 451 req/s, p50 0.79 ms, p99 5.1 ms | ×18 req/s |
+| (suite) | 26.1 req/s, p50 153 ms | 408 req/s, p50 0.91 ms | ×16 |
+| QUIC connect (throughput / latency item) | 43.3 / 43.6 ms | 1.79 / 1.45 ms | −96% |
+| File transfer 10 MiB × 3, wire / end to end | 384 / 325 Mb/s | 482 / 401 Mb/s | +25% / +23% |
+| File transfer `negotiate_ms` | 31.0 ms | 27.1 ms | −12% |
+| Path p50 (suite) | 0.408 ms | 0.377 ms | −8% |
+| WebSocket request/reply p50 | 0.274 ms | 0.267 ms | −3% |
+| SyncedStore ping-pong p50 | 0.178 ms | 0.192 ms | +8% (0.014 ms) |
+| TCP latency 32 KiB p50 | 1.38 ms | 1.48 ms | +8% (one run of two at 1.60) |
+| QUIC latency 64 B p50 | 0.226 ms | 0.240 ms | +6% |
+| UDP echo p99 | 1.54 ms | 1.14 ms | −26% |
+| HTTP proxy keep-alive, 1 worker | 3,456 req/s | 3,705 req/s | +7% |
+| HTTP direct keep-alive, 4 workers | 9,663 req/s | 9,744 req/s | +1% |
+| WebSocket stream 64 B | 221.7k msg/s | 219.1k msg/s | −1% |
+| TCP / egress / QUIC throughput | see below | see below | no change |
+
+- **The HTTP new-connection row is mostly 1 s stalls.** In each run 32–37 of the
+  4,000 recorded requests (0.8–0.9%) waited one 1.00 s SYN retransmit: a new
+  connection that collided with a 4-tuple still in the sidecar netstack's 1 s
+  TIME_WAIT (below). p50 and p99 hide them, but they are ~90% of the mean request
+  time (8.9–10.2 ms; 0.8–0.9 ms without them). Without the stalls, 4 workers would
+  run at roughly 4,000–5,000 req/s.
+- **Throughput did not regress.** It stays bimodal on this Mac: every TCP and egress
+  run lands near 330–365 or near 480–550 Mb/s, and both builds hit both modes (TCP
+  1 stream: before 344–363 and 488–508, after 333–363 and 500–502; 4 streams: before
+  326–366 and 480–489, after 328 and 448–499; egress: before 353–362 and 476–550,
+  after 360–361 and 483–494). Which mode a run lands in is chance, so single-run
+  swings of ±35% in the suite are not changes. QUIC with 4 streams: 403 Mb/s on both
+  (2 runs per side).
+- **The setup-sensitive moves under 15% are noise.** Sub-millisecond latencies moved
+  by 0.01–0.1 ms in both directions between runs of the same build.
+- **The suite's other large moves did not repeat** in the A/B: UDP echo p99 11.2 ms,
+  UDP 1400 B jitter 0.72 ms, WebSocket stream 169k msg/s and HTTP keep-alive 1 worker
+  3,048 req/s were single-run outliers.
+- **Pair start is unchanged:** 2.4–2.8 s or 7.2–7.7 s (before 3 of 8 fast, after 4 of 8).
+  The slow starts are the open ~5 s first dial below.
+
+**Restart scenario** (two processes: `serve`, `kill -9`, restart with the same name
+and saved state, then `run tcp` for 3 s at once; 10 repetitions per build):
+
+| Build | Runs ok | Run time, ok runs | The rest |
+|---|---|---|---|
+| Before (`997c0bd`) | 9 of 10 | 6.9–7.7 s (one 35.3 s) | 1 failed after 30 s: "no hello.ack from the peer" |
+| Core fix only | 9 of 10 | 6.6–8.0 s, one 11.8 s (one 35.1 s) | 1 failed in 2.4 s: the responder refused while its own login was still unknown |
+| Core fix + the responder waits for its own login (§14 #24) | 9 of 10 | 6.9–7.3 s | 1 failed in 7.3 s: `peer-not-found` |
+| Core fix + both hub admission fixes (§14 #24) | 10 of 10 | 6.9–7.4 s in 5, 12.3 s in 1, ~35 s in 4 | none |
+
+The run takes ~7 s when nothing waits: CLI hub start (0.1–2.1 s), 3 s of TCP after
+a 1 s warmup, settle, clock and finish. Five repetitions earlier the same day,
+before the fix, took 5.7–11.1 s. The sets ran one after another, and each left two
+more offline devices on the tailnet, so the slow cases below grew more frequent
+over the sets.
+
+- **The login race is gone.** A fast restart (the responder up in ~0.13 s) still
+  comes up without its login, but core now reports it ~1.9 s later, and the
+  responder waits for it rather than refuse the run.
+- **The ~35 s runs are one remaining core problem, in both builds.** Core's Layer 3
+  drops peer events when a burst arrives at start ("event processor lagged by
+  ~75–95 events", with 7–11 peers on the tailnet plus offline test devices), so one
+  side learns of the other only ~30 s later: either the initiator waits for the
+  peer, or the responder answers `peer-not-found`. Before, that ended the run after
+  30 s; now `prepare` is re-sent every second until the responder lists the
+  initiator, so the run completes late instead of failing.
+
+**What changed underneath**, and what the hub keeps (§14 #20–#24 of RFC 027):
+
+- **~41 ms per new tailnet connection: resolved.** Every LocalAPI call in the sidecar
+  (WhoIs per accepted connection among them) looked up the macOS Tailscale app's
+  token (`lsof`, under a process-wide lock), so new connections queued behind each
+  other. The sidecar's LocalAPI client now omits that token (tsnet's in-memory
+  LocalAPI needs none): WhoIs now takes ~86 µs (median; 51–431 µs over 175 accepts,
+  same-host pair), down from ~41 ms. This also took QUIC's connect from
+  ~43 ms to ~1.6 ms and most of file transfer's fixed cost.
+- **30 s dial stalls on reused ports: bounded to ~1 s, not gone.** A SYN for a
+  4-tuple still in the sidecar netstack's 60 s TIME_WAIT was dropped silently;
+  TIME_WAIT is now 1 s. The 0.5–0.6% HTTP timeouts with new connections are gone,
+  but a SYN that still collides waits one ~1 s retransmit: 0.8–0.9% of new
+  connections at ~410–450 per second (see "Still open").
+- **Proxy keep-alive above 2 workers: resolved.** The sidecar's proxy keeps 64 idle
+  upstream connections per host (was Go's 2). The http note now reports reconnects
+  only when the peer's server saw them.
+- **Login unknown after a fast restart: resolved.** The sidecar re-sends the login
+  once the netmap names it, and core reports `NetworkStatusEvent::LoginKnown`. The
+  hub waits for that event (5 s) before it asks the LocalAPI, and admission waits up
+  to 10 s for its own login instead of refusing a run. An initiator re-sends a
+  `prepare` refused with `peer-not-found` every second within its 30 s timeout.
+- **Stale WebSocket after a peer restart, and "connection already in progress":
+  resolved.** Core installs a re-dialled connection from a restarted peer on the
+  accepting side and shares one dial per peer among its callers. The hub's hello
+  re-send and send retries stay, for peers on older cores; against this core they
+  fire only on a genuine failure.
+- **Device approval: resolved.** Core forwards `tsnet:needsApproval`; the app shows an
+  approval step and the CLI prints the admin console link.
+- **Still open:** the ~5 s first WebSocket dial when both hubs dial at once (crossing
+  WireGuard handshakes); the ~1 s stall when a new connection hits a 4-tuple still
+  in the 1 s TIME_WAIT (0.8–0.9% of new connections at ~450/s, growing with the
+  connection rate); `ft.done` ~100 ms late; core's session broadcast drops at
+  ~250k msg/s; Layer 3 dropping peer events when many arrive at once ("event
+  processor lagged by ~80 events", no resync afterwards), which in the restart
+  scenario made a run wait ~30 s for its peer (both builds).
+
+### Same host, release builds (2026-10-16)
+
 These are **same-host observations on one Mac** (Apple silicon, 10 logical CPUs,
 release builds), from the engine's `full` and `nightly` suites in `pair` mode and a
 `serve` + `suite --peer` run in two processes, all on **2026-10-16**. Both ends shared
 one machine, so they measure the bridges, the netstacks and the sidecars, not a
 network link; treat them as leads to check across two machines, not as results.
 
-- **New tailnet connections cost about 41 ms each, one at a time.** HTTP with a new
+- **Resolved (core fix above): new tailnet connections cost about 41 ms each, one at a
+  time.** HTTP with a new
   connection per request reaches ~26 req/s whatever the worker count: one worker sees
   p50 ≈ 41 ms, four see p50 ≈ 153 ms, while `open_tcp` itself returns in about 1 ms.
   The cost lands on the first bytes, and it is serialised across connections. It very
@@ -585,7 +726,8 @@ network link; treat them as leads to check across two machines, not as results.
   1.69 ms). 64 B and 1 KiB never differ (~0.24 ms).
 - **QUIC against TCP.** 4 QUIC streams: 390–467 Mb/s; 1 TCP stream: 351–503 Mb/s;
   4 TCP streams: 316–506 Mb/s. QUIC connects in ~41–46 ms (relay set-up and TLS)
-  against ~0.8 ms for TCP, and is slightly faster per round trip (p50 0.20 vs 0.23 ms
+  against ~0.8 ms for TCP (resolved: ~1.6 ms since the core fix above), and is
+  slightly faster per round trip (p50 0.20 vs 0.23 ms
   at 64 B). Video frames complete faster over QUIC (p50 2.9–3.1 ms) than over TCP
   (3.6–4.0 ms); paced UDP spreads each frame over its 33 ms slot by design (~34 ms).
 - **The sidecars are the ceiling.** At ~350–500 Mb/s the two sidecars together use
@@ -604,6 +746,64 @@ network link; treat them as leads to check across two machines, not as results.
   rate or a longer run to find the ceiling.
 - **Starting a pair.** The first WebSocket dial to a just-joined peer sometimes takes
   ~5 s (most likely the WireGuard handshake retry), so a pair start takes 3.5 s or ~8 s.
+  Still open: both hubs dial within the same millisecond, their WireGuard handshake
+  initiations cross, and WireGuard retries after 5 s.
+- **Resolved (core fix above): restarts and reused device names.** A peer that
+  restarted kept being refused for ~5 s ("connection missing after connect",
+  "connection already in progress"), and a fast restart came up with its login
+  unknown. The hub's retries kept runs working; core now fixes both.
+
+### Two machines, first run (2026-10-16)
+
+The first run between two machines: the app's `smoke` suite from a MacBook to a Mac
+mini on the same LAN (both Apple silicon, 10 logical CPUs, macOS; truffle 0.7.17), on
+**2026-10-16** at 16:55 UTC. All 10 items ended `ok` in about 51 s, every report says
+`separate-hosts`, and every one has the path label `direct`: the bytes went over the
+LAN, never through DERP.
+
+**The initiator was a debug build** (`app:dev`); the responder was a release build.
+So the throughput and CPU numbers are **not representative** and must not be set
+against the release numbers above: TCP 25.7 Mb/s, QUIC 116.3 Mb/s, egress 17.8 Mb/s,
+file-transfer wire 33.5 Mb/s, and 127–202 ms of CPU per MB. Every one of these
+reports carries the `debug` flag, and its compare key differs from a release run's,
+so it never joins a release trend.
+
+What the run does show. Round trips suffer less: at ~6 ms the network dominates them,
+though the debug build may still add a little to the WebSocket, HTTP and SyncedStore
+numbers.
+
+- **Base RTT is about 6 ms, with spikes near 100 ms.** Disco pings: min 5.8 ms,
+  p50 6.7 ms, but 2 of 9 measured pings took 63 and 81 ms. The same shape shows in
+  every round-trip workload: WebSocket request/reply p50 8.3 ms and p99 97.8 ms; HTTP
+  through the sidecar proxy p50 11.5 ms and p99 101.6 ms; the settle pings before
+  and after the runs ranged from 4.8 to 96.6 ms. The median sits on the base RTT and
+  the tail jumps to about 100 ms, which is typical of Wi-Fi power saving on one of
+  the machines. That is likely, not confirmed: the reports don't record the link
+  type.
+- **SyncedStore converges in about one round trip.** Convergence p50 3.9 ms (the
+  RTT/2 estimate), so about 7.9 ms from `set()` to the echo, roughly 1 ms over the
+  ping.
+- **Paced media is fine on this path.** UDP at 5 Mb/s lost nothing (jitter 2.6 ms).
+  Video 720p30 over UDP delivered 30 fps with 0% late and 0% dropped; frame latency
+  p50 38.4 ms ± 3.3 ms, most of it the 33 ms over which each frame is paced.
+
+### Getting a fair two-machine number
+
+1. **Release builds on both machines.** `pnpm --filter @vibecook/truffle-bench-app
+   app:build` (or `app:dev:release` while developing), or the CLI with `--release`:
+   `truffle-bench serve` on one machine and `truffle-bench suite --profile smoke
+   --peer <name>` on the other. The app shows a "Debug build" bar above every page
+   while either end is a debug build, and Peers shows each peer's build in its own
+   column; neither should say debug.
+2. **Run `smoke` first** (about a minute; every workload once), then `standard`
+   (every workload at its defaults). Check History: path `direct`, `2 hosts`, no
+   `debug` flag. The CLI's `nightly` refuses a debug build on either side unless you
+   pass `--allow-debug`.
+3. **Run it more than once.** Throughput moved between ~350 and ~500 Mb/s from run to
+   run even on one host, so compare medians of several runs with the same settings;
+   the Overview trend only joins those.
+4. **Prefer a wired link on at least one side** if you want throughput rather than
+   Wi-Fi behaviour. On Wi-Fi, expect the ~100 ms p99 spikes above.
 
 ## Planned
 
@@ -619,4 +819,3 @@ Shown in the app's Planned view, with reasons:
 - Broadcast fan-out (needs three or more nodes)
 - A live camera (WebCodecs) and a video ramp
 - A Taildrop comparison
-- `tsnet:needsApproval` surfaced by core

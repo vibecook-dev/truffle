@@ -42,6 +42,13 @@ pub enum NodeStatus {
     Starting,
     /// The node waits for an interactive login (`auth_url` is set).
     NeedsLogin,
+    /// The tailnet has device approval on and an admin has not approved this
+    /// device (`tailscale_hostname`) yet. The node keeps waiting and runs as
+    /// soon as it is approved in the Tailscale admin console (Machines).
+    /// Every sidecar reports it (`tsnet:needsApproval`, since RFC 008 phase
+    /// 2); cores before `NodeBuilder::on_network_status` dropped the event,
+    /// so hubs built on them stay in `needs-login` or `starting` instead.
+    NeedsApproval,
     /// The node is up; `local` is set.
     Running,
     /// `Hub::stop` is tearing down.
@@ -1009,6 +1016,11 @@ pub struct RunSummary {
     pub suite_id: Option<String>,
     /// Workload.
     pub workload: Workload,
+    /// The workload's mode (`params.mode`: `throughput`, `latency`, `echo`,
+    /// `rr`, `pingpong`, …), or `None` for a workload without modes. The app
+    /// picks the latest run of the mode its form is in from this.
+    #[serde(default)]
+    pub mode: Option<String>,
     /// Params label.
     pub label: String,
     /// Outcome.

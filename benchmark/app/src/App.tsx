@@ -22,7 +22,36 @@ import { CompareView } from './views/Compare';
 import { Settings } from './views/Settings';
 import { MOD, useShortcuts } from './hooks/useShortcuts';
 import { REGISTRY, WORKLOAD_ORDER, metaForPage } from './workloads/registry';
-import type { WorkloadKind } from './api';
+import type { BuildProfile, WorkloadKind } from './api';
+
+/**
+ * Above every view while either end of a run would be a debug build: ink on paper, so it reads
+ * before the numbers do, and never redline (a debug build is a choice, not an error). An empty
+ * div otherwise, so the host's grid keeps its rows.
+ */
+function BuildBar({
+  here,
+  target,
+  targetName,
+}: {
+  here: BuildProfile | null;
+  target: BuildProfile | null;
+  targetName: string | null;
+}) {
+  const local = here === 'debug';
+  const peer = target === 'debug';
+  if (!local && !peer) return <div />;
+  const who = local && peer ? `This device and ${targetName}` : local ? 'This device' : targetName;
+  return (
+    <div className="build-bar debug" role="status">
+      <span className="label">Debug build</span>
+      <span>
+        {who} {local && peer ? 'run debug builds' : 'runs a debug build'}: throughput and CPU
+        numbers aren’t representative and don’t compare with release builds.
+      </span>
+    </div>
+  );
+}
 
 /** The places ⌘1…⌘9 go to, in rail order. */
 const railOrder: Page[] = [
@@ -264,13 +293,11 @@ export function App() {
         <div className="app-body">
           <Rail route={route} compact={compact} groups={groups} foot={foot} />
           <main className={`host${tool ? '' : ' scroll'}`}>
-            {s.appInfo?.build_profile === 'debug' ? (
-              <div className="build-bar caption">
-                Debug build: numbers are not comparable with release builds
-              </div>
-            ) : (
-              <div />
-            )}
+            <BuildBar
+              here={s.appInfo?.build_profile ?? null}
+              target={store.target()?.hello?.build_profile ?? null}
+              targetName={store.target()?.device_name ?? null}
+            />
             <div className="host-view">{view}</div>
           </main>
         </div>

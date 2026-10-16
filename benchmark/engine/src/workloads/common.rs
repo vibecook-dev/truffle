@@ -57,7 +57,7 @@ pub fn cpu_per_mb_item() -> SummaryItem {
 pub fn loaded_rtt_item() -> SummaryItem {
     SummaryItem::new(
         KEY_LOADED_RTT_P50,
-        "RTT under load (p50)",
+        "RTT p50 under load",
         None,
         "ms",
         Better::Lower,

@@ -223,7 +223,7 @@ export function PathTimeline({
               {
                 key: 'r',
                 value: hp.rtt_ms == null ? 'lost' : `${fmtNumber(hp.rtt_ms)} ms`,
-                label: 'round trip',
+                label: 'RTT',
               },
             ]}
           />

@@ -556,12 +556,16 @@ impl Drop for Inner {
     }
 }
 
-/// Starting, needing login, running or stopping: the hub owns a node (or is
-/// building one), so its config cannot change.
+/// Starting, needing login or approval, running or stopping: the hub owns a
+/// node (or is building one), so its config cannot change.
 pub fn is_live(status: NodeStatus) -> bool {
     matches!(
         status,
-        NodeStatus::Starting | NodeStatus::NeedsLogin | NodeStatus::Running | NodeStatus::Stopping
+        NodeStatus::Starting
+            | NodeStatus::NeedsLogin
+            | NodeStatus::NeedsApproval
+            | NodeStatus::Running
+            | NodeStatus::Stopping
     )
 }
 

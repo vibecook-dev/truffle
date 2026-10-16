@@ -482,7 +482,7 @@
     {
       "better": "lower",
       "key": "loaded_rtt_p50_ms",
-      "label": "RTT under load (p50)",
+      "label": "RTT p50 under load",
       "uncertainty": null,
       "unit": "ms",
       "value": 5.9

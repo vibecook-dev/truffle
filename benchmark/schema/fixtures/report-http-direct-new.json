@@ -264,7 +264,7 @@
   "series": [
     {
       "key": "req_per_sec",
-      "label": "Requests/s",
+      "label": "Requests per second",
       "points": [
         [
           630.000128,
@@ -454,7 +454,7 @@
     {
       "better": "higher",
       "key": "req_per_sec",
-      "label": "Requests/s",
+      "label": "Requests per second",
       "uncertainty": null,
       "unit": "req/s",
       "value": 28.6

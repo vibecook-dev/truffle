@@ -23,7 +23,7 @@ const PLANNED: { title: string; why: string }[] = [
   },
   {
     title: 'tsnet ceiling',
-    why: 'A benchmark inside the sidecar (protocol 8); until then, tsnet-bench is the native Go baseline.',
+    why: 'A benchmark inside the sidecar (a later sidecar protocol); until then, tsnet-bench is the native Go baseline.',
   },
   {
     title: 'Latency waterfall',
@@ -53,10 +53,6 @@ const PLANNED: { title: string; why: string }[] = [
   {
     title: 'Taildrop comparison',
     why: 'The same file through Tailscale’s Taildrop, as a reference for file transfer.',
-  },
-  {
-    title: 'Device approval in core',
-    why: 'Sign-in can only hint at device approval until core forwards tsnet’s needsApproval event.',
   },
   {
     title: 'Video ramp',

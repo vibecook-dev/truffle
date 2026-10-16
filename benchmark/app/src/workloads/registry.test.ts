@@ -4,11 +4,67 @@ import {
   REGISTRY,
   WORKLOAD_ORDER,
   editParams,
+  headlineOf,
+  labelOf,
   lowerBoundOf,
+  modeOf,
+  modeWord,
   paramsLabel,
+  shortLabelOf,
   validateParams,
   visibleFields,
+  withArticle,
 } from './registry';
+import { MODE_EXAMPLES } from '../api/examples';
+
+describe('headline labels for one line', () => {
+  it('are short for every mode’s headline, with no parenthesis', () => {
+    for (const [name, { report }] of Object.entries(MODE_EXAMPLES)) {
+      const head = headlineOf(report);
+      expect(head, name).not.toBeNull();
+      const short = shortLabelOf(head!);
+      expect(short.length, `${name}: "${short}"`).toBeLessThanOrEqual(16);
+      expect(short, name).not.toMatch(/[()]/);
+    }
+  });
+  it('drop a trailing parenthesis and keep the rest', () => {
+    expect(
+      shortLabelOf({ key: 'convergence_p50_ms', label: 'Convergence p50 (RTT/2 estimate)' }),
+    ).toBe('Convergence p50');
+    expect(shortLabelOf({ key: 'x', label: 'Frame latency p50 (± 1 ms)' })).toBe(
+      'Frame latency p50',
+    );
+    expect(shortLabelOf({ key: 'rtt_p50_ms', label: 'RTT p50' })).toBe('RTT p50');
+    expect(shortLabelOf({ key: 'req_per_sec', label: 'Requests per second' })).toBe('Requests');
+  });
+  it('read reports from before the RTT rename the way new ones say it', () => {
+    expect(labelOf({ key: 'rtt_p50_ms', label: 'Round trip p50' })).toBe('RTT p50');
+    expect(labelOf({ key: 'rtt_max_ms', label: 'Slowest round trip' })).toBe('RTT max');
+    expect(labelOf({ key: 'req_per_sec', label: 'Requests/s' })).toBe('Requests per second');
+    expect(shortLabelOf({ key: 'rtt_p50_ms', label: 'Round trip p50' })).toBe('RTT p50');
+    expect(labelOf({ key: 'wire_mbps', label: 'Wire' })).toBe('Wire');
+  });
+  it('match what the engine writes now', () => {
+    for (const [name, { report }] of Object.entries(MODE_EXAMPLES))
+      for (const item of report.summary) expect(labelOf(item), name).toBe(item.label);
+  });
+});
+
+describe('modes', () => {
+  it('reads the mode of the workloads that have one, as RunSummary.mode does', () => {
+    for (const { mode, report } of Object.values(MODE_EXAMPLES))
+      expect(modeOf(report.params)).toBe(mode);
+    expect(modeOf(null)).toBeNull();
+  });
+  it('names a mode as its switch does, in a sentence', () => {
+    expect(modeWord(REGISTRY.tcp, 'latency')).toBe('latency');
+    expect(modeWord(REGISTRY.ws, 'rr')).toBe('request/reply');
+    expect(modeWord(REGISTRY['synced-store'], 'pingpong')).toBe('ping-pong');
+    expect(modeWord(REGISTRY.path, null)).toBeNull();
+    expect(withArticle('echo')).toBe('an echo');
+    expect(withArticle('throughput')).toBe('a throughput');
+  });
+});
 
 describe('workload registry', () => {
   it('covers every workload, in the rail order', () => {

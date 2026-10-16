@@ -169,6 +169,16 @@ pub enum StreamMode {
     Latency,
 }
 
+impl StreamMode {
+    /// As serialised.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Throughput => "throughput",
+            Self::Latency => "latency",
+        }
+    }
+}
+
 /// tcp / quic direction, seen from the initiator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -206,6 +216,17 @@ pub enum UdpMode {
     Ramp,
 }
 
+impl UdpMode {
+    /// As serialised.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stream => "stream",
+            Self::Echo => "echo",
+            Self::Ramp => "ramp",
+        }
+    }
+}
+
 /// ws mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -217,6 +238,16 @@ pub enum WsMode {
     Stream,
 }
 
+impl WsMode {
+    /// As serialised.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rr => "rr",
+            Self::Stream => "stream",
+        }
+    }
+}
+
 /// synced-store mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -226,6 +257,16 @@ pub enum StoreMode {
     Pingpong,
     /// `count` writes back to back.
     Burst,
+}
+
+impl StoreMode {
+    /// As serialised.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pingpong => "pingpong",
+            Self::Burst => "burst",
+        }
+    }
 }
 
 /// http target.
@@ -813,6 +854,24 @@ impl WorkloadParams {
             Self::Video(_) => Workload::Video,
             Self::Egress(_) => Workload::Egress,
         }
+    }
+
+    /// The mode as its params spell it (`throughput`, `echo`, `rr`,
+    /// `pingpong`, …), for the workloads that have one: tcp, udp, quic, ws
+    /// and synced-store. `None` for the rest.
+    pub fn mode(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Tcp(p) => p.mode.as_str(),
+            Self::Quic(p) => p.mode.as_str(),
+            Self::Udp(p) => p.mode.as_str(),
+            Self::Ws(p) => p.mode.as_str(),
+            Self::SyncedStore(p) => p.mode.as_str(),
+            Self::Path(_)
+            | Self::FileTransfer(_)
+            | Self::Http(_)
+            | Self::Video(_)
+            | Self::Egress(_) => return None,
+        })
     }
 
     /// The defaults of every workload, in [`Workload::ALL`] order (`workload_defaults`).
@@ -1825,6 +1884,28 @@ mod tests {
         assert_eq!(
             WorkloadParams::Tcp(TcpParams::default()).responder_watchdog_after(1),
             None
+        );
+    }
+
+    #[test]
+    fn mode_is_the_serialised_mode() {
+        let mut all = WorkloadParams::defaults();
+        all.extend(
+            crate::workloads::mode_examples()
+                .into_iter()
+                .map(|e| e.params),
+        );
+        for p in all {
+            let v = serde_json::to_value(&p).unwrap();
+            assert_eq!(p.mode(), v["mode"].as_str(), "{}", p.workload());
+        }
+        assert_eq!(
+            WorkloadParams::Udp(UdpParams {
+                mode: UdpMode::Ramp,
+                ..Default::default()
+            })
+            .mode(),
+            Some("ramp")
         );
     }
 

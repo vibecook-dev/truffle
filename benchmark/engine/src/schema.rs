@@ -507,6 +507,7 @@ pub fn fixtures() -> Vec<(String, Value)> {
         ("idle", NodeStatus::Idle),
         ("starting", NodeStatus::Starting),
         ("needs-login", NodeStatus::NeedsLogin),
+        ("needs-approval", NodeStatus::NeedsApproval),
         ("running", NodeStatus::Running),
         ("stopping", NodeStatus::Stopping),
         ("stopped", NodeStatus::Stopped),
@@ -617,6 +618,17 @@ pub fn fixtures() -> Vec<(String, Value)> {
             )),
         );
     }
+    // The Progress sample keys each mode can set (`workloads::live_keys`),
+    // by example name: the app's live KPIs and charts read only these.
+    add(
+        "live-keys".into(),
+        Value::Object(
+            workloads::mode_examples()
+                .iter()
+                .map(|e| (e.mode.to_string(), json!(workloads::live_keys(&e.params))))
+                .collect(),
+        ),
+    );
     // RunReport per workload (its default mode), ok and failed.
     for w in Workload::ALL {
         add(
@@ -844,12 +856,49 @@ mod tests {
             "idle",
             "starting",
             "needs-login",
+            "needs-approval",
             "running",
             "stopping",
             "stopped",
             "error",
         ] {
             assert!(names.contains(&format!("node-state-{st}.json")));
+        }
+    }
+
+    #[test]
+    fn live_keys_cover_every_mode_example() {
+        let (_, v) = fixtures()
+            .into_iter()
+            .find(|(n, _)| n == "live-keys.json")
+            .expect("live-keys.json");
+        let map = v.as_object().expect("an object");
+        let examples = workloads::mode_examples();
+        assert_eq!(map.len(), examples.len());
+        for e in &examples {
+            let keys: Vec<&str> = map[e.mode]
+                .as_array()
+                .unwrap_or_else(|| panic!("{}: not a list", e.mode))
+                .iter()
+                .map(|k| k.as_str().expect("a string"))
+                .collect();
+            // a synced-store burst is over too fast for live values
+            assert_eq!(
+                keys.is_empty(),
+                e.mode == "synced-store-burst",
+                "{}",
+                e.mode
+            );
+            let mut sorted = keys.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(keys, sorted, "{}: sorted and unique", e.mode);
+            assert_eq!(
+                keys.contains(&workloads::common::KEY_LOADED_RTT),
+                e.params.time_based(),
+                "{}: the path sampler's key exactly when time-based",
+                e.mode
+            );
         }
     }
 

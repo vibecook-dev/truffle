@@ -12,7 +12,8 @@
 //!   peer first listed) and `ws_connect_ms` (first `hello` while the peer
 //!   was not ws_connected → `hello.ack`) come from the hub.
 //!
-//! Summary keys: `rtt_min_ms`, `rtt_p50_ms`, `rtt_max_ms`, `loss_pct`.
+//! Summary keys: `rtt_p50_ms` (the headline), `rtt_min_ms`, `rtt_max_ms`,
+//! `loss_pct`.
 //! Series: `rtt_ms` (sample 0 flagged as warmup).
 
 use std::collections::BTreeMap;
@@ -32,6 +33,15 @@ use crate::workloads::{RunCtx, WorkloadOutput};
 
 /// `path` is implemented.
 pub const IMPLEMENTED: bool = true;
+
+/// The Progress sample keys a run with these params can set: the
+/// initiator's own and the responder's `tick`s, which the hub merges in.
+/// [`live_keys`](super::live_keys) adds the path sampler's `loaded_rtt_ms`
+/// for time-based runs; `live-keys.json` in the schema fixtures is built
+/// from it.
+pub fn live_keys(_p: &PathParams) -> Vec<&'static str> {
+    vec!["rtt_ms"]
+}
 
 /// One ping.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -118,8 +128,8 @@ fn assemble(samples: Vec<PingSample>, timings: crate::workloads::PeerTimings) ->
         }
     }
     let summary = vec![
-        SummaryItem::new("rtt_min_ms", "RTT min", rtt.min, "ms", Better::Lower),
         SummaryItem::new("rtt_p50_ms", "RTT p50", rtt.p50, "ms", Better::Lower),
+        SummaryItem::new("rtt_min_ms", "RTT min", rtt.min, "ms", Better::Lower),
         SummaryItem::new("rtt_max_ms", "RTT max", rtt.max, "ms", Better::Lower),
         SummaryItem::new("loss_pct", "Loss", loss_pct, "%", Better::Lower),
     ];
@@ -302,7 +312,7 @@ mod tests {
         assert_eq!(r.transitions[1].to, "relay:sfo");
         assert_eq!(r.connections["direct"], 2);
         let keys: Vec<&str> = out.summary.iter().map(|s| s.key.as_str()).collect();
-        assert_eq!(keys, ["rtt_min_ms", "rtt_p50_ms", "rtt_max_ms", "loss_pct"]);
+        assert_eq!(keys, ["rtt_p50_ms", "rtt_min_ms", "rtt_max_ms", "loss_pct"]);
         assert_eq!(out.series[0].points.len(), 4);
         assert_eq!(out.series[0].warmup_ms, Some(0.0));
         assert_eq!(out.notes.len(), 1);

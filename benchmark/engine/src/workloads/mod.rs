@@ -9,6 +9,7 @@
 //! pub async fn prepare(r: &ResponderCtx, p: &XParams, client: Client)
 //!     -> Result<(Setup, Box<dyn ResponderRun>), AppError>;                                 // responder
 //! pub fn example_output() -> WorkloadOutput;          // schema fixtures
+//! pub fn live_keys(p: &XParams) -> Vec<&'static str>; // Progress sample keys
 //! ```
 //!
 //! The hub owns everything around a run (peer resolution, hello, path
@@ -93,6 +94,24 @@ use crate::types::{
 };
 use crate::CONTROL_NS;
 
+/// Pause before re-sending a `prepare` the responder refused with
+/// `peer-not-found` (its Layer 3 did not list this node yet).
+const PREPARE_PEER_RETRY: Duration = Duration::from_secs(1);
+
+/// Whether `prepare` asks again after `failure`, with `time_left` for one
+/// more try. Only for the RESPONDER's `peer-not-found` refusal: its Layer 3
+/// does not list this node yet (it can miss a peer for a while after a fast
+/// restart) and it kept nothing, so asking again is what the refusal says
+/// to do. This node failing to reach a peer its own registry dropped
+/// carries the same code, and ends the run at once.
+fn prepare_retries(failure: &control::RequestFailure, time_left: bool) -> bool {
+    time_left
+        && matches!(
+            failure,
+            control::RequestFailure::Refused(e) if e.code == ErrorCode::PeerNotFound
+        )
+}
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
@@ -173,6 +192,33 @@ pub fn mode_examples() -> Vec<ModeExample> {
         egress::examples(),
     ]
     .concat()
+}
+
+/// Every Progress sample key a run with these params can set, sorted: the
+/// module's own [`live_keys`](tcp::live_keys) (initiator samples and the
+/// responder's merged `tick`s), plus the path sampler's `loaded_rtt_ms`
+/// ([`common::KEY_LOADED_RTT`]) when the run is time-based. The schema
+/// fixture `live-keys.json` lists them per mode for the app, whose live KPIs
+/// and charts may only read these keys.
+pub fn live_keys(params: &WorkloadParams) -> Vec<&'static str> {
+    let mut keys = match params {
+        WorkloadParams::Path(p) => path::live_keys(p),
+        WorkloadParams::Tcp(p) => tcp::live_keys(p),
+        WorkloadParams::Udp(p) => udp::live_keys(p),
+        WorkloadParams::Quic(p) => quic::live_keys(p),
+        WorkloadParams::Ws(p) => ws::live_keys(p),
+        WorkloadParams::FileTransfer(p) => file_transfer::live_keys(p),
+        WorkloadParams::SyncedStore(p) => synced_store::live_keys(p),
+        WorkloadParams::Http(p) => http::live_keys(p),
+        WorkloadParams::Video(p) => video::live_keys(p),
+        WorkloadParams::Egress(p) => egress::live_keys(p),
+    };
+    if params.time_based() {
+        keys.push(common::KEY_LOADED_RTT);
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    keys
 }
 
 /// Run the initiator side of `params` (the hub calls this).
@@ -967,18 +1013,33 @@ impl<'a> RunCtx<'a> {
         self.progress.set_phase(Phase::Preparing, None);
         let client = serde_json::to_value(client)
             .map_err(|e| AppError::internal(format!("serialise the client block: {e}")))?;
-        let req = PrepareReq {
-            id: new_request_id(),
-            run_id: self.run_id.clone(),
-            params: self.params.clone(),
-            client,
-        };
         // From here on the responder may hold state: the hub sends `cancel`
         // unless `finish` completes.
         self.prepare_sent = true;
-        let got = control::request(&self.node, &self.peer.tailscale_id, &req, PREPARE_TIMEOUT)
-            .await
-            .map_err(|e| e.context("prepare"))?;
+        let deadline = Instant::now() + PREPARE_TIMEOUT;
+        let got = loop {
+            let req = PrepareReq {
+                id: new_request_id(),
+                run_id: self.run_id.clone(),
+                params: self.params.clone(),
+                client: client.clone(),
+            };
+            let left = deadline.saturating_duration_since(Instant::now());
+            match control::request_or_refusal(&self.node, &self.peer.tailscale_id, &req, left).await
+            {
+                Err(failure)
+                    if prepare_retries(
+                        &failure,
+                        Instant::now() + PREPARE_PEER_RETRY < deadline,
+                    ) =>
+                {
+                    let e = AppError::from(failure);
+                    tracing::debug!(error = %e, "prepare: the peer does not list us yet; retrying");
+                    tokio::time::sleep(PREPARE_PEER_RETRY).await;
+                }
+                got => break got.map_err(|e| AppError::from(e).context("prepare"))?,
+            }
+        };
         check_echoed_params(&self.params, got.ack.params.as_ref())?;
         self.run_tag = Some(got.ack.run_tag);
         self.peer_prepare_overlap = got.ack.overlapping_runs;
@@ -1458,6 +1519,30 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let s2 = seen.clone();
         (Arc::new(move |p| s2.lock().unwrap().push(p)), seen)
+    }
+
+    #[test]
+    fn prepare_retries_only_the_responders_peer_not_found() {
+        use control::RequestFailure::{Failed, Refused};
+        let not_found = || {
+            AppError::new(
+                ErrorCode::PeerNotFound,
+                "this device does not know you yet; retry in a moment",
+            )
+        };
+        assert!(prepare_retries(&Refused(not_found()), true));
+        assert!(
+            !prepare_retries(&Refused(not_found()), false),
+            "no time left"
+        );
+        // This node's own send failing (its registry dropped the peer).
+        let local: AppError = truffle_core::NodeError::Session(
+            truffle_core::session::SessionError::UnknownPeer("p".into()),
+        )
+        .into();
+        assert_eq!(local.code, ErrorCode::PeerNotFound);
+        assert!(!prepare_retries(&Failed(local), true));
+        assert!(!prepare_retries(&Refused(AppError::internal("boom")), true));
     }
 
     #[tokio::test(start_paused = true)]

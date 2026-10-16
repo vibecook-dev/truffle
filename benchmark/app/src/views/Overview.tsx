@@ -13,10 +13,10 @@ import { Icon } from '../components/Icon';
 import { TopologyStrip } from '../components/Chrome';
 import { FluidSparkline } from '../charts';
 import { useConstructionFlag } from '../charts/construction';
-import { REGISTRY, WORKLOAD_ORDER, headlineOf } from '../workloads/registry';
+import { REGISTRY, WORKLOAD_ORDER, headlineOf, labelOf, shortLabelOf } from '../workloads/registry';
 import { fmtAgo, fmtConnection, fmtNumber, relayRegion, DASH } from '../lib/format';
 import { trendable } from '../lib/compare';
-import { StatusOf } from './History';
+import { BuildOf, Flags, StatusOf } from './History';
 import { phaseWords } from './RunParts';
 import type { Page as PageId } from '../hooks/useRoute';
 
@@ -185,15 +185,20 @@ export function Overview({ go }: { go: (p: PageId, id?: string) => void }) {
                   ? [
                       ['Path', target.online ? fmtConnection(target.connection) : 'offline', true],
                       [
-                        'Round trip',
+                        'RTT',
                         target.rtt_ms == null ? DASH : `${fmtNumber(target.rtt_ms)} ms`,
                         true,
                       ],
                       [
                         'Runs',
                         target.hello
-                          ? `${target.hello.app.replace('truffle-bench-', '')} ${target.hello.tool_version}, ${target.hello.build_profile}`
+                          ? `${target.hello.app.replace('truffle-bench-', '')} ${target.hello.tool_version}`
                           : DASH,
+                        true,
+                      ],
+                      [
+                        'Build',
+                        target.hello ? <BuildOf profile={target.hello.build_profile} /> : DASH,
                         true,
                       ],
                       [
@@ -247,13 +252,29 @@ export function Overview({ go }: { go: (p: PageId, id?: string) => void }) {
                     ) : (
                       <Figure value={head?.value} unit={head?.unit} />
                     )}
-                    <span className="fc-head-label">{head?.label}</span>
+                    {head ? (
+                      <span className="fc-head-label" title={labelOf(head)}>
+                        {shortLabelOf(head)}
+                      </span>
+                    ) : null}
                   </div>
-                  <FluidSparkline
-                    values={l.trend}
-                    label={`${head?.label ?? 'Result'} over the last ${l.trend.length} comparable runs`}
-                  />
-                  <span className="fc-sub caption">{l.run.label}</span>
+                  {l.trend.length >= 2 ? (
+                    <FluidSparkline
+                      values={l.trend}
+                      label={`${head?.label ?? 'Result'} over the last ${l.trend.length} comparable runs`}
+                    />
+                  ) : (
+                    // one point is not a trend: say why there is no line, in the line's place
+                    <span className="fc-trend caption">
+                      {trendable(l.run) && l.trendCount <= 1
+                        ? 'First run with these settings'
+                        : 'No trend yet'}
+                    </span>
+                  )}
+                  <span className="fc-sub caption">
+                    <Flags run={l.run} />
+                    {l.run.label}
+                  </span>
                   <Facts
                     rows={[
                       ['Peer', l.run.peer_name ?? DASH],
