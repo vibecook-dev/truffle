@@ -24,8 +24,8 @@ use crate::egress::{BoundEgress, EgressRoute, EgressRouteInfo, HttpProxyConfig, 
 use crate::network::login_allow::login_allowed;
 use crate::network::{
     DialOpts, HealthInfo, IncomingConnection, ListenOpts, NetworkError, NetworkPeer,
-    NetworkPeerEvent, NetworkTcpListener, NodeIdentity, PeerAddr, PingResult, ProxyAddParams,
-    ProxyAddResult, ProxyListEntry, ProxyRuntimeError,
+    NetworkPeerEvent, NetworkStatusEvent, NetworkTcpListener, NodeIdentity, PeerAddr, PingResult,
+    ProxyAddParams, ProxyAddResult, ProxyListEntry, ProxyRuntimeError,
 };
 
 /// Configuration for creating a TailscaleProvider.
@@ -125,6 +125,9 @@ pub struct TailscaleProvider {
     /// Broadcast channel for peer events.
     peer_event_tx: broadcast::Sender<NetworkPeerEvent>,
 
+    /// The node's own status changes (approval pending, login learned).
+    status: StatusReporting,
+
     /// Health info cache.
     health: Arc<RwLock<HealthInfo>>,
 
@@ -162,6 +165,16 @@ pub struct TailscaleProvider {
     sidecar_pid: Arc<std::sync::atomic::AtomicU32>,
 }
 
+/// Where the event processor reports the node's own status changes.
+#[derive(Clone)]
+pub(crate) struct StatusReporting {
+    /// [`NetworkStatusEvent`] fan-out (`status_events()`).
+    pub(crate) tx: broadcast::Sender<NetworkStatusEvent>,
+    /// Set while the device waits for admin approval, so a start timeout
+    /// can name the approval instead of "authentication".
+    pub(crate) needs_approval: Arc<std::sync::atomic::AtomicBool>,
+}
+
 impl TailscaleProvider {
     /// Create a new TailscaleProvider with the given configuration.
     ///
@@ -169,6 +182,7 @@ impl TailscaleProvider {
     pub fn new(config: TailscaleConfig) -> Self {
         let (peer_event_tx, _) = broadcast::channel(256);
         let (proxy_error_tx, _) = broadcast::channel(64);
+        let (status_tx, _) = broadcast::channel(16);
 
         // Seed the identity with the RFC 017 fields we already know from
         // the config. `tailscale_id`, `dns_name`, and `ip` are filled in
@@ -191,6 +205,10 @@ impl TailscaleProvider {
             local_addr: Arc::new(std::sync::RwLock::new(PeerAddr::default())),
             peers: Arc::new(RwLock::new(HashMap::new())),
             peer_event_tx,
+            status: StatusReporting {
+                tx: status_tx,
+                needs_approval: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            },
             health: Arc::new(RwLock::new(HealthInfo {
                 state: "stopped".to_string(),
                 healthy: false,
@@ -424,6 +442,7 @@ impl TailscaleProvider {
         login_allow: Vec<String>,
         proxy_error_tx: broadcast::Sender<ProxyRuntimeError>,
         sidecar_protocol_version: Arc<std::sync::atomic::AtomicU32>,
+        status: StatusReporting,
     ) {
         tokio::spawn(async move {
             let mut started_tx = started_tx;
@@ -447,6 +466,7 @@ impl TailscaleProvider {
                                 );
                                 let ip: Option<IpAddr> = tailscale_ip.parse().ok();
 
+                                let mut login_learned = None;
                                 {
                                     let mut id = identity.write().unwrap();
                                     // `tailscale_hostname` is already populated
@@ -464,9 +484,23 @@ impl TailscaleProvider {
                                     // same status event. `None` stays `None`
                                     // — never fabricated, and never cleared
                                     // by a later status that omits it.
-                                    if login_name.is_some() {
+                                    if login_name.is_some() && id.login_name != login_name {
                                         id.login_name = login_name.clone();
+                                        login_learned = login_name.clone();
                                     }
+                                }
+                                // Approved (or never needed approval): the
+                                // start-timeout message no longer names it.
+                                status
+                                    .needs_approval
+                                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                                if let Some(login_name) = login_learned {
+                                    // Usually during start; after a fast
+                                    // restart (sidecar protocol 8) it can be
+                                    // a later status, after start() returned.
+                                    let _ = status
+                                        .tx
+                                        .send(NetworkStatusEvent::LoginKnown { login_name });
                                 }
 
                                 // Capture the local Tailscale stable ID for
@@ -501,6 +535,20 @@ impl TailscaleProvider {
                                 // Do NOT consume started_tx — keep waiting for Running state.
                                 let _ = peer_event_tx
                                     .send(NetworkPeerEvent::AuthRequired { url: auth_url });
+                            }
+                            SidecarInternalEvent::NeedsApproval => {
+                                // Device approval is on for this tailnet and
+                                // an admin has not approved this device yet.
+                                // start() keeps waiting (approval completes
+                                // it); callers learn why via status_events().
+                                tracing::warn!(
+                                    "tailscale: this device is waiting for approval \
+                                     in the admin console"
+                                );
+                                status
+                                    .needs_approval
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                                let _ = status.tx.send(NetworkStatusEvent::NeedsApproval);
                             }
                             SidecarInternalEvent::Stopped => {
                                 *state.write().await = ProviderState::Stopped;
@@ -815,6 +863,7 @@ impl super::super::NetworkProvider for TailscaleProvider {
             self.config.login_allow.clone(),
             self.proxy_error_tx.clone(),
             self.sidecar_protocol_version.clone(),
+            self.status.clone(),
         );
 
         // Send start command to sidecar
@@ -826,13 +875,20 @@ impl super::super::NetworkProvider for TailscaleProvider {
         // Use a generous timeout (5 min) because browser auth may take a while.
         // Auth URLs are emitted via peer_events() so the caller can display them.
         let auth_timeout = Duration::from_secs(300);
+        let needs_approval = self.status.needs_approval.clone();
         let result = tokio::time::timeout(auth_timeout, started_rx)
             .await
             .map_err(|_| {
                 NetworkError::StartFailed(
-                    "timed out waiting for authentication (5 min). \
+                    if needs_approval.load(std::sync::atomic::Ordering::Relaxed) {
+                        "timed out waiting for device approval (5 min): approve this \
+                         device in the Tailscale admin console, or use a pre-approved \
+                         auth key. Subscribe to status_events() to show this while waiting."
+                    } else {
+                        "timed out waiting for authentication (5 min). \
                  Subscribe to peer_events() to display auth URLs."
-                        .into(),
+                    }
+                    .into(),
                 )
             })?
             .map_err(|_| NetworkError::StartFailed("start signal channel dropped".into()))?;
@@ -904,6 +960,10 @@ impl super::super::NetworkProvider for TailscaleProvider {
 
     fn peer_events(&self) -> broadcast::Receiver<NetworkPeerEvent> {
         self.peer_event_tx.subscribe()
+    }
+
+    fn status_events(&self) -> broadcast::Receiver<NetworkStatusEvent> {
+        self.status.tx.subscribe()
     }
 
     async fn peers(&self) -> Vec<NetworkPeer> {
@@ -2082,6 +2142,8 @@ mod login_gate_tests {
     struct Harness {
         sidecar_tx: broadcast::Sender<SidecarInternalEvent>,
         events: broadcast::Receiver<NetworkPeerEvent>,
+        status: broadcast::Receiver<NetworkStatusEvent>,
+        needs_approval: Arc<std::sync::atomic::AtomicBool>,
         identity: Arc<std::sync::RwLock<NodeIdentity>>,
         peers: Arc<RwLock<HashMap<String, NetworkPeer>>>,
     }
@@ -2091,6 +2153,8 @@ mod login_gate_tests {
         let (sidecar_tx, sidecar_rx) = broadcast::channel(64);
         let (peer_event_tx, events) = broadcast::channel(64);
         let (proxy_error_tx, _) = broadcast::channel(8);
+        let (status_tx, status) = broadcast::channel(8);
+        let needs_approval = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let peers = Arc::new(RwLock::new(HashMap::new()));
         let identity = Arc::new(std::sync::RwLock::new(NodeIdentity {
             app_id: app_id.to_string(),
@@ -2116,10 +2180,16 @@ mod login_gate_tests {
             login_allow,
             proxy_error_tx,
             Arc::new(AtomicU32::new(LOGIN_NAME_PROTOCOL_VERSION)),
+            StatusReporting {
+                tx: status_tx,
+                needs_approval: needs_approval.clone(),
+            },
         );
         Harness {
             sidecar_tx,
             events,
+            status,
+            needs_approval,
             identity,
             peers,
         }
@@ -2274,6 +2344,93 @@ mod login_gate_tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(120)).await;
         assert_eq!(h.identity.read().unwrap().login_name, None);
+    }
+
+    fn started(login: Option<&str>) -> SidecarInternalEvent {
+        SidecarInternalEvent::Started {
+            hostname: "truffle-playground-dev".into(),
+            dns_name: "truffle-playground-dev.tailnet.ts.net".into(),
+            tailscale_ip: "100.64.0.1".into(),
+            node_id: "nodeSELF".into(),
+            login_name: login.map(Into::into),
+            protocol_version: Some(8),
+        }
+    }
+
+    /// A fast restart reaches "running" before the netmap names our user; the
+    /// sidecar (protocol 8) re-sends a running status once it does. The later
+    /// status must fill the identity and announce it — and only once.
+    #[tokio::test]
+    async fn a_later_running_status_fills_a_login_that_was_unknown_at_start() {
+        let mut h = harness("playground", Vec::new());
+        h.sidecar_tx.send(started(None)).unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(h.identity.read().unwrap().login_name, None);
+        assert!(
+            h.status.try_recv().is_err(),
+            "no status event while the login is unknown"
+        );
+
+        h.sidecar_tx
+            .send(started(Some("alice@example.com")))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(
+            h.identity.read().unwrap().login_name.as_deref(),
+            Some("alice@example.com"),
+            "local_identity().login_name must pick up the follow-up status"
+        );
+        assert_eq!(
+            h.status.try_recv().ok(),
+            Some(NetworkStatusEvent::LoginKnown {
+                login_name: "alice@example.com".into()
+            })
+        );
+
+        // Repeats of the same login, and a later status that omits it, change
+        // nothing and announce nothing.
+        h.sidecar_tx
+            .send(started(Some("alice@example.com")))
+            .unwrap();
+        h.sidecar_tx.send(started(None)).unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(h.status.try_recv().is_err());
+        assert_eq!(
+            h.identity.read().unwrap().login_name.as_deref(),
+            Some("alice@example.com")
+        );
+    }
+
+    /// `tsnet:needsApproval` used to be parsed and dropped, leaving a caller
+    /// to time out after 5 minutes with an "authentication" error. It is now
+    /// forwarded, and marks the provider so a timeout names the approval;
+    /// reaching "running" clears the mark.
+    #[tokio::test]
+    async fn needs_approval_is_forwarded_and_cleared_by_running() {
+        let mut h = harness("playground", Vec::new());
+        h.sidecar_tx
+            .send(SidecarInternalEvent::NeedsApproval)
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(
+            h.status.try_recv().ok(),
+            Some(NetworkStatusEvent::NeedsApproval)
+        );
+        assert!(h.needs_approval.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(
+            h.events.try_recv().is_err(),
+            "approval is a node status, not a peer event"
+        );
+
+        h.sidecar_tx
+            .send(started(Some("alice@example.com")))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(!h.needs_approval.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(matches!(
+            h.status.try_recv(),
+            Ok(NetworkStatusEvent::LoginKnown { .. })
+        ));
     }
 
     /// RFC 025 §3.3: an ADMITTED peer whose later row carries a login the
@@ -2867,5 +3024,150 @@ mod egress_tests {
             }
             other => panic!("want an unexpected-reply error, got {other:?}"),
         }
+    }
+}
+
+/// `status_events()` end to end through a real child process: a scripted
+/// stand-in for the sidecar writes the wire lines a device-approval start
+/// produces, and the provider must report them while `start()` waits.
+#[cfg(all(test, unix))]
+mod status_event_process_tests {
+    use super::*;
+    use crate::network::NetworkProvider;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn scripted_sidecar(dir: &std::path::Path, body: &str) -> PathBuf {
+        let path = dir.join("fake-sidecar.sh");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn config(binary_path: PathBuf, state_dir: &std::path::Path) -> TailscaleConfig {
+        TailscaleConfig {
+            binary_path,
+            app_id: "playground".into(),
+            device_id: "01JZZZZZZZZZZZZZZZZZZZZZZZ".into(),
+            device_name: "dev".into(),
+            hostname: "truffle-playground-dev".into(),
+            state_dir: state_dir.to_string_lossy().into_owned(),
+            auth_key: None,
+            ephemeral: None,
+            tags: None,
+            idle_timeout_secs: None,
+            login_allow: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn start_reports_needs_approval_while_it_waits() {
+        let dir = tempfile::tempdir().unwrap();
+        // Read tsnet:start, report the approval wait, then (once "approved")
+        // the running status, and idle until stdin closes.
+        let script = scripted_sidecar(
+            dir.path(),
+            r#"read start
+echo '{"event":"tsnet:status","data":{"state":"starting","protocolVersion":8}}'
+echo '{"event":"tsnet:needsApproval"}'
+sleep 0.3
+echo '{"event":"tsnet:status","data":{"state":"running","hostname":"truffle-playground-dev","dnsName":"truffle-playground-dev.tailnet.ts.net","tailscaleIP":"100.64.0.9","loginName":"alice@example.com","protocolVersion":8}}'
+cat > /dev/null"#,
+        );
+        let mut provider = TailscaleProvider::new(config(script, dir.path()));
+        let mut status = provider.status_events();
+
+        tokio::time::timeout(Duration::from_secs(10), provider.start())
+            .await
+            .expect("start must complete once the device is approved")
+            .expect("start");
+
+        assert_eq!(
+            status.try_recv().ok(),
+            Some(NetworkStatusEvent::NeedsApproval)
+        );
+        assert_eq!(
+            status.try_recv().ok(),
+            Some(NetworkStatusEvent::LoginKnown {
+                login_name: "alice@example.com".into()
+            })
+        );
+        assert_eq!(
+            provider.local_identity().login_name.as_deref(),
+            Some("alice@example.com")
+        );
+        provider.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn default_status_events_is_closed_for_providers_without_any() {
+        struct Silent;
+        // Only the default method is under test; the rest is never called.
+        #[allow(clippy::manual_async_fn)]
+        impl NetworkProvider for Silent {
+            fn start(
+                &mut self,
+            ) -> impl std::future::Future<Output = Result<(), NetworkError>> + Send {
+                async { Ok(()) }
+            }
+            fn stop(&self) -> impl std::future::Future<Output = Result<(), NetworkError>> + Send {
+                async { Ok(()) }
+            }
+            fn local_identity(&self) -> NodeIdentity {
+                unreachable!()
+            }
+            fn local_addr(&self) -> PeerAddr {
+                unreachable!()
+            }
+            fn peer_events(&self) -> broadcast::Receiver<NetworkPeerEvent> {
+                unreachable!()
+            }
+            fn peers(&self) -> impl std::future::Future<Output = Vec<NetworkPeer>> + Send {
+                async { Vec::new() }
+            }
+            fn dial_tcp(
+                &self,
+                _addr: &str,
+                _port: u16,
+            ) -> impl std::future::Future<Output = Result<TcpStream, NetworkError>> + Send
+            {
+                async { unreachable!() }
+            }
+            fn listen_tcp(
+                &self,
+                _port: u16,
+            ) -> impl std::future::Future<Output = Result<NetworkTcpListener, NetworkError>> + Send
+            {
+                async { unreachable!() }
+            }
+            fn unlisten_tcp(
+                &self,
+                _port: u16,
+            ) -> impl std::future::Future<Output = Result<(), NetworkError>> + Send {
+                async { Ok(()) }
+            }
+            fn bind_udp(
+                &self,
+                _port: u16,
+            ) -> impl std::future::Future<
+                Output = Result<crate::network::NetworkUdpSocket, NetworkError>,
+            > + Send {
+                async { unreachable!() }
+            }
+            fn ping(
+                &self,
+                _addr: &str,
+            ) -> impl std::future::Future<Output = Result<PingResult, NetworkError>> + Send
+            {
+                async { unreachable!() }
+            }
+            fn health(&self) -> impl std::future::Future<Output = HealthInfo> + Send {
+                async { unreachable!() }
+            }
+        }
+        let mut rx = Silent.status_events();
+        assert!(matches!(
+            rx.recv().await,
+            Err(broadcast::error::RecvError::Closed)
+        ));
     }
 }

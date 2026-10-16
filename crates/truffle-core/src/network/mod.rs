@@ -91,6 +91,16 @@ pub trait NetworkProvider: Send + Sync {
     /// Uses `WatchIPNBus` for real-time notifications instead of polling.
     fn peer_events(&self) -> broadcast::Receiver<NetworkPeerEvent>;
 
+    /// Subscribe to changes in this node's own network status (device
+    /// approval pending, own login learned, …).
+    ///
+    /// Subscribe before [`start()`](Self::start) to see the conditions that
+    /// keep `start()` waiting. The default implementation, for providers
+    /// that report none, returns a receiver that is already closed.
+    fn status_events(&self) -> broadcast::Receiver<NetworkStatusEvent> {
+        broadcast::channel(1).1
+    }
+
     /// Snapshot of all currently known peers.
     fn peers(&self) -> impl std::future::Future<Output = Vec<NetworkPeer>> + Send;
 
@@ -366,6 +376,46 @@ pub enum NetworkPeerEvent {
     AuthRequired {
         /// URL the user should open in a browser.
         url: String,
+    },
+}
+
+/// Changes in the local node's own network status, as opposed to a peer's.
+///
+/// Delivered by [`NetworkProvider::status_events`] (and on a node by
+/// [`Node::on_network_status`](crate::Node::on_network_status) or the
+/// [`NodeBuilder::on_network_status`](crate::NodeBuilder::on_network_status)
+/// hook, which also sees the events raised while `build()` is still
+/// waiting for the node to come up).
+///
+/// The enum is `#[non_exhaustive]`: match it with a wildcard arm, since later
+/// versions will report more conditions here rather than in
+/// [`NetworkPeerEvent`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NetworkStatusEvent {
+    /// The tailnet has device approval turned on and this device is waiting
+    /// for an admin to approve it (Tailscale's `NeedsMachineAuth` state).
+    ///
+    /// Raised once each time the device enters that state, typically while
+    /// `start()` is waiting. `start()` keeps waiting: it succeeds as soon as
+    /// the device is approved, and fails with an error naming the approval
+    /// if its timeout passes first. Show the user something like "approve
+    /// this device in the Tailscale admin console (Machines)". An auth key
+    /// created as *pre-approved* skips this step.
+    NeedsApproval,
+    /// The node's own tailnet login became known, or changed.
+    ///
+    /// Normally raised once, during start, with the same value
+    /// [`NodeIdentity::login_name`] then carries. After a fast restart from
+    /// saved state the sidecar can report "running" before its network map
+    /// names this node's user; the login then arrives in a later status
+    /// (sidecar protocol 8), after `start()` returned, and this event marks
+    /// the moment [`local_identity`](NetworkProvider::local_identity) starts
+    /// carrying it.
+    LoginKnown {
+        /// The login, e.g. `alice@example.com` (or `tagged-devices` for a
+        /// tagged node).
+        login_name: String,
     },
 }
 
