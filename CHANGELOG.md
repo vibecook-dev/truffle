@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.18](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.17...truffle-v0.7.18) (2026-10-16)
+
+
+### Features
+
+* **core:** expose VERSION, Node::sidecar_pid and file-transfer timings ([68a967c](https://github.com/vibecook-dev/truffle/commit/68a967c14478590191251baf024846d6f06d812a))
+* **core:** surface device approval and a late-known login (NodeBuilder::on_network_status) ([c78e868](https://github.com/vibecook-dev/truffle/commit/c78e868c534e328800d65f69675c2a78a8c51beb))
+
+
+### Bug Fixes
+
+* **core:** recover a peer's session promptly after it restarts, and share one dial per peer ([9eb8ddc](https://github.com/vibecook-dev/truffle/commit/9eb8ddc996d21a51595ae5580d84f87a045268bc))
+* **sidecar:** remove the ~40 ms per-connection stall, 30 s dial hangs and proxy keep-alive churn ([7ef088e](https://github.com/vibecook-dev/truffle/commit/7ef088eec9df3abf771ebbb72fe497d3148a1825))
+
 ## [0.7.17](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.16...truffle-v0.7.17) (2026-10-15)
 
 
