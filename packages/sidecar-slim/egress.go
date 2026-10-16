@@ -454,7 +454,7 @@ func (s *shim) handleEgressAdd(raw json.RawMessage) {
 			return
 		}
 	}
-	lc, err := srv.LocalClient()
+	lc, err := s.localClientFor(srv)
 	if err != nil {
 		fail("INTERNAL", "local client unavailable: "+err.Error())
 		return
@@ -839,7 +839,7 @@ func (s *shim) handleEgressProxy(raw json.RawMessage) {
 		fail("NOT_RUNNING", "node not running")
 		return
 	}
-	lc, err := srv.LocalClient()
+	lc, err := s.localClientFor(srv)
 	if err != nil {
 		fail("INTERNAL", "local client unavailable: "+err.Error())
 		return

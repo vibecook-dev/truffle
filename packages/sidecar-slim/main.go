@@ -122,10 +122,15 @@ type dialResultData struct {
 // every peer row and the node's own status carry the owner's tailnet login, so
 // a login-gated core can filter Layer 3 by it; v6 = authenticated UDP relay
 // capabilities, binding IDs, and registration acknowledgement; v7 = RFC 026
-// egress commands (tsnet:loopback, egress:add/remove/list, egress:proxy).
+// egress commands (tsnet:loopback, egress:add/remove/list, egress:proxy);
+// v8 = no new commands: a "running" tsnet:status is re-sent once the node's
+// own login becomes known after start (a fast restart can reach Running
+// before the netmap names our user), so a core may rely on that instead of
+// asking the LocalAPI itself.
 // An absent value makes the core treat the sidecar as v1.
-// Bump on any addition to the command surface the core must not send blind.
-const sidecarProtocolVersion = 7
+// Bump on any addition to the command surface the core must not send blind,
+// or to an event the core relies on.
+const sidecarProtocolVersion = 8
 
 type statusData struct {
 	State       string `json:"state"`
@@ -661,6 +666,12 @@ type shim struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 
+	// localAPIMu guards localAPIServer/localAPI, the cached OmitAuth LocalAPI
+	// client for the current server (localClientFor).
+	localAPIMu     sync.Mutex
+	localAPIServer *tsnet.Server
+	localAPI       *local.Client
+
 	writeMu sync.Mutex // protects stdout writes
 	writer  *json.Encoder
 
@@ -723,6 +734,61 @@ func (s *shim) setServer(srv *tsnet.Server) {
 	s.serverMu.Lock()
 	s.server = srv
 	s.serverMu.Unlock()
+	// A new (or no) server invalidates the cached LocalAPI client.
+	s.localAPIMu.Lock()
+	s.localAPIServer, s.localAPI = nil, nil
+	s.localAPIMu.Unlock()
+}
+
+// localClientFor returns the LocalAPI client the sidecar uses for srv: tsnet's
+// in-memory LocalAPI, called with OmitAuth set (see newLocalAPIClient). It is
+// built once per server and cached so every caller shares one connection
+// pool; a restart's new server gets a fresh client.
+func (s *shim) localClientFor(srv *tsnet.Server) (*local.Client, error) {
+	s.localAPIMu.Lock()
+	defer s.localAPIMu.Unlock()
+	if s.localAPI != nil && s.localAPIServer == srv {
+		return s.localAPI, nil
+	}
+	base, err := srv.LocalClient()
+	if err != nil {
+		return nil, err
+	}
+	s.localAPIServer, s.localAPI = srv, newLocalAPIClient(base)
+	return s.localAPI, nil
+}
+
+// localAPIIdleConns sizes the LocalAPI client's keep-alive pool. Accepts run
+// their WhoIs concurrently; Go's default of 2 idle connections per host would
+// make every burst above two re-dial the in-memory listener.
+const localAPIIdleConns = 32
+
+// newLocalAPIClient wraps tsnet's LocalAPI client so it never sends the macOS
+// LocalAPI token. local.Client.DoLocalRequest otherwise calls
+// safesocket.LocalTCPPortAndToken on EVERY request, and on darwin, for a
+// binary that is not the Tailscale GUI, that execs `lsof -c IPNExtension` and
+// probes /Library/Tailscale under a process-wide mutex: ~40 ms per LocalAPI
+// call, serialised across all goroutines. That was the fixed ~40 ms on every
+// accepted tailnet connection (its WhoIs), one connection at a time. The token
+// is the Tailscale GUI's localhost-TCP credential; tsnet's in-memory LocalAPI
+// handler has no RequiredPassword and ignores it, so omitting it is safe on
+// every platform (and a no-op off darwin). It also stops the sidecar from
+// forwarding the GUI app's credential when one is installed. A client tsnet
+// built without a Dial hook (never the case today) is returned unchanged.
+func newLocalAPIClient(base *local.Client) *local.Client {
+	if base == nil || base.Dial == nil {
+		return base
+	}
+	return &local.Client{
+		Dial:     base.Dial,
+		OmitAuth: true,
+		Transport: &http.Transport{
+			DialContext:         base.Dial,
+			MaxIdleConns:        localAPIIdleConns,
+			MaxIdleConnsPerHost: localAPIIdleConns,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
 }
 
 // lifecycleCtx returns the current lifecycle context. Long-lived goroutines
@@ -995,6 +1061,9 @@ func (s *shim) handleStart(data json.RawMessage) {
 		s.sendStatus("error", "", "", "", err.Error(), "")
 		return
 	}
+	if err := tuneNetstack(srv); err != nil {
+		log.Printf("netstack tuning skipped: %v", err)
+	}
 	s.setServer(srv)
 
 	// Wait for running state in background
@@ -1008,7 +1077,7 @@ func (s *shim) waitForRunning(ctx context.Context, hostname string) {
 	if srv == nil {
 		return
 	}
-	lc, err := srv.LocalClient()
+	lc, err := s.localClientFor(srv)
 	if err != nil {
 		log.Printf("failed to get local client: %v", err)
 		s.sendStatus("error", "", "", "", err.Error(), "")
@@ -1081,6 +1150,14 @@ func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname 
 				LoginName:       loginName,
 				ProtocolVersion: sidecarProtocolVersion,
 			})
+			// A fast restart from saved state can reach Running before the
+			// netmap names our own user, so the login above is empty. Keep
+			// asking and report it with a follow-up "running" status once it
+			// is known (cores since protocol 5 take the login from any
+			// running status; older ones re-read the same running facts).
+			if loginName == "" {
+				go s.awaitSelfLogin(ctx, lc, hostname, selfLoginPollInterval, selfLoginPollBudget)
+			}
 
 			// The sidecar opens no listeners at startup. The Rust session layer
 			// starts the :9417 TCP listener dynamically via tsnet:listen (avoids a
@@ -1097,11 +1174,74 @@ func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname 
 	}
 }
 
+// The follow-up poll for a self login that was unknown at Running: every
+// 500 ms, for at most a minute (a node whose netmap never names its user —
+// which tsnet does not do for a logged-in node — just keeps the empty login).
+const (
+	selfLoginPollInterval = 500 * time.Millisecond
+	selfLoginPollBudget   = 60 * time.Second
+)
+
+// awaitSelfLogin polls the LocalAPI status until it names this node's own
+// login, then emits a "running" tsnet:status carrying it. It gives up
+// silently when ctx ends (stop, restart) and with a log line once budget is
+// spent.
+func (s *shim) awaitSelfLogin(ctx context.Context, lc *local.Client, hostname string, interval, budget time.Duration) {
+	defer s.recoverPanic("awaitSelfLogin")
+
+	deadline := time.Now().Add(budget)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if time.Now().After(deadline) {
+			log.Printf("own login still unknown %v after start; peers will see it once the next status carries it", budget)
+			return
+		}
+		statusCtx, cancel := context.WithTimeout(ctx, statusTimeout)
+		status, err := lc.StatusWithoutPeers(statusCtx)
+		cancel()
+		if err != nil || status == nil || status.Self == nil || status.BackendState != "Running" {
+			continue
+		}
+		login := loginNameForUser(status.User, status.Self.UserID)
+		if login == "" {
+			continue
+		}
+		var ip string
+		if len(status.TailscaleIPs) > 0 {
+			ip = status.TailscaleIPs[0].String()
+		}
+		dnsName := strings.TrimSuffix(status.Self.DNSName, ".")
+		debugf("own login resolved after start")
+		s.sendStatus("running", hostname, dnsName, ip, "", login)
+		return
+	}
+}
+
 // trackListener adds a listener to the tracked set for cleanup on stop.
 func (s *shim) trackListener(ln net.Listener) {
 	s.listenerMu.Lock()
 	defer s.listenerMu.Unlock()
 	s.listeners = append(s.listeners, ln)
+}
+
+// untrackListener drops a listener closed by tsnet:unlisten from the tracked
+// set, so a long-lived node that listens and unlistens per transfer (file
+// transfer data ports) does not accumulate closed listeners until stop.
+func (s *shim) untrackListener(ln net.Listener) {
+	s.listenerMu.Lock()
+	defer s.listenerMu.Unlock()
+	for i, l := range s.listeners {
+		if l == ln {
+			s.listeners = append(s.listeners[:i], s.listeners[i+1:]...)
+			return
+		}
+	}
 }
 
 func (s *shim) handleStop() {
@@ -1188,7 +1328,7 @@ func (s *shim) handleStop() {
 		// and push Online=false to other peers within seconds.
 		// We use EditPrefs to set WantRunning=false which tells the control
 		// server we're intentionally going offline (vs a crash/network issue).
-		lc, lcErr := srv.LocalClient()
+		lc, lcErr := s.localClientFor(srv)
 		if lcErr == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			_, _ = lc.EditPrefs(ctx, &ipn.MaskedPrefs{
@@ -1219,7 +1359,7 @@ func (s *shim) handleGetPeers() {
 	go func() {
 		defer s.recoverPanic("handleGetPeers")
 
-		lc, err := srv.LocalClient()
+		lc, err := s.localClientFor(srv)
 		if err != nil {
 			s.sendError("PEERS_ERROR", err.Error())
 			return
@@ -1344,7 +1484,7 @@ func (s *shim) handleListen(data json.RawMessage) {
 
 		ctx := s.lifecycleCtx()
 
-		lc, err := srv.LocalClient()
+		lc, err := s.localClientFor(srv)
 		if err != nil {
 			s.sendErrorFor("LISTEN_ERROR", fmt.Sprintf("failed to get local client: %v", err), d.RequestID)
 			return
@@ -1463,6 +1603,7 @@ func (s *shim) handleUnlisten(data json.RawMessage) {
 	if err := ln.Close(); err != nil {
 		log.Printf("close listener :%d error: %v", d.Port, err)
 	}
+	s.untrackListener(ln)
 
 	debugf("stopped listening on :%d (dynamic)", d.Port)
 	s.sendEvent("tsnet:unlistened", unlistenedData{Port: d.Port, RequestID: d.RequestID})
@@ -1492,7 +1633,7 @@ func (s *shim) handlePing(data json.RawMessage) {
 			s.sendEvent("tsnet:pingResult", r)
 		}
 
-		lc, err := srv.LocalClient()
+		lc, err := s.localClientFor(srv)
 		if err != nil {
 			emit(pingResultData{Error: fmt.Sprintf("failed to get local client: %v", err)})
 			return
@@ -1578,7 +1719,7 @@ func (s *shim) handleWhois(data json.RawMessage) {
 			s.sendEvent("tsnet:whoisResult", r)
 		}
 
-		lc, err := srv.LocalClient()
+		lc, err := s.localClientFor(srv)
 		if err != nil {
 			emit(whoisResultData{Error: fmt.Sprintf("failed to get local client: %v", err)})
 			return
@@ -1604,7 +1745,7 @@ func (s *shim) handleWatchPeers(data json.RawMessage) {
 		return
 	}
 
-	lc, err := srv.LocalClient()
+	lc, err := s.localClientFor(srv)
 	if err != nil {
 		s.sendError("WATCH_PEERS_ERROR", fmt.Sprintf("failed to get local client: %v", err))
 		return
@@ -1850,7 +1991,7 @@ func (s *shim) handlePushFile(data json.RawMessage) {
 	go func() {
 		defer s.recoverPanic("handlePushFile")
 
-		lc, err := srv.LocalClient()
+		lc, err := s.localClientFor(srv)
 		if err != nil {
 			s.sendEvent("tsnet:pushFileResult", pushFileResultData{
 				Success: false,
@@ -1906,7 +2047,7 @@ func (s *shim) handleWaitingFiles() {
 	go func() {
 		defer s.recoverPanic("handleWaitingFiles")
 
-		lc, err := srv.LocalClient()
+		lc, err := s.localClientFor(srv)
 		if err != nil {
 			s.sendError("WAITING_FILES_ERROR", fmt.Sprintf("failed to get local client: %v", err))
 			return
@@ -1960,7 +2101,7 @@ func (s *shim) handleGetWaitingFile(data json.RawMessage) {
 			})
 		}
 
-		lc, err := srv.LocalClient()
+		lc, err := s.localClientFor(srv)
 		if err != nil {
 			fail(fmt.Sprintf("failed to get local client: %v", err))
 			return
@@ -2026,7 +2167,7 @@ func (s *shim) handleDeleteWaitingFile(data json.RawMessage) {
 	go func() {
 		defer s.recoverPanic("handleDeleteWaitingFile")
 
-		lc, err := srv.LocalClient()
+		lc, err := s.localClientFor(srv)
 		if err != nil {
 			s.sendEvent("tsnet:deleteWaitingFileResult", deleteWaitingFileResultData{
 				Success:  false,
@@ -2090,7 +2231,7 @@ func (s *shim) handleProxyAdd(raw json.RawMessage) {
 		data.TargetScheme = "http"
 	}
 
-	lc, err := srv.LocalClient()
+	lc, err := s.localClientFor(srv)
 	if err != nil {
 		s.sendEvent("proxy:error", proxyErrorEventData{
 			ID: data.ID, Code: "INTERNAL", Message: "local client unavailable: " + err.Error(), RequestID: data.RequestID,
@@ -3086,6 +3227,19 @@ func newSPAFileServer(root staticRoot, fallback string) http.Handler {
 	})
 }
 
+// Upstream keep-alive pool of each proxy route. Every route has exactly one
+// upstream host, so the per-host cap is the one that binds: Go's default of 2
+// made any keep-alive load above 2 concurrent requests close and re-dial
+// upstream connections (~11k loopback connects per 10 s at 4 workers; at 16
+// workers 18-64% of requests were 502s once those connections, each holding
+// a host ephemeral port in TIME_WAIT, ran the loopback ports out). 64 covers
+// the concurrency a single route sees in practice; connections above it are
+// still opened, just not kept idle.
+const (
+	proxyMaxIdleConnsPerHost = 64
+	proxyMaxIdleConns        = 2 * proxyMaxIdleConnsPerHost
+)
+
 // buildReverseProxy assembles the httputil.ReverseProxy for one target with
 // the engine's shared policy: Host rewrite, optional mount-prefix strip,
 // loopback-only TLS skip-verify, bounded transport, and the detail-free 502
@@ -3107,7 +3261,8 @@ func (s *shim) buildReverseProxy(proxyID string, target *url.URL, stripPrefix st
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		MaxIdleConns:        100,
+		MaxIdleConns:        proxyMaxIdleConns,
+		MaxIdleConnsPerHost: proxyMaxIdleConnsPerHost,
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
 	}
@@ -3192,7 +3347,7 @@ func (s *shim) prewarmCert(ctx context.Context, srv *tsnet.Server) {
 	s.certWarmed[domain] = struct{}{}
 	s.certWarmMu.Unlock()
 
-	lc, err := srv.LocalClient()
+	lc, err := s.localClientFor(srv)
 	if err != nil {
 		log.Printf("cert pre-warm for %s skipped: %v", domain, err)
 		return
