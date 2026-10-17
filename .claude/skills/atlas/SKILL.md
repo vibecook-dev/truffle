@@ -45,7 +45,7 @@ cites them, never replaces them. Read CLAUDE.md "Atlas" first. The DSL spec is
   - contracts at their single anchor: `NetworkProvider`, `EnvelopeCodec`, `StoreBackend`,
     `FtMessage`, `SyncMessage`;
   - flow steps at the function that does the step (`// @atlas step send.route`).
-- `atlas/atlas.baseline.json` — written only by `atlas baseline` (none yet: see Running it).
+- `atlas/atlas.baseline.json` — written only by `atlas baseline`; it holds the 7 findings kept for the user (13 keys), recorded when the atlas landed.
 
 ## Running it
 
@@ -101,29 +101,30 @@ TRUFFLE_SIDECAR_SKIP_DOWNLOAD=1 npm --prefix "$ATLAS" run -s atlas -- explain "$
   anchors, domain `touches`, flow steps and hops) and 10 are violated instead of 7.
 - `baseline` (`TRUFFLE_SIDECAR_SKIP_DOWNLOAD=1 npm --prefix "$ATLAS" run -s atlas -- baseline "$PWD" --intent "$PWD/atlas"`)
   writes `atlas/atlas.baseline.json` with every violation of that run, so whatever your change
-  added becomes `known` too. None exists yet. It runs only when the user decides to accept that
-  run's violations, never to turn the check green or to hide a violation your change caused.
+  added becomes `known` too. The committed one holds the 7 findings kept for the user. It runs
+  again only when the user decides to accept that run's violations, never to turn the check green
+  or to hide a violation your change caused.
 
 ## Reading `check`
 
-An excerpt of today's run (rebased on 0.7.18, atlas changes uncommitted, no baseline yet; the
-header's hash and dirty count change with every commit); `…` marks what is left out here. Claims
-sort by severity, then by the file and line that declare them: today the decisions
-(`atlas/decisions.atlas`), then the rules (`atlas/rules.atlas`), then the in-code contract:
+An excerpt of the run on 0.7.18 with this atlas and its baseline committed (the header's hash
+changes with every commit); `…` marks what is left out here. Claims sort by severity, then by the
+file and line that declare them: today the decisions (`atlas/decisions.atlas`), then the rules
+(`atlas/rules.atlas`), then the in-code contract:
 
 ```
-atlas check · Truffle @ 65342ba (+12 dirty) · 520 claims
-  473 verified · 40 asserted · 7 violated (7 new, 0 known) · 0 dangling · 0 ambiguous · 0 stale
+atlas check · Truffle @ 0c08350 · 520 claims
+  473 verified · 40 asserted · 7 violated (0 new, 7 known) · 0 dangling · 0 ambiguous · 0 stale
   coverage: layers 100.0% · domains 100.0% of 88,816 prod lines · rules 23 pass, 4 fail, 0 unchecked
 
-VIOLATED · new (7)
+VIOLATED · known (in the baseline) (7)
   decision:layered-architecture  decision layered-architecture "Layers 3-6 behind one Node API; applications are Layer 7" code RFC-0…
     at atlas/decisions.atlas:36 · decision · basis none
     rule:layers-point-down  violated
     rule:network-knows-no-upper-layer  violated
     rule:transport-knows-no-session  violated
     rule:apps-use-node-api  violated
-    → Accepted, but rule:layers-point-down, rule:network-knows-no-upper-layer, … are failing: the code has drifted from this decision.
+    → Accepted, but rule:layers-point-down, rule:network-knows-no-upper-layer, rule:transport-knows-no-session, rule:apps-use-node-api are failing: the code has drifted from this decision.
   decision:synced-store  decision synced-store "SyncedStore and a request/reply helper in core" code RFC-016 status accepted
     at atlas/decisions.atlas:82 · decision · basis none
     contract:sync-wire  violated
@@ -148,17 +149,16 @@ ASSERTED (40): not listed; --all lists them
 
 VERIFIED (473): not listed; --all lists them
 
-7 new violations (7 error, 0 warn/info): exit 1
-  fix the code, add `except <sel> "reason"`, or record today's state with `atlas baseline`
+ok: no new violations
 ```
 
-- The last line is Atlas's generic advice. Never take its `except` or `atlas baseline` yourself:
-  an `except` changes the design and the baseline is the user's decision (Running it, Fixing).
-- Until the user runs `atlas baseline`, this is what a clean tree prints: exit 1 with exactly these
-  7 claims under `VIOLATED · new`. If the user baselines this state, `atlas baseline` writes 13
-  keys (3 claim ids and 10 rule pairs); the same 7 claims then print under
-  `VIOLATED · known (in the baseline) (7)`, the summary reads `7 violated (0 new, 7 known)`, the run
-  ends with `ok: no new violations`, and the check exits 0.
+- With a new violation the run ends instead with `N new violations (…): exit 1` and Atlas's generic
+  advice, "fix the code, add `except <sel> "reason"`, or record today's state with
+  `atlas baseline`". Never take its `except` or `atlas baseline` yourself: an `except` changes the
+  design and the baseline is the user's decision (Running it, Fixing).
+- This is what a clean tree prints: the 7 findings kept for the user under
+  `VIOLATED · known (in the baseline) (7)`, `7 violated (0 new, 7 known)`, `ok: no new violations`,
+  exit 0. The baseline holds 13 keys (3 claim ids and 10 rule pairs).
 - Sections in order: VIOLATED · new, VIOLATED · known (in the baseline), DANGLING, AMBIGUOUS, STALE.
   ASSERTED and VERIFIED are only counted unless you pass `--all`.
 - Each claim: `subject  DSL text [severity]`, then `at file:line · kind · basis`. A claim listed
@@ -167,17 +167,15 @@ VERIFIED (473): not listed; --all lists them
   (`file:line  source`) and `→` the remedy. `--all` lists verified and asserted claims with those
   first two lines only, no counts, so `explain '<glob>'` (each term prints `→ n`) to see what a
   verified glob matches. A glob that matches nothing dangles.
-- Exit 1 only for a violated claim of severity `error` that is not known; with no baseline, every
-  violated claim is new. DANGLING, STALE, AMBIGUOUS and `warn` rules (none today) do not fail the
+- Exit 1 only for a violated claim of severity `error` that is not known. DANGLING, STALE, AMBIGUOUS and `warn` rules (none today) do not fail the
   check, but you still leave 0 dangling and 0 ambiguous. One exception: a dangling rule, contract
   or flow named in a decision's `confirmed-by` makes that decision violated (exit 1), so fix the
   selector. `layered-architecture` and `synced-store` are violated already, so a dangling member of
   theirs (any of the 10 rules in layered-architecture's `confirmed-by`, or `sync-wire` and
   `request-reply-over-node`) shows only under DANGLING and in the decision's evidence
-  (`rule:bridge-is-private  dangling`), not in the exit code: today the check exits 1 anyway, and
-  after a baseline the decision's only key is its claim id, so it stays known and exits 0 (Atlas
-  `grade/decisions.ts`, `main.keys = [main.id]`).
-- **Known or new, once a baseline exists** (Atlas `packages/aggregator/src/grade/rules.ts`,
+  (`rule:bridge-is-private  dangling`), not in the exit code: the decision's only key is its claim
+  id, so it stays known and the check exits 0 (Atlas `grade/decisions.ts`, `main.keys = [main.id]`).
+- **Known or new** (Atlas `packages/aggregator/src/grade/rules.ts`,
   `grade/claims.ts` `evidenceKey`, `packages/aggregator/src/baseline.ts`). A violated claim is
   known only when every one of its keys is in the baseline. Its keys:
   - a dependency rule (`layered`, `deny`, `only`): one per evidence item, `rule:<id>|<from>|<to>`.
@@ -223,9 +221,8 @@ VERIFIED (473): not listed; --all lists them
   last commit of the file holding the statement (the `.atlas` file, or the source file holding the
   `@atlas` line); an uncommitted file has none, so commit atlas changes with the code they describe.
 - The 7 findings kept for the user, in output order, with their counts (each claim's `→` line
-  gives its count). Your change is clean only when `VIOLATED · new` lists exactly these 7 claims
-  with these counts (after a baseline: nothing new, and these 7 under known with these counts); any
-  other violated claim, or a higher count, is yours. A further import between modules or packages
+  gives its count). Your change is clean only when nothing is new and these 7 are known with these
+  counts; any other violated claim, or a higher count, is yours. A further import between modules or packages
   already listed only lengthens a claim's evidence, so the summary line and the exit code stay the
   same: compare the counts. Do not edit a rule, a decision or a module's tier for them, and do not
   change their code either (no deleting `Clear`, no moving the hello gate or the egress types)
@@ -449,8 +446,8 @@ VERIFIED (473): not listed; --all lists them
 - **New benchmark workload** `benchmark/engine/src/workloads/foo.rs`: it inherits `bench` and the
   `bench` domain from truffle-bench's root; add `touches mod:truffle_bench::workloads::foo` to the
   domain it measures (`atlas/domains.atlas`). Its truffle-core imports below the Node API raise
-  `apps-use-node-api`'s count. That claim is violated already (and, once a baseline exists, known
-  under the truffle-bench package pair), so the exit code does not show it: report the new count to
+  `apps-use-node-api`'s count. That claim is violated already and known under the
+  truffle-bench package pair, so the exit code does not show it: report the new count to
   the user and do not call the change clean. A new type joins `bench-app-types` when RFC 027 §7's
   fixture list names it.
 - **New NAPI type** for a core type: `napi-projection` checks every core type in its `at` list
@@ -461,7 +458,7 @@ VERIFIED (473): not listed; --all lists them
 - **Splitting a big file** (node.rs, provider.rs, session/mod.rs): `// @atlas step` lines move
   with their functions; `mod:`/`file:`/`sym:` selectors that named the old path, in `atlas/` or in
   other code's `@atlas` lines, dangle. Fix them in the same change and check `--all` that the
-  flows' steps are still verified. Once a baseline exists, moving `provider.rs`'s `use crate::egress`
+  flows' steps are still verified. Moving `provider.rs`'s `use crate::egress`
   into a child module also turns `layers-point-down` and `network-knows-no-upper-layer` new with
   the same counts (exit 1): their keys name the module (Known or new). Tell the user; it is not
   your finding.
