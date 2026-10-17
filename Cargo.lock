@@ -6153,7 +6153,7 @@ dependencies = [
 
 [[package]]
 name = "truffle"
-version = "0.7.18"
+version = "0.7.19"
 dependencies = [
  "serde_json",
  "truffle-core",
@@ -6215,7 +6215,7 @@ dependencies = [
 
 [[package]]
 name = "truffle-cli"
-version = "0.7.18"
+version = "0.7.19"
 dependencies = [
  "chrono",
  "clap",
@@ -6250,7 +6250,7 @@ dependencies = [
 
 [[package]]
 name = "truffle-core"
-version = "0.7.18"
+version = "0.7.19"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -6285,7 +6285,7 @@ dependencies = [
 
 [[package]]
 name = "truffle-napi"
-version = "0.7.18"
+version = "0.7.19"
 dependencies = [
  "napi",
  "napi-build",
@@ -6299,7 +6299,7 @@ dependencies = [
 
 [[package]]
 name = "truffle-sidecar"
-version = "0.7.18"
+version = "0.7.19"
 dependencies = [
  "serde_json",
  "sha2 0.11.0",

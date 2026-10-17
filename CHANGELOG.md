@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.19](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.18...truffle-v0.7.19) (2026-10-17)
+
+
+### Bug Fixes
+
+* **deps:** zip 9 — RUSTSEC-2026-0367/0368/0369 (symlink and SUID handling in extract) ([#216](https://github.com/vibecook-dev/truffle/issues/216)) ([30a991f](https://github.com/vibecook-dev/truffle/commit/30a991f7ad1ac6be73850a4982af503fda4d64dc))
+
 ## [0.7.18](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.17...truffle-v0.7.18) (2026-10-16)
 
 
