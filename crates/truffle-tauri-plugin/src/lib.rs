@@ -57,6 +57,8 @@
 //! - `truffle://file-transfer-event` — File transfer progress/completion
 //! - `truffle://file-offer` — Incoming file offers
 //! - `truffle://auth-required` — Authentication URL when login is needed
+//!
+//! @atlas layer bindings · domain bindings
 
 use std::collections::HashMap;
 use std::sync::Arc;

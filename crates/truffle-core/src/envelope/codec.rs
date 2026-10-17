@@ -10,6 +10,10 @@ use super::{Envelope, EnvelopeError};
 // EnvelopeCodec trait
 // ---------------------------------------------------------------------------
 
+// @atlas contract envelope-codec "Pluggable envelope codec" {
+//   implemented-by crate:truffle-core
+//   see "docs/rfcs/012-layered-architecture-redesign.md#32-layer-6-envelope"
+// }
 /// A codec that serializes and deserializes [`Envelope`]s.
 ///
 /// Implementations must be `Send + Sync` so they can be shared across

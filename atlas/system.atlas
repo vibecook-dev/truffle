@@ -1,0 +1,25 @@
+atlas 1
+
+// Truffle's design intent: what the code cannot say about itself, graded against the code by Project Atlas.
+// Unpublished crate roots, single-anchor seams and flow-step functions carry their own `@atlas` lines
+// (`grep -rn '@atlas' crates benchmark`). The crates.io crates (truffle-core, truffle, truffle-sidecar) carry no `//!`
+// atlas text, so docs.rs shows none: their placement and rules live in this directory.
+// Duties and the one command: CLAUDE.md "Atlas"; the authoring guide is the `atlas` skill.
+
+system truffle "Truffle" {
+  intent "Mesh networking for local-first apps on Tailscale: devices discover each other, message, sync state and move files with no central server."
+  thesis """
+    RFC 012 layering: Network (L3) → Transport (L4) → Session (L5) → Envelope (L6) → the Node API; applications are Layer 7 and talk to Node only.
+    Layer 3 (WatchIPNBus) is the source of truth for peers, never transport connections.
+    The Go sidecar (tsnet) and its loopback bridge are private to TailscaleProvider: nothing above Layer 3 knows they exist.
+    FileTransfer and SyncedStore live in core, built on Node primitives, and own "ft" and "ss:{id}"; request/reply and the serve proxy also live in core.
+    One product, two engines: truffle-core + sidecar on desktop, Truffle Swift on TailscaleKit on Apple, joined only by the wire contract.
+    """
+  see "CLAUDE.md#architecture"
+  see "docs/rfcs/012-layered-architecture-redesign.md#2-architecture-overview"
+  see "docs/rfcs/024-truffle-swift.md#52-runtime-split-one-api-two-engines"
+}
+
+// truffle-core's subsystems on Node: file transfer, synced store and request/reply (the send_typed docs in node.rs)
+// and the serve proxy (RFC 023 D2). Egress is Node API, not a subsystem: it sends no message.
+let $subsystems = mod:truffle_core::{file_transfer, synced_store, request_reply, proxy}

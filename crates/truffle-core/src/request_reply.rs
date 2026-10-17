@@ -44,6 +44,7 @@ pub enum RequestError {
     ChannelClosed,
 }
 
+// @atlas step file-push.wait
 /// Send a namespaced message and wait for a reply that matches a predicate.
 ///
 /// 1. Subscribes to `namespace` (before sending, to avoid missing the reply).

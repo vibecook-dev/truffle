@@ -1,0 +1,127 @@
+// Domains cut across layers and languages. An unpublished crate with a root doc names its domain in-code
+// (`//! @atlas layer … · domain …`); the claims below are the crates.io crates (truffle-core, truffle,
+// truffle-sidecar), truffle-cli, the npm packages, the directories, and the modules and files that serve another
+// domain than their crate (each truffle-bench workload `touches` the domain it measures). The most specific
+// `contains` wins; `touches` adds a secondary membership and never competes. Go and Swift files are counted by no
+// coverage: a `note` names the Go file that does a domain's work without binding it (a `file:` term would bind its
+// whole directory).
+
+domain mesh "Mesh core: Node, discovery, peers and sessions" {
+  intent "Discovery-aware peers: Layer 3 (WatchIPNBus) is the source of truth, never transport connections."
+  contains crate:truffle-core, mod:truffle_napi::peer, file:packages/core/src/peer.ts
+  touches path:apple/Sources/Truffle/Mesh/
+  touches mod:truffle_bench::workloads::path
+  see "CLAUDE.md#architecture"
+  see "docs/rfcs/012-layered-architecture-redesign.md#33-layer-5-session"
+  see "docs/rfcs/022-peer-handle-api.md#61-peer-handle"
+}
+
+domain messaging "Namespaced messaging" {
+  contains mod:truffle_core::envelope
+  contains file:crates/truffle-cli/src/commands/{send, recv}.rs, file:crates/truffle-cli/src/apps/messaging.rs
+  contains file:crates/truffle-cli/src/tui/commands/{send, broadcast}.rs
+  touches sym:truffle_core::node::Node::{send_typed, broadcast_typed, subscribe}
+  touches mod:truffle_bench::workloads::ws
+  see "CLAUDE.md#key-conventions"
+  see "docs/rfcs/012-layered-architecture-redesign.md#32-layer-6-envelope"
+}
+
+domain raw-transport "Raw TCP, UDP and QUIC (RFC 021)" {
+  intent "Node-shaped sockets over the tailnet: plain handles in NAPI, native shapes in TS."
+  contains mod:truffle_core::transport::{tcp, udp, quic, quic_socket}
+  contains mod:truffle_napi::{raw_socket, udp_socket, quic}, mod:truffle_tauri_plugin::raw_transport
+  contains file:packages/core/src/{net, dgram, quic, ws}.ts, file:crates/truffle-cli/src/commands/tcp.rs
+  touches mod:truffle_bench::workloads::{tcp, udp, quic, video}
+  note file:packages/sidecar-slim/udp_relay.go "The UDP loopback relay that carries datagrams and QUIC."
+  see "docs/rfcs/021-raw-transport-js-api.md#5-design-overview"
+}
+
+domain file-transfer "File transfer (RFC 014)" {
+  intent "Signaling on namespace \"ft\"; bytes on a one-off raw tailnet TCP stream, SHA-256 verified."
+  contains mod:truffle_core::file_transfer, mod:truffle_napi::file_transfer
+  contains path:crates/truffle-cli/src/apps/file_transfer/, file:crates/truffle-cli/src/commands/cp.rs
+  contains file:crates/truffle-cli/src/tui/commands/cp.rs
+  contains file:crates/truffle-cli/src/tui/ui/{transfer_dialog, file_picker}.rs
+  touches mod:truffle_bench::workloads::file_transfer
+  see "docs/rfcs/014-file-transfer-core.md#4-proposed-architecture"
+  see "CLAUDE.md#key-conventions"
+}
+
+domain synced-store "Synced store (RFC 016)" {
+  intent "Device-owned slices, last write wins by version, namespace \"ss:{id}\"."
+  contains mod:truffle_core::synced_store, mod:truffle_napi::synced_store
+  contains file:packages/react/src/{use-synced-store, synced-store-controller}.ts
+  touches mod:truffle_bench::workloads::synced_store
+  see "docs/rfcs/016-synced-store-and-request-reply.md#32-syncedstore"
+}
+
+domain request-reply "Request/reply (RFC 016)" {
+  contains mod:truffle_core::request_reply
+  see "docs/rfcs/016-synced-store-and-request-reply.md#31-requestreply-utility"
+}
+
+domain serving "HTTP serving over the tailnet (RFC 023)" {
+  intent "A JS handler gets the bytes over the bridge; a directory or another process is served by the Go engine."
+  contains mod:truffle_core::proxy, mod:truffle_napi::proxy
+  contains file:packages/core/src/{serve, http}.ts, file:crates/truffle-cli/src/commands/{serve, proxy}.rs
+  touches mod:truffle_bench::workloads::http
+  note file:packages/sidecar-slim/main.go "The serve engine (routes, reverse proxy, static files, identity headers) runs in the sidecar."
+  see "docs/rfcs/023-http-serving.md#5-design-overview"
+  see "docs/guide/serving-http.md#publishing-existing-services-with-meshserve"
+}
+
+domain egress "Egress for the node's own host processes (RFC 026)" {
+  contains mod:truffle_core::egress, mod:truffle_napi::egress
+  touches mod:truffle_bench::workloads::egress
+  note file:packages/sidecar-slim/egress.go "The loopback SOCKS5, fixed-route and CONNECT listeners run in the sidecar."
+  see "docs/rfcs/026-egress.md#2-decision"
+}
+
+domain identity "Identity, app isolation and the login gate (RFC 017, 022, 025)" {
+  intent "truffle-{appId}-{slug} hostnames, ULID device ids, the hello v2 gate and the per-node login allow-list."
+  contains mod:truffle_core::{identity, session::hello, network::login_allow}
+  touches path:apple/Sources/Truffle/Identity/
+  see "docs/rfcs/017-identity-and-namespacing.md#4-design-two-namespaces"
+  see "docs/rfcs/025-login-scoped-nodes.md#2-decision"
+}
+
+domain bindings "Bindings and the JS API" {
+  intent "Projections of the Node API: the NAPI addon, the Tauri v2 plugin, the primary JS API and its React hooks."
+  contains pkg:@vibecook/truffle, pkg:@vibecook/truffle-react, pkg:@vibecook/truffle-native
+  contains path:crates/truffle-tauri-plugin/guest-js/
+  see "README.md#packages"
+  see "docs/rfcs/015-binding-rewrite.md#3-current-node-api-what-bindings-must-wrap"
+}
+
+domain cli "CLI, TUI and daemon (RFC 010, 013)" {
+  intent "The TUI is the daemon in the foreground; one-shot agent commands talk to it over local JSON-RPC."
+  contains crate:truffle-cli, pkg:@vibecook/truffle-cli
+  see "docs/rfcs/013-tui-redesign.md#3-architecture-decision-tui--foreground-daemon"
+  see "docs/rfcs/010-p2p-and-cli-redesign.md#3-cli-daemon-architecture"
+}
+
+domain distribution "Release and sidecar distribution" {
+  intent "One release unit at one version; sidecar binaries are checksum-verified and fail closed."
+  contains crate:truffle, crate:truffle-sidecar, pkg:@vibecook/truffle-sidecar-*, path:scripts/
+  contains file:packages/core/src/sidecar.ts, file:crates/truffle-napi/helpers.js
+  contains file:crates/truffle-cli/src/auto_update.rs, file:crates/truffle-cli/src/commands/update.rs
+  see "docs/RELEASING.md#release-contract"
+}
+
+domain bench "Benchmarks and real-network tests (RFC 019, 020, 027)" {
+  contains pkg:@vibecook/truffle-bench-app, path:benchmark/schema/, path:packages/sidecar-slim/cmd/
+  see "docs/rfcs/027-benchmark-hub.md#2-goals"
+  see "benchmark/README.md#what-lives-here"
+  see "docs/TESTING.md#benchmarks"
+}
+
+domain swift "Truffle Swift (RFC 024)" {
+  contains path:apple/
+  see "docs/rfcs/024-truffle-swift.md#2-decision"
+  see "apple/README.md#package-layout"
+}
+
+domain examples "Example apps" {
+  contains pkg:@vibecook/example-*, path:apple/Examples/
+  see "README.md#examples"
+}

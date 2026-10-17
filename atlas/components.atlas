@@ -1,0 +1,131 @@
+// Runtime units and how they talk. A link with `via` is a runtime claim: asserted, its `at` anchors must resolve and
+// each `witness` literal must occur in their code (comments stripped). A link without `via` is graded against code
+// edges. Go, Swift and guest-js files are reachable only by `file:`/`path:` anchors.
+
+component core "truffle-core (in-process library)" kind library {
+  intent "A Rust host embeds a Node<TailscaleProvider>, which owns its sidecar child and loopback bridge."
+  contains crate:truffle-core
+  see "CLAUDE.md#architecture"
+}
+component sidecar "sidecar-slim (Go child process, tsnet inside)" kind process {
+  intent "tsnet lifecycle, tailnet dial and listen, peer watch, the RFC 023 serve engine and RFC 026 egress; no envelopes, sessions or subsystems."
+  contains path:packages/sidecar-slim/, !path:packages/sidecar-slim/cmd/
+  see "docs/rfcs/012-layered-architecture-redesign.md#36-layers-1-2-bridge--sidecar-internal-to-tailscaleprovider"
+}
+component cli "truffle (CLI binary)" kind cli {
+  contains crate:truffle-cli
+  component daemon "truffle up --foreground, or bare truffle (the TUI): owns the Node" kind daemon {
+    contains file:crates/truffle-cli/src/daemon/{server, handler}.rs, path:crates/truffle-cli/src/tui/
+  }
+  component agent "truffle <command>: a short-lived JSON-RPC client" kind cli {
+    contains path:crates/truffle-cli/src/commands/, file:crates/truffle-cli/src/daemon/client.rs
+  }
+  see "docs/rfcs/013-tui-redesign.md#3-architecture-decision-tui--foreground-daemon"
+}
+component bench "truffle-bench (the engine library and its CLI: hubs that run and answer workloads, or a pair in one process)" kind library {
+  contains crate:truffle-bench
+  see "docs/rfcs/027-benchmark-hub.md#54-hub"
+  see "docs/rfcs/027-benchmark-hub.md#10-cli"
+}
+component bench-app "truffle bench (Tauri v2 desktop app: the engine's Hub runs in the app process)" kind app {
+  contains crate:truffle-bench-app
+  component bench-ui "React frontend (in the webview)" kind ui { contains pkg:@vibecook/truffle-bench-app }
+  see "docs/rfcs/027-benchmark-hub.md#111-shell-and-process"
+}
+component napi "NAPI addon (inside the Node.js or Electron process)" kind native-addon {
+  contains crate:truffle-napi, pkg:@vibecook/truffle-native
+}
+component js-sdk "@vibecook/truffle" kind library { contains pkg:@vibecook/truffle }
+component react "@vibecook/truffle-react" kind library { contains pkg:@vibecook/truffle-react }
+component tauri "Tauri plugin (Rust, in the Tauri app process)" kind plugin {
+  contains crate:truffle-tauri-plugin
+  component tauri-guest "guest-js (in the webview)" kind ui-library { contains path:crates/truffle-tauri-plugin/guest-js/ }
+}
+component swift "Truffle Swift (in-process on iOS and macOS, no sidecar)" kind library {
+  contains path:apple/Sources/
+  see "docs/rfcs/024-truffle-swift.md#52-runtime-split-one-api-two-engines"
+}
+component tailnet "Tailscale control plane, DERP and WireGuard peers" external
+component peer "Another truffle node on the tailnet (Rust or Swift)" external
+component tailscalekit "TailscaleKit / libtailscale (pinned XCFramework)" external
+component host-apps "Other processes on the node's host (served targets, egress clients)" external
+
+core -> sidecar "spawned child; JSON lines: commands on stdin, events on stdout" via spawn {
+  at mod:truffle_core::network::tailscale::sidecar, mod:truffle_core::network::tailscale::protocol
+  at file:packages/sidecar-slim/main.go
+  witness "kill_on_drop"
+  witness "tsnet:start"
+}
+sidecar -> core "loopback TCP bridge: TRFF header and session token, then raw bytes" via ipc {
+  at mod:truffle_core::network::tailscale::{bridge, header}, file:packages/sidecar-slim/main.go
+  witness "127.0.0.1:0"
+  witness "0x54524646"
+}
+core -> peer "peer session: WebSocket /ws on tailnet port 9417, hello v2, then JSON envelopes" via ws {
+  at mod:truffle_core::transport::websocket, mod:truffle_core::session::hello
+  witness "/ws"
+}
+core -> peer "raw tailnet TCP, UDP and app-scoped QUIC (ALPN truffle-raw.{appId})" via port {
+  at mod:truffle_core::transport::{tcp, quic}, mod:truffle_core::network::tailscale::provider
+  witness "truffle-raw"
+}
+core -> sidecar "loopback UDP relay for datagrams and QUIC, HMAC-tokened per binding" via port {
+  at mod:truffle_core::network::tailscale::provider, file:packages/sidecar-slim/udp_relay.go
+  witness "TRUFFLE_UDP_REGISTER"
+}
+swift -> peer "the same session protocol, a second implementation" via ws {
+  at file:apple/Sources/Truffle/Session/RFC6455FrameTransport.swift
+  witness "GET /ws HTTP/1.1"
+}
+sidecar -> tailnet "tsnet.Server: WireGuard tunnels; peers from LocalAPI WatchIPNBus" via port {
+  at file:packages/sidecar-slim/main.go
+  witness "WatchIPNBus"
+}
+swift -> tailscalekit "tailscale_dial and tailscale_listen; LocalAPI WatchIPNBus and WhoIs" via embed {
+  at file:apple/Sources/TruffleTailscale/TailscaleKitBackend.swift
+  witness "tailscale_dial"
+}
+agent -> daemon "JSON-RPC 2.0, one object per line, over a Unix socket or named pipe" via ipc {
+  at file:crates/truffle-cli/src/daemon/{ipc, protocol}.rs, file:crates/truffle-cli/src/config.rs
+  witness "truffle.sock"
+  witness "push_file"
+}
+agent -> daemon "truffle up re-execs itself detached as `up --foreground`" via spawn {
+  at file:crates/truffle-cli/src/commands/up.rs
+  witness "--foreground"
+}
+tauri-guest -> tauri "invoke plugin:truffle commands; listen to truffle:// events" via ipc {
+  at file:crates/truffle-tauri-plugin/guest-js/index.ts, mod:truffle_tauri_plugin::events
+  witness "plugin:truffle|start"
+  witness "truffle://peer-event"
+}
+host-apps -> sidecar "RFC 026 egress: loopback SOCKS5, fixed routes, CONNECT proxy" via port {
+  at file:packages/sidecar-slim/egress.go
+  witness "127.0.0.1:0"
+}
+tailnet -> sidecar "HTTP(S) from any tailnet client to a mesh.serve listener" via http {
+  at file:packages/sidecar-slim/main.go
+  witness "ListenTLS"
+}
+sidecar -> host-apps "RFC 023 serve: reverse proxy to a loopback target with Tailscale identity headers" via http {
+  at file:packages/sidecar-slim/main.go
+  witness "Tailscale-User-Login"
+}
+bench -> peer "RFC 027 control protocol: hello, clock, prepare, start and finish, each acked, on namespace \"bench\"" via ws {
+  at mod:truffle_bench::control
+  witness "\"prepare\""
+  witness "\".ack\""
+}
+bench-ui -> bench-app "invoke the RFC 027 §11.2 commands; hub events on bench://event, run progress on a Channel" via ipc {
+  at file:benchmark/app/src/api/{api, tauri}.ts, mod:truffle_bench_app::commands
+  witness "bench://event"
+  witness "bench_run"
+}
+
+js-sdk -> napi "loads the addon in-process: NapiNode, socket handles, event callbacks"
+react -> js-sdk "hooks over the mesh node"
+napi -> core "binds one Node<TailscaleProvider>"
+tauri -> core "binds one Node<TailscaleProvider>"
+cli -> core "the daemon owns one Node<TailscaleProvider>"
+bench -> core "builds every node with NodeBuilder (one Node<TailscaleProvider> per hub) and drives the workloads on it"
+bench-app -> bench "the shell owns one Hub; every run and suite executes in the engine"
