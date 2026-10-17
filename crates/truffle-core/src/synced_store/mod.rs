@@ -170,6 +170,7 @@ impl<T: Serialize + DeserializeOwned + Clone + Send + Sync + 'static> SyncedStor
 
     // ── Write ───────────────────────────────────────────────────────
 
+    // @atlas step store-update.set
     /// Update this device's data. Increments version and broadcasts.
     ///
     /// Rapid successive calls coalesce on the wire: peers are guaranteed to

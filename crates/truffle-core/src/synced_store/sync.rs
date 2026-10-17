@@ -18,6 +18,7 @@ use crate::session::PeerEvent;
 use super::types::{Slice, StoreEvent, SyncMessage};
 use super::StoreInner;
 
+// @atlas step store-update.push
 /// Spawn the background sync task.
 ///
 /// Returns a `JoinHandle` that can be aborted to stop the task.
@@ -132,6 +133,7 @@ where
     })
 }
 
+// @atlas step store-update.apply
 /// Handle an incoming sync message from a peer.
 ///
 /// `from` is the sender's WhoIs-verified Tailscale id (the session's

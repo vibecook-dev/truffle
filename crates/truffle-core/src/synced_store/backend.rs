@@ -4,6 +4,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+// @atlas contract store-backend "SyncedStore persistence seam" {
+//   implemented-by crate:truffle-core
+//   see "docs/rfcs/016-synced-store-and-request-reply.md#persistence-optional"
+// }
 /// Backend for persisting store data across restarts.
 ///
 /// Methods are synchronous — file I/O for small JSON payloads is fast enough

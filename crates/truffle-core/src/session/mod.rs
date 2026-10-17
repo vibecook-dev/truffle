@@ -739,6 +739,7 @@ impl<N: NetworkProvider + 'static> PeerRegistry<N> {
         self.spawn_accept_loop().await;
     }
 
+    // @atlas step discovery.registry
     /// Spawn a task that subscribes to Layer 3 peer events and updates the
     /// internal peer list.
     fn spawn_peer_event_loop(&self) {
@@ -1101,6 +1102,7 @@ impl<N: NetworkProvider + 'static> PeerRegistry<N> {
         self.event_tx.subscribe()
     }
 
+    // @atlas step send.route
     /// Send data to a specific peer.
     ///
     /// If no WebSocket connection exists to the peer, one is lazily
@@ -1255,6 +1257,7 @@ impl<N: NetworkProvider + 'static> PeerRegistry<N> {
         Err(SessionError::UnknownPeer(peer_id.to_string()))
     }
 
+    // @atlas step store-update.fan
     /// Broadcast data to all peers with active WebSocket connections.
     ///
     /// Sends to all currently connected peers. Peers with no active
@@ -1867,6 +1870,7 @@ async fn mark_disconnected_unless_replaced(ctx: &ConnCtx, peer_id: &str) {
 // Connection task — exclusively owns the WsFramedStream
 // ---------------------------------------------------------------------------
 
+// @atlas step send.receive
 /// Spawn a background task that exclusively owns a `WsFramedStream`.
 ///
 /// The task uses `tokio::select!` to multiplex between:
