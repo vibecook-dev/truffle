@@ -891,7 +891,15 @@ fn collect_zip(
                 continue;
             }
         };
-        let name = entry.name().to_string();
+        // zip 9 decodes entry names fallibly; an undecodable name is reported
+        // like any other unreadable entry.
+        let name = match entry.name() {
+            Ok(n) => n.into_owned(),
+            Err(e) => {
+                out(format!("{source}#{i}"), Err(e.to_string()));
+                continue;
+            }
+        };
         if entry.is_dir() || !name.to_ascii_lowercase().ends_with(".json") {
             continue;
         }
