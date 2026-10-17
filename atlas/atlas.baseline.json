@@ -1,0 +1,18 @@
+{
+ "schema": "atlas.baseline/1",
+ "violations": [
+  "claim:contract:sync-wire/contract/565c34d2",
+  "claim:decision:layered-architecture/decision/74afec74",
+  "claim:decision:synced-store/decision/6487f263",
+  "rule:apps-use-node-api|pkg:cargo/truffle-bench|pkg:cargo/truffle-core",
+  "rule:apps-use-node-api|pkg:cargo/truffle-cli|pkg:cargo/truffle-core",
+  "rule:apps-use-node-api|pkg:cargo/truffle-napi|pkg:cargo/truffle-core",
+  "rule:apps-use-node-api|pkg:cargo/truffle-tauri-plugin|pkg:cargo/truffle-core",
+  "rule:layers-point-down|mod:rs/truffle_core::network::tailscale::provider|mod:rs/truffle_core::egress",
+  "rule:layers-point-down|mod:rs/truffle_core::network|mod:rs/truffle_core::egress",
+  "rule:layers-point-down|mod:rs/truffle_core::transport::websocket|mod:rs/truffle_core::session::hello",
+  "rule:network-knows-no-upper-layer|mod:rs/truffle_core::network::tailscale::provider|mod:rs/truffle_core::egress",
+  "rule:network-knows-no-upper-layer|mod:rs/truffle_core::network|mod:rs/truffle_core::egress",
+  "rule:transport-knows-no-session|mod:rs/truffle_core::transport::websocket|mod:rs/truffle_core::session::hello"
+ ]
+}

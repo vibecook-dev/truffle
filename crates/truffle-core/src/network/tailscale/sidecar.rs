@@ -400,6 +400,7 @@ impl GoSidecar {
         });
     }
 
+    // @atlas step discovery.read
     fn spawn_stdout_reader(
         stdout: tokio::process::ChildStdout,
         event_tx: broadcast::Sender<SidecarInternalEvent>,

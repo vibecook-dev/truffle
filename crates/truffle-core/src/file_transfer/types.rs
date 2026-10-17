@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 // Wire protocol messages (sent via WS namespace "ft")
 // ---------------------------------------------------------------------------
 
+// @atlas contract ft-wire "File-transfer signaling on namespace \"ft\"" {
+//   produced-by crate:truffle-core each-variant
+//   see "docs/rfcs/014-file-transfer-core.md#2-goals"
+// }
 /// File transfer signaling message types (sent via WS namespace "ft").
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]

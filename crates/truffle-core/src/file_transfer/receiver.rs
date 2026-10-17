@@ -308,6 +308,7 @@ pub fn spawn_receive_handler<N: NetworkProvider + 'static>(
     })
 }
 
+// @atlas step file-push.answer
 /// Handle an incoming OFFER: forward to offer channel, wait for decision,
 /// then accept/reject accordingly.
 #[allow(clippy::too_many_arguments)]
@@ -410,6 +411,8 @@ async fn handle_incoming_offer<N: NetworkProvider + 'static>(
     }
 }
 
+// @atlas step file-push.accept
+// @atlas step file-push.verify
 /// Accept an incoming offer: open TCP listener, receive file streaming to
 /// disk, verify SHA-256, and send ACK.
 #[allow(clippy::too_many_arguments)]

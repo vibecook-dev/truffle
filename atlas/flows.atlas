@@ -1,0 +1,59 @@
+// Four hot paths. A step done by a Rust function is bound in-code (`// @atlas step <flow>.<step>` above it; list them
+// with `grep -rn '@atlas step' crates`); a step done in Go keeps a `file:` anchor here, because `atlas build` reads no
+// `@atlas` comment in a .go file. A step with no anchor grades `asserted`: after deleting or renaming a step's
+// function, re-bind it. A hop is verified by an edge between its steps, one shared unit, or a `by` orchestrator
+// reaching both; `via` marks a runtime hop (asserted).
+
+flow discovery "Tailnet peer change → PeerEvent at every consumer" {
+  intent "Layer 3 is the source of truth for peers: a peer exists because WatchIPNBus says so, before any connection."
+  by mod:truffle_core::node
+  step watch    "sidecar: WatchIPNBus and a status diff emit tsnet:peerChanged" at file:packages/sidecar-slim/main.go
+  step read     "stdout reader parses each JSON line and dispatches the event"   via spawn
+  step admit    "provider drops self, keeps truffle-{appId}- peers, applies the login gate"
+  step registry "PeerRegistry stamps a generation, emits PeerEvent, schedules the eager hello"
+  step fanout   "Node::on_peer_change feeds NAPI, Tauri, the daemon and SyncedStore"
+  see "CLAUDE.md#architecture"
+  see "docs/rfcs/012-layered-architecture-redesign.md#33-layer-5-session"
+}
+
+flow send "Node::send_typed → the remote namespace subscriber" {
+  intent "If no WebSocket is open (eager identity off, or it dropped), the first send dials it and concurrent callers share that one dial; envelopes travel as Binary frames, attributed to the WhoIs-verified id."
+  by mod:truffle_core::node
+  step encode  "send_typed wraps the payload in an Envelope (JSON codec)"
+  step route   "PeerRegistry::send resolves the peer; with no WebSocket open it starts or joins the peer's one dial" direct
+  step dial    "WebSocketTransport::connect dials through Layer 3 and runs the client hello" direct
+  step bridge  "TailscaleProvider registers the pending dial and sends bridge:dial"
+  step tsnet   "sidecar dials over tsnet and bridges the stream back behind a TRFF header" at file:packages/sidecar-slim/main.go via spawn
+  step handoff "Bridge checks the session token and hands the TcpStream to the pending dial" via ipc
+  step accept  "remote: WebSocketTransport::listen accepts; the server hello verifies WhoIs" via ws
+  step frame   "the connection task writes the envelope as one Binary frame"                via ws
+  step receive "remote: the connection task reads the frame; from is the connection's WhoIs-verified id" via ws
+  step deliver "remote: the envelope router decodes and fans out by namespace"
+  see "docs/rfcs/012-layered-architecture-redesign.md#116-truffle-send"
+  see "docs/rfcs/022-peer-handle-api.md#75-message-path"
+  see "docs/rfcs/022-peer-handle-api.md#81-priority"
+}
+
+flow file-push "FileTransfer::send_file → a verified file on the receiver" {
+  intent "Signaling on the WebSocket namespace \"ft\"; the bytes on a one-off raw tailnet TCP stream."
+  step offer  "sender hashes the file in 64 KiB chunks and builds the OFFER"
+  step wait   "send_and_wait: one send_typed on \"ft\" and a token-filtered subscribe" direct
+  step answer "receiver: the app's OfferResponder decides, or auto-accept"              via ws
+  step accept "receiver listens on a fresh tailnet port and answers ACCEPT with it"
+  step open   "sender opens raw tailnet TCP to that port, TLS forced off"              via ws
+  step stream "8-byte size, 64-hex SHA-256, then 64 KiB chunks"
+  step verify "receiver checks the SHA-256, places the file per its overwrite policy, ACKs 0x01" via port
+  see "docs/rfcs/014-file-transfer-core.md#52-sending-files"
+  see "docs/rfcs/012-layered-architecture-redesign.md#94-why-raw-tcp-for-file-transfer-instead-of-http"
+}
+
+flow store-update "SyncedStore::set → StoreEvent::PeerUpdated on every connected peer" {
+  intent "Each device writes only its own slice; a remote copy is replaced only by a newer version from its owner."
+  step set      "bump the version, persist through the backend, coalesce in a watch channel"
+  step push     "the sync task broadcasts update on ss:{id}"
+  step envelope "Node::broadcast_typed wraps the slice in an Envelope"
+  step fan      "PeerRegistry::broadcast: connected peers only, no lazy connect"
+  step apply    "remote: the sender must own the slice; a newer version replaces it" via ws
+  see "docs/rfcs/016-synced-store-and-request-reply.md#wire-protocol"
+  see "docs/rfcs/025-login-scoped-nodes.md#35-sender-bound-slices-tf-2"
+}

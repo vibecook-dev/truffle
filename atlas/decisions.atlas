@@ -1,0 +1,169 @@
+// Decisions with their real status, which is not always the RFC header's: several headers say Draft or Proposed for
+// work that shipped. Verified only when accepted and every confirmed-by rule, contract or flow is verified;
+// proposed, hypothesis and superseded decisions are asserted.
+
+decision rust-core-go-shim "Rust core over a thin Go shim that keeps tsnet" code RFC-003 status accepted date 2026-02-24 {
+  because "The Go shim keeps only tsnet lifecycle and TCP bridging; its no-HTTP clause was later reversed by RFC 023 (the serve engine) and RFC 026 (egress)."
+  affects crate:truffle-core, path:packages/sidecar-slim/
+  see "docs/rfcs/003-rust-rewrite.md#6-what-stays-go"
+  see "docs/rfcs/023-http-serving.md#12-decisions"
+}
+
+decision vision-008 "TruffleRuntime, STAR mesh and a six-layer stack" code RFC-008 status superseded date 2026-03-18 {
+  because "The header says Implemented; RFC 012's rebuild replaced it, and its non-goals (no iOS SDK, no sidecar distribution) were reversed later."
+  see "docs/rfcs/008-truffle-vision.md#2-architecture-layers"
+  see "docs/rfcs/012-layered-architecture-redesign.md#L6"
+}
+
+decision binary-frames-009 "Binary frame header and a typed Namespace enum" code RFC-009 status superseded date 2026-03-19 {
+  because "The header says Implemented (2026-03-19); the shipped envelope is JSON with an opaque namespace string, and RFC 024 records that RFC 009 frames never shipped for the session."
+  see "docs/rfcs/009-wire-protocol-redesign.md#31-binary-framing"
+  see "docs/rfcs/024-truffle-swift.md#83-message-envelope-as-shipped--envelopemodrs"
+}
+
+decision cli-daemon "A CLI daemon over a local socket; no STAR topology or election" code RFC-010 status accepted date 2026-03-20 {
+  because "The header still says Proposed; the daemon, IPC and JSON-RPC protocol shipped in truffle-cli."
+  affects crate:truffle-cli
+  see "docs/rfcs/010-p2p-and-cli-redesign.md#3-cli-daemon-architecture"
+}
+
+decision ft-over-http-011 "File transfer as HTTP PUT over direct tailnet TCP" code RFC-011 status superseded date 2026-03-22 {
+  because "The header says Implemented (v0.2.4-v0.2.5); RFC 012 removed its HTTP path (axum, TcpProxyHandler), and RFC 014 moved file transfer into core over raw TCP."
+  see "docs/rfcs/011-file-transfer-over-mesh.md#3-proposed-design-direct-tcp-over-mesh"
+  see "docs/rfcs/012-layered-architecture-redesign.md#5-network-paths"
+}
+
+decision layered-architecture "Layers 3-6 behind one Node API; applications are Layer 7" code RFC-012 status accepted date 2026-03-24 {
+  because "The earlier core coupled layers: file transfer straddled two paths, discovery mixed polling and announces, apps managed bridge internals."
+  affects crate:truffle-core
+  confirmed-by layers-point-down, network-knows-no-upper-layer, peers-from-layer-3,
+    transport-knows-no-session, transports-independent, session-knows-no-payload,
+    envelope-knows-no-transport, bridge-is-private, apps-use-node-api, core-depends-on-no-crate
+  see "docs/rfcs/012-layered-architecture-redesign.md#1-motivation"
+  see "CLAUDE.md#architecture"
+}
+
+decision lazy-connections "Dial a peer's WebSocket on the first send, not on discovery" code RFC-012 status superseded date 2026-03-24 {
+  because "RFC 022 Phase C made eager identity the default: one hello dial per online peer, without waiting for a send. A send still dials when no WebSocket is open."
+  affects mod:truffle_core::session
+  see "docs/rfcs/012-layered-architecture-redesign.md#93-why-lazy-connections"
+  see "docs/rfcs/022-peer-handle-api.md#phase-c--eager-identity-default-on--done"
+}
+
+decision raw-tcp-for-files "Raw TCP for bulk data, WebSocket for messages" code RFC-012 status accepted date 2026-03-24 {
+  because "No HTTP stack on the data path; messaging still needs framing, so WebSocket stays."
+  affects mod:truffle_core::{file_transfer, transport}
+  confirmed-by no-http-stack-on-data-path, file-push
+  see "docs/rfcs/012-layered-architecture-redesign.md#94-why-raw-tcp-for-file-transfer-instead-of-http"
+  see "docs/rfcs/012-layered-architecture-redesign.md#95-why-keep-websocket-not-just-raw-tcp-for-everything"
+}
+
+decision tui-is-the-daemon "The TUI runs the daemon in-process; agents use one-shot commands" code RFC-013 status accepted date 2026-03-28 {
+  affects crate:truffle-cli
+  see "docs/rfcs/013-tui-redesign.md#3-architecture-decision-tui--foreground-daemon"
+  see "docs/rfcs/013-tui-redesign.md#11-agent-mode-one-shot-commands"
+}
+
+decision file-transfer-in-core "File transfer is a core subsystem with an accept/reject API" code RFC-014 status accepted date 2026-03-29 {
+  because "The header says Draft; core file_transfer/ shipped, reversing RFC 012's file transfer as a Layer 7 app. Phase 2 is partly done: cli/src/apps/file_transfer/ survives as a thin wrapper."
+  affects mod:truffle_core::file_transfer
+  confirmed-by ft-wire
+  see "docs/rfcs/014-file-transfer-core.md#4-proposed-architecture"
+  see "docs/rfcs/014-file-transfer-core.md#11-decided-questions"
+}
+
+decision bindings-on-node "NAPI and Tauri bindings rewritten against Node" code RFC-015 status accepted date 2026-03-30 {
+  because "The header says Draft; both bindings were rebuilt on Node. Its dropped list (store, proxy, raw sockets) was reversed by later RFCs."
+  affects crate:truffle-napi, crate:truffle-tauri-plugin
+  confirmed-by bindings-wrap-core, napi-projection
+  see "docs/rfcs/015-binding-rewrite.md#3-current-node-api-what-bindings-must-wrap"
+}
+
+decision synced-store "SyncedStore and a request/reply helper in core" code RFC-016 status accepted date 2026-03-30 {
+  because "The header says Draft; phases 1-3 shipped (FileBackend persistence included), the phase 4 CLI did not. RFC 025 later bound every slice and Clear to its sender."
+  affects mod:truffle_core::{synced_store, request_reply}
+  confirmed-by sync-wire, request-reply-over-node
+  see "docs/rfcs/016-synced-store-and-request-reply.md#3-design"
+  see "docs/rfcs/025-login-scoped-nodes.md#35-sender-bound-slices-tf-2"
+}
+
+decision app-namespacing "appId isolation and the truffle- hostname prefix" code RFC-017 status accepted date 2026-04-11 {
+  affects mod:truffle_core::{identity, session::hello}, path:apple/Sources/Truffle/Identity/
+  affects mod:truffle_core::transport::websocket, mod:truffle_core::network::tailscale::provider
+  see "docs/rfcs/017-identity-and-namespacing.md#4-design-two-namespaces"
+  see "docs/rfcs/017-identity-and-namespacing.md#8-wire-protocol-peer-metadata-exchange"
+}
+
+decision real-network-harness "Real-tailnet tests and benchmarks, locally and in CI" code RFC-019 status accepted date 2026-04-21 {
+  because "RFC 019 is partly stale (its CRDT parts went with RFC 018); RFC 020 added the CI workflows; RFC 027 superseded RFC 019 §10.2 and RFC 020 §3 and §6.2 (benchmarks.yml)."
+  affects crate:truffle-bench
+  confirmed-by bench-keys-from-env
+  see "docs/rfcs/019-local-testing-and-benchmarking.md#4-design-overview"
+  see "docs/rfcs/020-ci-testing.md#4-design-overview"
+}
+
+decision raw-transport-js "Raw TCP, UDP and QUIC in the JS API with pull-model handles" code RFC-021 status accepted date 2026-07-07 {
+  because "Phases 1-4 shipped; phase 5 (WebTransport, QUIC datagrams, listener ACLs) is future work."
+  affects mod:truffle_napi::{raw_socket, udp_socket, quic}, file:packages/core/src/{net, dgram, quic, ws}.ts
+  confirmed-by napi-pull-model, websocket-stays-internal
+  see "docs/rfcs/021-raw-transport-js-api.md#12-decided-questions"
+}
+
+decision peer-handles "Peer handles; an honest deviceId; WhoIs attribution" code RFC-022 status accepted date 2026-07-09 {
+  because "The header says in progress and unreleased; it shipped in 0.6.0. Phase D (hostinfo) has not started."
+  affects mod:truffle_core::session, mod:truffle_napi::peer, file:packages/core/src/peer.ts
+  see "docs/rfcs/022-peer-handle-api.md#61-peer-handle"
+  see "docs/rfcs/022-peer-handle-api.md#75-message-path"
+}
+
+decision http-serving "Serve over the tailnet: JS handlers over the bridge, other targets in the Go engine" code RFC-023 status accepted date 2026-07-12 {
+  because "Phases 1-3 shipped; Funnel (4) and service discovery (5) are future, and proxy/discovery.rs stays inert until then (D10)."
+  affects mod:truffle_core::proxy, file:packages/core/src/{serve, http}.ts, path:packages/sidecar-slim/
+  see "docs/rfcs/023-http-serving.md#5-design-overview"
+  see "docs/rfcs/023-http-serving.md#12-decisions"
+}
+
+decision swift-engine "Truffle Swift: an Apple-native engine on TailscaleKit" code RFC-024 status accepted date 2026-07-16 {
+  because "Phases 0-2 shipped; phase 3 has not started and phase 4 is partial. It does not supersede the desktop stack."
+  affects path:apple/
+  confirmed-by tailscalekit-below-product
+  see "docs/rfcs/024-truffle-swift.md#2-decision"
+}
+
+decision login-scoped-nodes "A per-node login allow-list as the mesh boundary" code RFC-025 status accepted date 2026-09-16 {
+  affects mod:truffle_core::{network::login_allow, session::hello, synced_store}
+  affects mod:truffle_core::transport::websocket, mod:truffle_core::network::tailscale::provider
+  see "docs/rfcs/025-login-scoped-nodes.md#2-decision"
+  see "docs/rfcs/025-login-scoped-nodes.md#8-decisions"
+}
+
+decision egress "Egress for the node's own host processes, loopback only" code RFC-026 status accepted date 2026-09-30 {
+  because "Sidecar, core and NAPI shipped; mesh.egress in TS and Tauri, and Apple E2/E3, are future work."
+  affects mod:truffle_core::egress, mod:truffle_napi::egress, file:packages/sidecar-slim/egress.go
+  confirmed-by egress-loopback-only
+  see "docs/rfcs/026-egress.md#2-decision"
+  see "docs/rfcs/026-egress.md#10-decisions"
+}
+
+decision benchmark-hub "One benchmark engine that the CLI and the desktop app both drive" code RFC-027 status accepted date 2026-10-16 {
+  because "The header says Implemented on feat/benchmark-hub (not yet merged); it merged to main in #213. truffle-bench moved to benchmark/engine as a library plus a CLI."
+  affects crate:truffle-bench, crate:truffle-bench-app, pkg:@vibecook/truffle-bench-app, path:benchmark/schema/
+  confirmed-by bench-keys-from-env, bench-never-sets-hostname, legacy-transport-without-tbn1,
+    bench-app-drives-the-engine, bench-ui-renders-text-only, bench-app-types
+  see "docs/rfcs/027-benchmark-hub.md#2-goals"
+  see "benchmark/README.md#what-lives-here"
+}
+
+decision public-surfaces "Which artifacts are stable surfaces, and which are implementation details" status accepted {
+  affects pkg:@vibecook/truffle, pkg:@vibecook/truffle-react, crate:truffle-cli, crate:truffle, crate:truffle-core, crate:truffle-sidecar
+  affects pkg:@vibecook/truffle-native
+  confirmed-by native-is-internal
+  see "docs/API-STABILITY.md#from-10"
+}
+
+decision one-release-unit "Every public artifact ships at one version; sidecar binaries fail closed" status accepted {
+  because "scripts/check-release-versions.mjs enforces the lockstep; manifests are config, so Atlas cannot see it. The unpublished benchmark hub keeps its own versions."
+  affects path:scripts/, crate:truffle-sidecar
+  see "docs/RELEASING.md#release-contract"
+  see "docs/RELEASING.md#the-benchmark-hub-is-not-released"
+}

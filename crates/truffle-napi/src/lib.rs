@@ -5,6 +5,13 @@
 //!
 //! - [`NapiNode`] — peer discovery, messaging, diagnostics
 //! - [`NapiFileTransfer`] — file send/receive/pull
+//!
+//! @atlas layer bindings · domain bindings
+//! @atlas rule napi-pull-model "Raw-transport handles pass bytes only as the answer to a JS read, never a ThreadsafeFunction" {
+//!   forbid text "ThreadsafeFunction" in mod:truffle_napi::{raw_socket, udp_socket, quic}
+//!   see "docs/rfcs/021-raw-transport-js-api.md#12-decided-questions"
+//!   see "docs/rfcs/021-raw-transport-js-api.md#5-design-overview"
+//! }
 
 pub mod egress;
 pub mod file_transfer;
