@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock};
 
-use super::bridge::{Bridge, DIAL_TIMEOUT};
+use super::bridge::{Bridge, BridgeCounters, BridgeStats, DIAL_TIMEOUT};
 use super::protocol::{
     command_type, EgressAddCommandData, EgressListCommandData, EgressProxyCommandData,
     EgressRemoveCommandData, LoopbackCommandData, PingResultEventData, ProxyAddCommandData,
@@ -151,6 +151,10 @@ pub struct TailscaleProvider {
     /// Handle to the bridge (set during start).
     bridge: Arc<Mutex<Option<Arc<Bridge>>>>,
 
+    /// Bridge delivery/drop counters; outlive any one bridge so the totals
+    /// cover restarts.
+    bridge_counters: Arc<BridgeCounters>,
+
     /// Bridge shutdown sender.
     bridge_shutdown_tx: Arc<Mutex<Option<tokio::sync::watch::Sender<bool>>>>,
 
@@ -230,6 +234,7 @@ impl TailscaleProvider {
             })),
             sidecar: Arc::new(Mutex::new(None)),
             bridge: Arc::new(Mutex::new(None)),
+            bridge_counters: Arc::default(),
             bridge_shutdown_tx: Arc::new(Mutex::new(None)),
             session_token: Arc::new(RwLock::new([0u8; 32])),
             local_tailscale_id: Arc::new(std::sync::RwLock::new(None)),
@@ -252,6 +257,14 @@ impl TailscaleProvider {
             0 => None,
             pid => Some(pid),
         }
+    }
+
+    /// Connections the data-plane bridge delivered or dropped, and why
+    /// (cumulative since this provider was created). Lock-free and
+    /// synchronous. Non-zero drop counts mean incoming connections were
+    /// lost: e.g. `dropped_listener_full` when the app accepts too slowly.
+    pub fn bridge_stats(&self) -> BridgeStats {
+        self.bridge_counters.snapshot()
     }
 
     /// Generate a random 32-byte session token.
@@ -824,7 +837,7 @@ impl super::super::NetworkProvider for TailscaleProvider {
         *self.session_token.write().await = token;
 
         // Start the bridge
-        let bridge = Bridge::bind(token).await?;
+        let bridge = Bridge::bind_with_counters(token, self.bridge_counters.clone()).await?;
         let bridge_port = bridge.local_port()?;
         let bridge = Arc::new(bridge);
 

@@ -13,8 +13,8 @@
 //!   (magic, version, session token, direction, port, request ID, etc.).
 //! - **Protocol** (`protocol.rs`): JSON command/event types for sidecar communication.
 //!
-//! Only [`TailscaleProvider`] and [`TailscaleConfig`] are public. Everything else
-//! is an implementation detail.
+//! Only [`TailscaleProvider`], [`TailscaleConfig`] and the [`BridgeStats`]
+//! counters are public. Everything else is an implementation detail.
 
 mod bridge;
 mod header;
@@ -25,4 +25,5 @@ mod sidecar;
 #[cfg(test)]
 mod tests;
 
+pub use bridge::BridgeStats;
 pub use provider::{TailscaleConfig, TailscaleProvider, DEFAULT_START_TIMEOUT};

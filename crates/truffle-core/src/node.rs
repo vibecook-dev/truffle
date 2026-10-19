@@ -1544,6 +1544,14 @@ impl Node<TailscaleProvider> {
     pub fn sidecar_pid(&self) -> Option<u32> {
         self.network.sidecar_pid()
     }
+
+    /// Connections the sidecar bridge delivered to this node, and those it
+    /// dropped by reason (handshake overload, a listener whose app accepts
+    /// too slowly, an unregistered port, …). Cumulative and cheap to poll;
+    /// see [`BridgeStats`](crate::network::tailscale::BridgeStats).
+    pub fn bridge_stats(&self) -> crate::network::tailscale::BridgeStats {
+        self.network.bridge_stats()
+    }
 }
 
 impl<N: NetworkProvider + 'static> Drop for Node<N> {
