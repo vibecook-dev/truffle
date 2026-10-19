@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -388,7 +389,7 @@ func TestMarshalPeerIdentityDropsOversizeOptionalFields(t *testing.T) {
 		NodeID:        "nABC123",
 		LoginName:     "alice@example.com",
 		DisplayName:   "Alice",
-		ProfilePicURL: strings.Repeat("x", 8192),
+		ProfilePicURL: strings.Repeat("x", 2*maxRemoteDNSNameLen),
 	}
 	out := marshalPeerIdentity(identity)
 	if len(out) > maxRemoteDNSNameLen {
@@ -429,7 +430,7 @@ func TestMarshalPeerIdentitySmallIdentityUnchanged(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("marshalPeerIdentity produced invalid JSON: %v", err)
 	}
-	if got != identity {
+	if !reflect.DeepEqual(got, identity) {
 		t.Errorf("identity round-trip mismatch: got %+v, want %+v", got, identity)
 	}
 }
@@ -464,12 +465,13 @@ func TestShouldWrapTLS(t *testing.T) {
 // treating this sidecar as v1. The core reads it off the "running" status/started
 // event (protocol.rs StatusEventData.protocol_version, camelCase, integer).
 // The pin is deliberate: v5 = loginName; v6 = authenticated UDP; v7 = egress;
-// v8 = follow-up "running" status once the self login is known.
+// v8 = follow-up "running" status once the self login is known; v9 = capMap,
+// tags and userId on WhoIs identities + proxy acceptAppCaps.
 // Update this test AND provider.rs capability gates when bumping the version.
 // Login gating still requires v5; authenticated UDP still requires v6.
 func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
-	if sidecarProtocolVersion != 8 {
-		t.Fatalf("sidecarProtocolVersion = %d, want 8 (follow-up status with the self login)", sidecarProtocolVersion)
+	if sidecarProtocolVersion != 9 {
+		t.Fatalf("sidecarProtocolVersion = %d, want 9 (WhoIs capMap/tags/userId, proxy acceptAppCaps)", sidecarProtocolVersion)
 	}
 
 	var buf bytes.Buffer
@@ -477,7 +479,7 @@ func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
 	s.sendStatus("running", "host", "host.tail.ts.net", "100.64.0.1", "", "")
 
 	// The core matches the camelCase key exactly, as a JSON integer.
-	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":8`)) {
+	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":9`)) {
 		t.Errorf("status payload missing protocolVersion on the wire: %s", strings.TrimSpace(buf.String()))
 	}
 

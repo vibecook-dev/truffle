@@ -66,6 +66,16 @@ pub struct ProxyConfig {
     /// Longest prefix wins, order-independent (D11).
     #[serde(default)]
     pub routes: Vec<ProxyRoute>,
+    /// Application capabilities (tailnet policy grants, `app` section) to
+    /// forward to the backend, by name (e.g. `example.com/cap/media`). For
+    /// each request the sidecar sends the caller's grants for these names as
+    /// JSON in a `Tailscale-App-Capabilities` header — the same header and
+    /// shape as `tailscale serve --accept-app-caps` — after stripping any
+    /// inbound `Tailscale-*` header. Empty (the default) sends no header.
+    /// Needs sidecar protocol 9; `add` fails on an older sidecar rather than
+    /// silently forwarding nothing.
+    #[serde(default)]
+    pub accept_app_capabilities: Vec<String>,
 }
 
 fn default_true() -> bool {

@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"tailscale.com/client/local"
+	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
@@ -50,8 +51,10 @@ const (
 
 	// maxRemoteDNSNameLen bounds the RemoteDNSName header field, which carries
 	// JSON-encoded peer identity. Must match MAX_REMOTE_DNS_NAME_LEN in
-	// crates/truffle-core/src/network/tailscale/header.rs.
-	maxRemoteDNSNameLen = 4096
+	// crates/truffle-core/src/network/tailscale/header.rs. 16 KiB (was 4 KiB
+	// before protocol v9) leaves room for the app-capability map a tailnet
+	// policy grants a peer; the field stays u16-framed on the wire.
+	maxRemoteDNSNameLen = 16 * 1024
 
 	dirIncoming = 0x01
 	dirOutgoing = 0x02
@@ -127,11 +130,14 @@ type dialResultData struct {
 // v8 = no new commands: a "running" tsnet:status is re-sent once the node's
 // own login becomes known after start (a fast restart can reach Running
 // before the netmap names our user), so a core may rely on that instead of
-// asking the LocalAPI itself.
+// asking the LocalAPI itself; v9 = WhoIs identities (bridge header and
+// tsnet:whoisResult) carry userId, tags and the peer's app-capability map
+// (capMap), the bridge identity field grows to 16 KiB, and proxy:add accepts
+// acceptAppCaps, injecting a Tailscale-App-Capabilities header.
 // An absent value makes the core treat the sidecar as v1.
 // Bump on any addition to the command surface the core must not send blind,
 // or to an event the core relies on.
-const sidecarProtocolVersion = 8
+const sidecarProtocolVersion = 9
 
 type statusData struct {
 	State       string `json:"state"`
@@ -197,6 +203,52 @@ type peerIdentityData struct {
 	DisplayName   string `json:"displayName,omitempty"`
 	ProfilePicURL string `json:"profilePicUrl,omitempty"`
 	NodeID        string `json:"nodeId,omitempty"`
+	// UserID is the owner's numeric Tailscale user id (UserProfile.ID). A
+	// login name can be renamed; the id cannot. 0 (omitted) = unknown.
+	UserID int64 `json:"userId,omitempty"`
+	// Tags are the peer node's ACL tags ("tag:tv"). A tagged node has no
+	// human owner (its login is the "tagged-devices" pseudo-user), so tags and
+	// nodeId are what tell two shared devices apart.
+	Tags []string `json:"tags,omitempty"`
+	// CapMap holds the application capabilities the tailnet policy grants
+	// this peer when it talks to THIS node (WhoIsResponse.CapMap: the "app"
+	// section of grants), keyed by capability name, one raw JSON value per
+	// matching grant — exactly what tailcfg.UnmarshalCapJSON consumes.
+	CapMap map[string][]json.RawMessage `json:"capMap,omitempty"`
+	// CapMapDropped is set when CapMap had to be omitted to fit the bridge
+	// header (marshalPeerIdentity), so an app deriving permissions from it can
+	// fail closed instead of mistaking "dropped" for "no capabilities".
+	CapMapDropped bool `json:"capMapDropped,omitempty"`
+}
+
+// isEmpty reports an identity that carries no information at all (the
+// anonymous case). Replaces struct equality, which maps/slices rule out.
+func (id peerIdentityData) isEmpty() bool {
+	return id.DNSName == "" && id.LoginName == "" && id.DisplayName == "" &&
+		id.ProfilePicURL == "" && id.NodeID == "" && id.UserID == 0 &&
+		len(id.Tags) == 0 && len(id.CapMap) == 0 && !id.CapMapDropped
+}
+
+// capMapFromWhois converts tailcfg's PeerCapMap (raw JSON strings) into the
+// identity's JSON-native map. An empty tailcfg.RawMessage marshals as null
+// upstream, so it does here too.
+func capMapFromWhois(caps tailcfg.PeerCapMap) map[string][]json.RawMessage {
+	if len(caps) == 0 {
+		return nil
+	}
+	out := make(map[string][]json.RawMessage, len(caps))
+	for name, values := range caps {
+		raws := make([]json.RawMessage, 0, len(values))
+		for _, v := range values {
+			if v == "" {
+				raws = append(raws, json.RawMessage("null"))
+				continue
+			}
+			raws = append(raws, json.RawMessage(v))
+		}
+		out[string(name)] = raws
+	}
+	return out
 }
 
 // listenData is the payload for tsnet:listen commands.
@@ -359,6 +411,11 @@ type proxyAddData struct {
 	Allow []string `json:"allow,omitempty"`
 	// Routes replaces the single target with path-prefix mounts (§7).
 	Routes []proxyRouteData `json:"routes,omitempty"`
+	// AcceptAppCaps names the application capabilities (tailnet policy
+	// grants, "app" section) forwarded to the backend as JSON in the
+	// Tailscale-App-Capabilities header — the allow-list `tailscale serve
+	// --accept-app-caps` takes. Empty = header never sent (protocol v9).
+	AcceptAppCaps []string `json:"acceptAppCaps,omitempty"`
 
 	// RequestID is an optional correlation id echoed on proxy:added/proxy:error.
 	RequestID string `json:"requestId,omitempty"`
@@ -1731,7 +1788,7 @@ func (s *shim) handleWhois(data json.RawMessage) {
 			emit(whoisResultData{Error: fmt.Sprintf("whois lookup failed: %v", err)})
 			return
 		}
-		if identity == (peerIdentityData{}) {
+		if identity.isEmpty() {
 			emit(whoisResultData{}) // anonymous: absent, not fabricated
 			return
 		}
@@ -2250,6 +2307,25 @@ func (s *shim) handleProxyAdd(raw json.RawMessage) {
 	})
 }
 
+// validateAcceptAppCaps re-checks the capability allow-list off the wire.
+// Tailscale capability names are "{domain}/{path}" (KB 1537); anything without
+// a slash, or with whitespace/control characters, cannot be a real grant and
+// is almost certainly a config typo that would silently forward nothing.
+func validateAcceptAppCaps(names []string) *proxyAddFailure {
+	for _, name := range names {
+		bad := name == "" || len(name) > 256 || !strings.Contains(name, "/")
+		for _, r := range name {
+			if r <= ' ' || r == 0x7f {
+				bad = true
+			}
+		}
+		if bad {
+			return &proxyAddFailure{code: "INVALID_APP_CAP", message: fmt.Sprintf("acceptAppCaps entry %q is not a capability name ({domain}/{path})", name)}
+		}
+	}
+	return nil
+}
+
 // bindProxyRoutes validates every route and opens all static roots before any
 // proxy state or listener is installed. On any failure, including a panic, it
 // closes roots accumulated from earlier routes.
@@ -2396,6 +2472,10 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 	// validates shapes too, but the sidecar re-checks — it must not trust the
 	// wire (§9). Opening static roots here intentionally makes invalid roots an
 	// add-time failure rather than a later request-time 404.
+	if failure := validateAcceptAppCaps(data.AcceptAppCaps); failure != nil {
+		fail(failure.code, failure.message)
+		return
+	}
 	routes, resources, bindFailure := s.bindProxyRoutes(data)
 	if bindFailure != nil {
 		fail(bindFailure.code, bindFailure.message)
@@ -2483,6 +2563,7 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 		}
 
 		injectIdentityHeaders(r.Header, identity)
+		injectAppCapabilities(r.Header, identity, data.AcceptAppCaps)
 		r.Header.Set("X-Forwarded-Proto", forwardedProto)
 
 		// WebSocket upgrades bypass ReverseProxy via hijack — only for URL
@@ -2999,18 +3080,35 @@ func (s *shim) whoisIdentityErr(lc *local.Client, remoteAddr string) (peerIdenti
 	if err != nil {
 		return peerIdentityData{}, err
 	}
+	return identityFromWhois(whois), nil
+}
 
+// identityFromWhois maps a LocalAPI WhoIs answer onto the identity the
+// sidecar hands to Rust (bridge header, tsnet:whoisResult) and to proxied
+// backends (headers). Pure, so the mapping is unit-testable without tsnet.
+func identityFromWhois(whois *apitype.WhoIsResponse) peerIdentityData {
 	identity := peerIdentityData{}
+	if whois == nil {
+		return identity
+	}
 	if whois.Node != nil {
 		identity.DNSName = strings.TrimSuffix(whois.Node.Name, ".")
 		identity.NodeID = string(whois.Node.StableID)
+		if len(whois.Node.Tags) > 0 {
+			identity.Tags = append([]string(nil), whois.Node.Tags...)
+		}
+		identity.UserID = int64(whois.Node.User)
 	}
 	if whois.UserProfile != nil {
 		identity.LoginName = whois.UserProfile.LoginName
 		identity.DisplayName = whois.UserProfile.DisplayName
 		identity.ProfilePicURL = whois.UserProfile.ProfilePicURL
+		if whois.UserProfile.ID != 0 {
+			identity.UserID = int64(whois.UserProfile.ID)
+		}
 	}
-	return identity, nil
+	identity.CapMap = capMapFromWhois(whois.CapMap)
+	return identity
 }
 
 // whoisIdentity folds lookup failures into the anonymous case (zero
@@ -3031,7 +3129,7 @@ func (s *shim) whoisIdentity(lc *local.Client, remoteAddr string) peerIdentityDa
 // extract rich identity info about the connecting peer.
 func (s *shim) resolvePeerIdentity(lc *local.Client, remoteAddr string) string {
 	identity := s.whoisIdentity(lc, remoteAddr)
-	if identity == (peerIdentityData{}) {
+	if identity.isEmpty() {
 		return ""
 	}
 	return marshalPeerIdentity(identity)
@@ -3113,6 +3211,12 @@ const (
 	hdrNodeName   = "Tailscale-Node-Name"
 )
 
+// hdrAppCapabilities carries the caller's allow-listed application
+// capabilities as a JSON object {capName: [value, ...]}, the header (and
+// shape) `tailscale serve --accept-app-caps` uses. Stripped from inbound
+// requests with the rest of the Tailscale-* namespace.
+const hdrAppCapabilities = "Tailscale-App-Capabilities"
+
 // identityCacheTTL bounds identity staleness on the proxy request path.
 const identityCacheTTL = 60 * time.Second
 
@@ -3140,6 +3244,52 @@ func injectIdentityHeaders(h http.Header, id peerIdentityData) {
 	if id.DNSName != "" {
 		h.Set(hdrNodeName, id.DNSName)
 	}
+}
+
+// injectAppCapabilities sets Tailscale-App-Capabilities to the subset of the
+// caller's capability map named in accept. Nothing is sent when the proxy
+// accepts no capabilities or the caller is anonymous (as tailscale serve
+// does); an identified caller with none of the accepted capabilities gets
+// "{}", so a backend can tell "evaluated, none granted" from "not
+// configured". The JSON is escaped to pure ASCII (\uXXXX inside strings) so
+// it is a valid header value without RFC 2047 encoding and still parses as-is.
+func injectAppCapabilities(h http.Header, id peerIdentityData, accept []string) {
+	if len(accept) == 0 || id.isEmpty() {
+		return
+	}
+	filtered := make(map[string][]json.RawMessage, len(accept))
+	for _, name := range accept {
+		if values, ok := id.CapMap[name]; ok {
+			filtered[name] = values
+		}
+	}
+	b, err := json.Marshal(filtered)
+	if err != nil {
+		log.Printf("injectAppCapabilities: marshal failed: %v", err)
+		return
+	}
+	h.Set(hdrAppCapabilities, asciiJSON(b))
+}
+
+// asciiJSON rewrites every non-ASCII rune of a JSON document as a \uXXXX
+// escape (a surrogate pair above the BMP). Non-ASCII can only occur inside
+// JSON strings, where the escape is equivalent, so the document's meaning is
+// unchanged.
+func asciiJSON(b []byte) string {
+	var sb strings.Builder
+	sb.Grow(len(b))
+	for _, r := range string(b) {
+		switch {
+		case r < 0x80:
+			sb.WriteRune(r)
+		case r > 0xFFFF:
+			r -= 0x10000
+			fmt.Fprintf(&sb, "\\u%04x\\u%04x", 0xD800+(r>>10), 0xDC00+(r&0x3FF))
+		default:
+			fmt.Fprintf(&sb, "\\u%04x", r)
+		}
+	}
+	return sb.String()
 }
 
 // allowedLogin evaluates loginName against shell-style globs (path.Match),
@@ -3347,13 +3497,21 @@ func (s *shim) buildReverseProxy(proxyID string, target *url.URL, stripPrefix st
 
 // marshalPeerIdentity encodes identity as JSON bounded to maxRemoteDNSNameLen.
 // Oversize OPTIONAL fields are dropped (profilePicUrl, then displayName, then
-// loginName) rather than emitting a field the Rust header parser would reject;
-// dnsName and nodeId are always kept so identity verification still works.
+// the capability map — flagged by capMapDropped so consumers can fail closed —
+// then loginName) rather than emitting a field the Rust header parser would
+// reject; dnsName, nodeId, userId and tags are always kept so identity
+// verification still works.
 func marshalPeerIdentity(identity peerIdentityData) string {
 	for _, drop := range []func(*peerIdentityData){
 		func(*peerIdentityData) {},
 		func(id *peerIdentityData) { id.ProfilePicURL = "" },
 		func(id *peerIdentityData) { id.DisplayName = "" },
+		func(id *peerIdentityData) {
+			if len(id.CapMap) > 0 {
+				log.Printf("marshalPeerIdentity: capMap of %s exceeds the %d-byte bridge header; dropping it", id.DNSName, maxRemoteDNSNameLen)
+				id.CapMap, id.CapMapDropped = nil, true
+			}
+		},
 		func(id *peerIdentityData) { id.LoginName = "" },
 	} {
 		drop(&identity)

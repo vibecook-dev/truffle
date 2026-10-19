@@ -171,6 +171,10 @@ pub(crate) struct ProxyAddCommandData {
     pub allow: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<crate::network::ProxyRoute>,
+    /// Application capabilities forwarded as `Tailscale-App-Capabilities`
+    /// (v9 sidecars; the provider gates it).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub accept_app_caps: Vec<String>,
     /// Correlation id echoed on `proxy:added` / `proxy:error` (v4 sidecars).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
@@ -984,6 +988,7 @@ mod tests {
             allow_non_loopback: false,
             allow: vec![],
             routes: vec![],
+            accept_app_caps: vec![],
             request_id: None,
         };
         let cmd = SidecarCommand {
@@ -1001,6 +1006,7 @@ mod tests {
         assert!(!json.contains("allowNonLoopback"));
         assert!(!json.contains("\"allow\""));
         assert!(!json.contains("\"routes\""));
+        assert!(!json.contains("acceptAppCaps"));
     }
 
     #[test]
@@ -1033,9 +1039,11 @@ mod tests {
                     allow: vec![],
                 },
             ],
+            accept_app_caps: vec!["example.com/cap/media".to_string()],
             request_id: None,
         };
         let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("\"acceptAppCaps\":[\"example.com/cap/media\"]"));
         assert!(json.contains("\"allow\":[\"*@corp.com\"]"));
         assert!(json.contains("\"prefix\":\"/api\""));
         assert!(json.contains("\"targetUrl\":\"http://localhost:8000\""));

@@ -1367,6 +1367,15 @@ impl super::super::NetworkProvider for TailscaleProvider {
                  sidecar binary"
             )));
         }
+        // Same rule for the capability allow-list: an old sidecar would drop
+        // the field and the backend would silently never see capabilities.
+        if !config.accept_app_capabilities.is_empty() && version < Self::SIDECAR_V9_APP_CAPS {
+            return Err(NetworkError::ProxyError(format!(
+                "sidecar protocol v{version} cannot forward app capabilities \
+                 (accept_app_capabilities needs v{}); upgrade the sidecar binary",
+                Self::SIDECAR_V9_APP_CAPS
+            )));
+        }
 
         let command = ProxyAddCommandData {
             id: config.id.clone(),
@@ -1379,6 +1388,7 @@ impl super::super::NetworkProvider for TailscaleProvider {
             allow_non_loopback: config.allow_non_loopback,
             allow: config.allow.clone(),
             routes: config.routes.clone(),
+            accept_app_caps: config.accept_app_capabilities.clone(),
             request_id: None,
         };
 
@@ -1877,6 +1887,10 @@ impl TailscaleProvider {
     /// proxy:error, and correlated tsnet:error.
     const SIDECAR_V4_REPLY_ROUTING: u32 = 4;
 
+    /// Protocol 9 sidecars put `userId`, `tags` and `capMap` in WhoIs
+    /// identities and honor `acceptAppCaps` on `proxy:add`.
+    const SIDECAR_V9_APP_CAPS: u32 = 9;
+
     fn sidecar_version(&self) -> u32 {
         self.sidecar_protocol_version
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -2062,6 +2076,44 @@ mod diagnostic_tests {
         // Reject it before allocating a socket or sending a legacy command.
         assert!(matches!(provider.bind_udp(0).await,
             Err(NetworkError::Unsupported(message)) if message.contains("v6")));
+    }
+
+    #[tokio::test]
+    async fn proxy_app_capabilities_require_protocol_v9() {
+        let provider = TailscaleProvider::new(TailscaleConfig {
+            binary_path: "/nonexistent/sidecar".into(),
+            app_id: "test".into(),
+            device_id: "device".into(),
+            device_name: "test".into(),
+            hostname: "truffle-test-device".into(),
+            state_dir: "unused".into(),
+            auth_key: None,
+            ephemeral: Some(true),
+            tags: None,
+            idle_timeout_secs: None,
+            login_allow: Vec::new(),
+        });
+        *provider.state.write().await = ProviderState::Running;
+        provider
+            .sidecar_protocol_version
+            .store(8, std::sync::atomic::Ordering::Relaxed);
+        let params = crate::network::ProxyAddParams {
+            id: "flux".into(),
+            name: "flux".into(),
+            listen_port: 8443,
+            target_host: "127.0.0.1".into(),
+            target_port: 8096,
+            target_scheme: "http".into(),
+            tls: true,
+            allow_non_loopback: false,
+            allow: Vec::new(),
+            routes: Vec::new(),
+            accept_app_capabilities: vec!["vibecook.dev/cap/flux".into()],
+        };
+        // A v8 sidecar would drop acceptAppCaps on the floor; refuse before
+        // sending anything (no sidecar is running in this test).
+        assert!(matches!(provider.proxy_add(params).await,
+            Err(NetworkError::ProxyError(message)) if message.contains("v9")));
     }
 
     #[test]

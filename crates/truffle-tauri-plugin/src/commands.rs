@@ -424,6 +424,8 @@ pub async fn proxy_add(
             .into_iter()
             .map(Into::into)
             .collect(),
+        // Not exposed to the frontend yet (protocol 9 capability forwarding).
+        accept_app_capabilities: Vec::new(),
     };
     let info = proxy.add(core_config).await.map_err(|e| e.to_string())?;
     Ok(info.into())

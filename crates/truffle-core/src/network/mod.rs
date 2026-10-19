@@ -9,6 +9,7 @@
 pub mod login_allow;
 pub mod tailscale;
 
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
@@ -514,7 +515,8 @@ pub struct IncomingConnection {
 /// JSON into the bridge header — and consumed by Layer 4+ transports and the
 /// bindings. Every field is optional: the sidecar omits empty ones, WhoIs may
 /// return no Node, and legacy sidecars send a bare DNS name that does not
-/// parse as this struct at all.
+/// parse as this struct at all. Sidecars before protocol 9 never send
+/// `user_id`, `tags` or `cap_map`, so those read as absent/empty.
 #[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TailscalePeerIdentity {
@@ -528,6 +530,30 @@ pub struct TailscalePeerIdentity {
     pub profile_pic_url: Option<String>,
     /// Stable Tailscale node ID (WhoIs `Node.StableID`).
     pub node_id: Option<String>,
+    /// Numeric Tailscale user ID of the owner (WhoIs `UserProfile.ID`).
+    /// Unlike the login name it survives a rename. Sidecar protocol 9+.
+    #[serde(default)]
+    pub user_id: Option<i64>,
+    /// ACL tags of the peer node (e.g. `["tag:tv"]`). A tagged node has no
+    /// human owner — its login is Tailscale's `tagged-devices` pseudo-user —
+    /// so tags and `node_id` are what distinguish shared devices. Sidecar
+    /// protocol 9+.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Application capabilities the tailnet policy grants this peer on THIS
+    /// node (WhoIs `CapMap`: the `app` section of policy grants, see
+    /// <https://tailscale.com/kb/1537/grants-app-capabilities>), keyed by
+    /// capability name (`example.com/cap/media`), one JSON value per matching
+    /// grant. Empty when no grant applies, on sidecars before protocol 9, or
+    /// when the sidecar had to drop it — see
+    /// [`cap_map_dropped`](Self::cap_map_dropped).
+    #[serde(default)]
+    pub cap_map: HashMap<String, Vec<serde_json::Value>>,
+    /// The sidecar dropped `cap_map` because it did not fit the bridge
+    /// header (> 16 KiB). An app deriving permissions from capabilities must
+    /// treat this as "unknown", not as "no capabilities granted".
+    #[serde(default)]
+    pub cap_map_dropped: bool,
 }
 
 impl TailscalePeerIdentity {
@@ -545,6 +571,10 @@ impl TailscalePeerIdentity {
         drop_empty(&mut self.display_name);
         drop_empty(&mut self.profile_pic_url);
         drop_empty(&mut self.node_id);
+        if self.user_id == Some(0) {
+            self.user_id = None;
+        }
+        self.tags.retain(|tag| !tag.is_empty());
         self
     }
 
@@ -555,6 +585,37 @@ impl TailscalePeerIdentity {
             && self.display_name.is_none()
             && self.profile_pic_url.is_none()
             && self.node_id.is_none()
+            && self.user_id.is_none()
+            && self.tags.is_empty()
+            && self.cap_map.is_empty()
+            && !self.cap_map_dropped
+    }
+
+    /// True when the peer node is tag-owned (no human user behind it).
+    pub fn is_tagged(&self) -> bool {
+        !self.tags.is_empty()
+    }
+
+    /// The raw grant values for application capability `name`, if the
+    /// tailnet policy grants it to this peer.
+    pub fn capability_values(&self, name: &str) -> Option<&[serde_json::Value]> {
+        self.cap_map.get(name).map(Vec::as_slice)
+    }
+
+    /// Decode every grant value of application capability `name` as `T`
+    /// (the Rust counterpart of Go's `tailcfg.UnmarshalCapJSON`). An absent
+    /// capability yields an empty vector; a value that does not decode as
+    /// `T` is an error, so a malformed policy fails closed instead of being
+    /// skipped silently.
+    pub fn capability<T: serde::de::DeserializeOwned>(
+        &self,
+        name: &str,
+    ) -> Result<Vec<T>, serde_json::Error> {
+        self.capability_values(name)
+            .unwrap_or_default()
+            .iter()
+            .map(|value| T::deserialize(value))
+            .collect()
     }
 }
 
@@ -739,6 +800,9 @@ pub struct ProxyAddParams {
     pub allow: Vec<String>,
     /// Path-prefix routes; empty = the single-target v1 shape.
     pub routes: Vec<ProxyRoute>,
+    /// Application-capability names forwarded to the backend in the
+    /// `Tailscale-App-Capabilities` header (sidecar protocol 9).
+    pub accept_app_capabilities: Vec<String>,
 }
 
 /// One path-prefix route of a v2 proxy (RFC 023 §7). Wire-shaped: exactly

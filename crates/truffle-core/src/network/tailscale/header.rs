@@ -36,9 +36,12 @@ pub(crate) const MAX_REMOTE_ADDR_LEN: u16 = 256;
 
 /// Maximum length for RemoteDNSName field. This field carries the JSON-encoded
 /// PeerIdentity from the sidecar's WhoIs lookup (dnsName, loginName, displayName,
-/// profilePicUrl, nodeId), not just a DNS name. Must match `maxRemoteDNSNameLen`
-/// in packages/sidecar-slim/main.go.
-pub(crate) const MAX_REMOTE_DNS_NAME_LEN: u16 = 4096;
+/// profilePicUrl, nodeId and, since sidecar protocol 9, userId, tags and the
+/// app-capability map), not just a DNS name. Must match `maxRemoteDNSNameLen`
+/// in packages/sidecar-slim/main.go. 16 KiB leaves room for a tailnet
+/// policy's capability grants; the sidecar drops (and flags) an even larger
+/// capability map rather than exceed it.
+pub(crate) const MAX_REMOTE_DNS_NAME_LEN: u16 = 16 * 1024;
 
 /// Minimum header size: magic(4) + version(1) + token(32) + direction(1) + port(2) + 3 length fields(2 each).
 /// Used in tests to verify wire format sizes.
@@ -450,7 +453,8 @@ mod tests {
         // bytes. `overhead` is the same literal with an empty padding value, so
         // the arithmetic is exact regardless of the fixed text's length. Before
         // the cap was raised from 512, write_to rejected this with
-        // RemoteDnsNameTooLong (4096 > 512); at 4096 it roundtrips intact.
+        // RemoteDnsNameTooLong; at the cap (16 KiB since protocol 9) it
+        // roundtrips intact.
         let overhead =
             r#"{"dnsName":"peer.ts.net","nodeId":"nWXYZ1","profilePicUrl":"https://p.example/"}"#
                 .len();
