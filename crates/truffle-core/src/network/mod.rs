@@ -373,7 +373,9 @@ pub enum NetworkPeerEvent {
     Updated(NetworkPeer),
     /// Authentication is required. The URL should be shown to the user.
     /// Emitted during `start()` — the provider keeps waiting for auth to complete.
-    /// May be emitted multiple times if the URL expires and is refreshed.
+    /// Emitted again whenever the URL changes (tsnet replaces an expired
+    /// login URL while the node waits); the latest event is the live link.
+    /// Sidecars before protocol 9 report only the first URL.
     AuthRequired {
         /// URL the user should open in a browser.
         url: String,

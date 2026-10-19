@@ -28,6 +28,12 @@ use crate::network::{
     ProxyAddParams, ProxyAddResult, ProxyListEntry, ProxyRuntimeError,
 };
 
+/// How long [`TailscaleProvider::start`](crate::network::NetworkProvider::start)
+/// waits for the node to reach Running unless
+/// [`TailscaleConfig::start_timeout`] says otherwise: long enough for an
+/// interactive browser login or a device approval.
+pub const DEFAULT_START_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Configuration for creating a TailscaleProvider.
 #[derive(Clone)]
 pub struct TailscaleConfig {
@@ -57,6 +63,13 @@ pub struct TailscaleConfig {
     /// Idle timeout for bridged connections in seconds (RFC 021 §6.5).
     /// `None` → the sidecar's 600s default.
     pub idle_timeout_secs: Option<u64>,
+    /// How long `start()` waits for the node to come up — through an
+    /// interactive login (`AuthRequired`) or a device approval — before
+    /// failing. `None` waits indefinitely, for a headless first run that
+    /// shows the login URL elsewhere (a LAN setup page, a log line) and may
+    /// sit there for hours; cancel by dropping the `start()` future. The
+    /// usual value is [`DEFAULT_START_TIMEOUT`].
+    pub start_timeout: Option<Duration>,
     /// Login allow-list (RFC 025 §3.1): `loginName` globs of the tailnet
     /// users whose nodes may be peers. Empty = the whole tailnet (the v1
     /// behaviour). Non-empty = only peers whose login matches are reported,
@@ -80,6 +93,7 @@ impl std::fmt::Debug for TailscaleConfig {
             .field("ephemeral", &self.ephemeral)
             .field("tags", &self.tags)
             .field("idle_timeout_secs", &self.idle_timeout_secs)
+            .field("start_timeout", &self.start_timeout)
             .field("login_allow", &self.login_allow)
             .finish()
     }
@@ -871,26 +885,34 @@ impl super::super::NetworkProvider for TailscaleProvider {
 
         *self.sidecar.lock().await = Some(sidecar);
 
-        // Wait for the sidecar to reach "running" state.
-        // Use a generous timeout (5 min) because browser auth may take a while.
-        // Auth URLs are emitted via peer_events() so the caller can display them.
-        let auth_timeout = Duration::from_secs(300);
+        // Wait for the sidecar to reach "running" state, bounded by the
+        // configured start timeout (default 5 min, because browser auth may
+        // take a while; `None` = wait until running or until this future is
+        // dropped). Auth URLs are emitted via peer_events() — again each time
+        // the sidecar reports a new one — so the caller can display them.
         let needs_approval = self.status.needs_approval.clone();
-        let result = tokio::time::timeout(auth_timeout, started_rx)
-            .await
-            .map_err(|_| {
+        let started = match self.config.start_timeout {
+            Some(limit) => tokio::time::timeout(limit, started_rx).await.map_err(|_| {
                 NetworkError::StartFailed(
                     if needs_approval.load(std::sync::atomic::Ordering::Relaxed) {
-                        "timed out waiting for device approval (5 min): approve this \
-                         device in the Tailscale admin console, or use a pre-approved \
-                         auth key. Subscribe to status_events() to show this while waiting."
+                        format!(
+                            "timed out waiting for device approval ({limit:?}): approve \
+                             this device in the Tailscale admin console, or use a \
+                             pre-approved auth key. Subscribe to status_events() to show \
+                             this while waiting."
+                        )
                     } else {
-                        "timed out waiting for authentication (5 min). \
-                 Subscribe to peer_events() to display auth URLs."
-                    }
-                    .into(),
+                        format!(
+                            "timed out waiting for authentication ({limit:?}). Subscribe \
+                             to peer_events() to display auth URLs, or set \
+                             start_timeout(None) to wait indefinitely."
+                        )
+                    },
                 )
-            })?
+            })?,
+            None => started_rx.await,
+        };
+        let result = started
             .map_err(|_| NetworkError::StartFailed("start signal channel dropped".into()))?;
 
         match result {
@@ -2031,6 +2053,7 @@ mod config_debug_tests {
             ephemeral: None,
             tags: None,
             idle_timeout_secs: None,
+            start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
             login_allow: Vec::new(),
         };
         let dbg = format!("{config:?}");
@@ -2066,6 +2089,7 @@ mod diagnostic_tests {
             ephemeral: Some(true),
             tags: None,
             idle_timeout_secs: None,
+            start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
             login_allow: Vec::new(),
         });
         *provider.state.write().await = ProviderState::Running;
@@ -2091,6 +2115,7 @@ mod diagnostic_tests {
             ephemeral: Some(true),
             tags: None,
             idle_timeout_secs: None,
+            start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
             login_allow: Vec::new(),
         });
         *provider.state.write().await = ProviderState::Running;
@@ -2129,6 +2154,7 @@ mod diagnostic_tests {
             ephemeral: Some(true),
             tags: None,
             idle_timeout_secs: None,
+            start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
             login_allow: Vec::new(),
         });
         assert_eq!(provider.sidecar_pid(), None);
@@ -2829,6 +2855,7 @@ mod egress_tests {
             ephemeral: None,
             tags: None,
             idle_timeout_secs: None,
+            start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
             login_allow,
         }
     }
@@ -3107,6 +3134,7 @@ mod status_event_process_tests {
             ephemeral: None,
             tags: None,
             idle_timeout_secs: None,
+            start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
             login_allow: Vec::new(),
         }
     }
@@ -3146,6 +3174,74 @@ cat > /dev/null"#,
         assert_eq!(
             provider.local_identity().login_name.as_deref(),
             Some("alice@example.com")
+        );
+        provider.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn start_timeout_bounds_the_login_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        // Ask for a login and never come up.
+        let script = scripted_sidecar(
+            dir.path(),
+            r#"read start
+echo '{"event":"tsnet:status","data":{"state":"starting","protocolVersion":9}}'
+echo '{"event":"tsnet:authRequired","data":{"authUrl":"https://login.tailscale.com/a/abc"}}'
+cat > /dev/null"#,
+        );
+        let mut cfg = config(script, dir.path());
+        cfg.start_timeout = Some(Duration::from_millis(300));
+        let mut provider = TailscaleProvider::new(cfg);
+        let started = std::time::Instant::now();
+        let err = tokio::time::timeout(Duration::from_secs(10), provider.start())
+            .await
+            .expect("a 300 ms start timeout must not wait for the 5-minute default")
+            .expect_err("start must fail when the login never completes");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(
+            matches!(&err, NetworkError::StartFailed(m) if m.contains("300ms") && m.contains("start_timeout(None)")),
+            "unexpected error: {err:?}"
+        );
+        let _ = provider.stop().await;
+    }
+
+    #[tokio::test]
+    async fn every_new_login_url_is_reported_while_start_waits_indefinitely() {
+        let dir = tempfile::tempdir().unwrap();
+        // A protocol 9 sidecar re-sends authRequired when tsnet rotates the
+        // URL; start(None) keeps waiting through both and succeeds once the
+        // login completes.
+        let script = scripted_sidecar(
+            dir.path(),
+            r#"read start
+echo '{"event":"tsnet:status","data":{"state":"starting","protocolVersion":9}}'
+echo '{"event":"tsnet:authRequired","data":{"authUrl":"https://login.tailscale.com/a/first"}}'
+sleep 0.2
+echo '{"event":"tsnet:authRequired","data":{"authUrl":"https://login.tailscale.com/a/second"}}'
+sleep 0.2
+echo '{"event":"tsnet:status","data":{"state":"running","hostname":"truffle-playground-dev","dnsName":"truffle-playground-dev.tailnet.ts.net","tailscaleIP":"100.64.0.9","loginName":"alice@example.com","protocolVersion":9}}'
+cat > /dev/null"#,
+        );
+        let mut cfg = config(script, dir.path());
+        cfg.start_timeout = None;
+        let mut provider = TailscaleProvider::new(cfg);
+        let mut events = provider.peer_events();
+        tokio::time::timeout(Duration::from_secs(10), provider.start())
+            .await
+            .expect("start must finish once the login completes")
+            .expect("start");
+        let mut urls = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let NetworkPeerEvent::AuthRequired { url } = event {
+                urls.push(url);
+            }
+        }
+        assert_eq!(
+            urls,
+            vec![
+                "https://login.tailscale.com/a/first".to_string(),
+                "https://login.tailscale.com/a/second".to_string()
+            ]
         );
         provider.stop().await.unwrap();
     }

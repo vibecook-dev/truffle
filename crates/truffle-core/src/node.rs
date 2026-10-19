@@ -1629,6 +1629,8 @@ pub struct NodeBuilder {
     ephemeral: bool,
     ws_port: u16,
     idle_timeout_secs: Option<u64>,
+    /// How long `build()` waits for the node to come up; `None` = forever.
+    start_timeout: Option<Duration>,
     /// RFC 022 Phase C: proactively exchange hello with online peers.
     eager_identity: bool,
     /// RFC 025 §3.1: `loginName` globs of the tailnet users whose nodes may
@@ -1674,6 +1676,7 @@ impl std::fmt::Debug for NodeBuilder {
             .field("ephemeral", &self.ephemeral)
             .field("ws_port", &self.ws_port)
             .field("idle_timeout_secs", &self.idle_timeout_secs)
+            .field("start_timeout", &self.start_timeout)
             .field("eager_identity", &self.eager_identity)
             .field("login_allow", &self.login_allow)
             .field("on_network_status", &self.on_network_status.is_some())
@@ -1777,6 +1780,7 @@ impl Default for NodeBuilder {
             ephemeral: false,
             ws_port: 9417,
             idle_timeout_secs: None,
+            start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
             eager_identity: true,
             login_allow: Vec::new(),
             on_network_status: None,
@@ -1916,6 +1920,23 @@ impl NodeBuilder {
         self
     }
 
+    /// How long `build()` waits for the node to come up — through an
+    /// interactive login (the `AuthRequired` URL) or a device approval —
+    /// before failing. Default: 5 minutes
+    /// ([`DEFAULT_START_TIMEOUT`](crate::network::tailscale::DEFAULT_START_TIMEOUT)).
+    ///
+    /// `None` waits indefinitely: the shape a headless server needs on its
+    /// first run, when the login URL is shown somewhere other than the
+    /// not-yet-reachable tailnet UI (a LAN setup page, a log line, a QR code)
+    /// and nobody may look for hours. Every new login URL tsnet issues while
+    /// waiting reaches [`build_with_auth_handler`](Self::build_with_auth_handler)'s
+    /// callback, so the page never shows an expired link. Cancel the wait by
+    /// dropping the `build` future (the sidecar is killed with it).
+    pub fn start_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.start_timeout = timeout;
+        self
+    }
+
     /// Call `handler` with this node's own network status changes
     /// ([`NetworkStatusEvent`]) from the moment `build()` starts the
     /// network until the node is dropped — including the conditions that
@@ -1924,8 +1945,9 @@ impl NodeBuilder {
     /// The one to handle today is [`NetworkStatusEvent::NeedsApproval`]: the
     /// tailnet has device approval on and an admin has not approved this
     /// device yet. `build()` keeps waiting (and succeeds once the device is
-    /// approved, or fails after 5 minutes with an error that names the
-    /// approval), so show something like "approve this device in the
+    /// approved, or fails after its [`start_timeout`](Self::start_timeout)
+    /// with an error that names the approval), so show something like
+    /// "approve this device in the
     /// Tailscale admin console" meanwhile. [`NetworkStatusEvent::LoginKnown`]
     /// reports the node's own login, which after a fast restart can arrive
     /// after `build()` returned.
@@ -2068,6 +2090,7 @@ impl NodeBuilder {
             ephemeral: if self.ephemeral { Some(true) } else { None },
             tags: None,
             idle_timeout_secs: self.idle_timeout_secs,
+            start_timeout: self.start_timeout,
             login_allow: self.login_allow.clone(),
         })
     }

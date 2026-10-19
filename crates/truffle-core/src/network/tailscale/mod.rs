@@ -25,4 +25,4 @@ mod sidecar;
 #[cfg(test)]
 mod tests;
 
-pub use provider::{TailscaleConfig, TailscaleProvider};
+pub use provider::{TailscaleConfig, TailscaleProvider, DEFAULT_START_TIMEOUT};

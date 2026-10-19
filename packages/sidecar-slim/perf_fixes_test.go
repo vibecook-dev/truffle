@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -331,5 +332,66 @@ func TestUnlistenUntracksTheListener(t *testing.T) {
 	}
 	if _, err := gone.Accept(); err == nil {
 		t.Fatal("the unlistened listener is still open")
+	}
+}
+
+// TestAuthRequiredReemittedWhenTheURLChanges: tsnet replaces an expired login
+// URL while the node keeps waiting. Each new URL must reach the core (a
+// headless setup page would otherwise keep showing a dead link); an
+// unchanged URL must not be repeated on every 500 ms poll.
+func TestAuthRequiredReemittedWhenTheURLChanges(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var polls atomic.Int32
+	lc, _ := fakeLocalAPI(t, func() ipnstate.Status {
+		n := polls.Add(1)
+		switch {
+		case n <= 2:
+			return ipnstate.Status{BackendState: "NeedsLogin", AuthURL: "https://login.tailscale.com/a/first"}
+		case n <= 4:
+			return ipnstate.Status{BackendState: "NeedsLogin", AuthURL: "https://login.tailscale.com/a/second"}
+		default:
+			return ipnstate.Status{
+				BackendState: "Running",
+				TailscaleIPs: []netip.Addr{netip.MustParseAddr("100.64.0.7")},
+				Self:         &ipnstate.PeerStatus{ID: "nodeSELF", UserID: 42, DNSName: "myhost.tailnet.ts.net."},
+				User:         map[tailcfg.UserID]tailcfg.UserProfile{42: {ID: 42, LoginName: "alice@example.com"}},
+			}
+		}
+	})
+
+	events := make(peerWatchEvents, 64)
+	s := newTestShim()
+	defer s.cancel()
+	s.ctx = ctx
+	s.writer = json.NewEncoder(events)
+	go s.pollUntilRunning(ctx, lc, "myhost")
+
+	var urls []string
+	timeout := time.After(15 * time.Second)
+	for {
+		select {
+		case raw := <-events:
+			var ev struct {
+				Event string           `json:"event"`
+				Data  authRequiredData `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &ev); err != nil {
+				t.Fatalf("decode event: %v", err)
+			}
+			switch ev.Event {
+			case "tsnet:authRequired":
+				urls = append(urls, ev.Data.AuthURL)
+			case "tsnet:started":
+				want := []string{"https://login.tailscale.com/a/first", "https://login.tailscale.com/a/second"}
+				if !reflect.DeepEqual(urls, want) {
+					t.Fatalf("authRequired URLs = %v, want %v (each change once, no repeats)", urls, want)
+				}
+				return
+			}
+		case <-timeout:
+			t.Fatalf("node never reached running; auth URLs seen: %v", urls)
+		}
 	}
 }

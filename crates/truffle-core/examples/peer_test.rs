@@ -26,6 +26,7 @@ async fn main() {
         ephemeral: None,
         tags: None,
         idle_timeout_secs: None,
+        start_timeout: Some(truffle_core::network::tailscale::DEFAULT_START_TIMEOUT),
         login_allow: Vec::new(),
     };
     let mut provider = TailscaleProvider::new(config);

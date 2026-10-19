@@ -133,7 +133,9 @@ type dialResultData struct {
 // asking the LocalAPI itself; v9 = WhoIs identities (bridge header and
 // tsnet:whoisResult) carry userId, tags and the peer's app-capability map
 // (capMap), the bridge identity field grows to 16 KiB, and proxy:add accepts
-// acceptAppCaps, injecting a Tailscale-App-Capabilities header.
+// acceptAppCaps, injecting a Tailscale-App-Capabilities header; and
+// tsnet:authRequired is re-sent whenever the login URL changes (it was sent
+// once per start before).
 // An absent value makes the core treat the sidecar as v1.
 // Bump on any addition to the command surface the core must not send blind,
 // or to an event the core relies on.
@@ -1150,7 +1152,12 @@ func (s *shim) waitForRunning(ctx context.Context, hostname string) {
 // way startPeerWatch is driven (RFC 025 L6: the self login must be proven to
 // come from the status this loop actually polls, not from one a test built).
 func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname string) {
-	authURLSent := false
+	// lastAuthURL is the login URL most recently reported. tsnet replaces an
+	// expired (or consumed) login URL with a new one while the node still
+	// waits; re-emitting on every CHANGE — not just once per start — keeps a
+	// headless first-run UI (a QR code on a setup page) from showing a dead
+	// link. An unchanged URL is never repeated.
+	lastAuthURL := ""
 	needsApprovalSent := false
 	for {
 		select {
@@ -1169,9 +1176,9 @@ func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname 
 			continue
 		}
 
-		if !authURLSent && status.AuthURL != "" {
+		if status.AuthURL != "" && status.AuthURL != lastAuthURL {
 			s.sendEvent("tsnet:authRequired", authRequiredData{AuthURL: status.AuthURL})
-			authURLSent = true
+			lastAuthURL = status.AuthURL
 		}
 
 		// G10: emit needsApproval only when entering the state, not every 500ms.

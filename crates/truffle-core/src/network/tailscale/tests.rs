@@ -692,6 +692,7 @@ async fn test_bind_udp_returns_not_running() {
         ephemeral: None,
         tags: None,
         idle_timeout_secs: None,
+        start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
         login_allow: Vec::new(),
     };
     let provider = TailscaleProvider::new(config);
@@ -723,6 +724,7 @@ fn test_local_identity_default_before_start() {
         ephemeral: None,
         tags: None,
         idle_timeout_secs: None,
+        start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
         login_allow: Vec::new(),
     };
     let provider = TailscaleProvider::new(config);
@@ -764,6 +766,7 @@ fn test_local_addr_default_before_start() {
         ephemeral: None,
         tags: None,
         idle_timeout_secs: None,
+        start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
         login_allow: Vec::new(),
     };
     let provider = TailscaleProvider::new(config);

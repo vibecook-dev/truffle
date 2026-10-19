@@ -579,6 +579,7 @@ fn gated_config(
         ephemeral: Some(common::test_ephemeral()),
         tags: common::test_tags(),
         idle_timeout_secs: None,
+        start_timeout: Some(truffle_core::network::tailscale::DEFAULT_START_TIMEOUT),
         login_allow,
     }
 }

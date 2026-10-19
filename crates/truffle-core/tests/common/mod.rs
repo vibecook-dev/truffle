@@ -327,6 +327,7 @@ fn build_config(
         ephemeral: Some(test_ephemeral()),
         tags: test_tags(),
         idle_timeout_secs: None,
+        start_timeout: Some(truffle_core::network::tailscale::DEFAULT_START_TIMEOUT),
         login_allow: Vec::new(),
     }
 }
