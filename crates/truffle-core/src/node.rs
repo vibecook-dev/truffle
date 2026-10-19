@@ -1905,9 +1905,12 @@ impl NodeBuilder {
 
     /// Set the idle timeout (in seconds) for bridged raw TCP connections.
     ///
-    /// The sidecar reaps quiet bridged connections after this long
-    /// (default: 600 s). Apps holding long-lived quiet sockets should
-    /// raise this or send application-level keepalives.
+    /// The sidecar reaps a bridged connection once no bytes have moved in
+    /// EITHER direction for this long (default: 600 s). A connection that is
+    /// quiet one way while it streams the other (a long HTTP download after
+    /// its single request) is active and is not touched. Apps holding
+    /// long-lived quiet sockets should raise this or send application-level
+    /// keepalives.
     pub fn idle_timeout_secs(mut self, secs: u64) -> Self {
         self.idle_timeout_secs = Some(secs);
         self

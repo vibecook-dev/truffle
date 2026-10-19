@@ -32,6 +32,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -2640,30 +2641,12 @@ func (s *shim) handleProxyWebSocket(w http.ResponseWriter, r *http.Request, entr
 		return
 	}
 
-	// P2/P3: bidirectional copy with an idle deadline in each direction. On EOF
-	// half-close the write side when supported; otherwise leave the peer to the
-	// idle deadline rather than a full Close that could truncate an in-flight
-	// reverse direction (the bug bridgeCopy documents).
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		idleCopy(targetConn, clientConn, idleDeadline)
-		if hc, ok := targetConn.(halfCloser); ok {
-			hc.CloseWrite()
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		idleCopy(clientConn, targetConn, idleDeadline)
-		if hc, ok := clientConn.(halfCloser); ok {
-			hc.CloseWrite()
-		}
-	}()
-	wg.Wait()
-	// Ensure both sides are fully closed after both goroutines finish
-	targetConn.Close()
-	clientConn.Close()
+	// P2/P3: bidirectional copy, reaped only when idle in BOTH directions for
+	// idleDeadline (a one-way server push over a WebSocket is not idle). On EOF
+	// the write side is half-closed when supported rather than fully closed,
+	// which could truncate an in-flight reverse direction; bridgeCopy closes
+	// both connections once both directions are done.
+	bridgeCopy(clientConn, targetConn, idleDeadline)
 }
 
 func (s *shim) handleProxyRemove(raw json.RawMessage) {
@@ -2844,51 +2827,129 @@ func bridgeCopy(tsnetConn, localConn net.Conn, idleTimeout time.Duration) {
 
 	// closeWrite shuts down the write half of a connection if supported.
 	closeWrite := func(c net.Conn) {
-		type closeWriter interface{ CloseWrite() error }
-		if cw, ok := c.(closeWriter); ok {
-			cw.CloseWrite()
+		if hc, ok := c.(halfCloser); ok {
+			hc.CloseWrite()
 		}
 	}
 
-	// G5: idleCopy applies an idle read/write deadline in each direction, so a
-	// bridged connection that goes silent both ways is reaped instead of leaking
-	// two goroutines + two fds until process exit. On EOF we half-close the
-	// write half of the destination, preserving any in-flight data in the
-	// reverse direction (e.g. a trailing ACK) rather than closing both.
-	go func() {
+	// G5: a bridged connection that goes silent in BOTH directions for
+	// idleTimeout is reaped instead of leaking two goroutines + two fds until
+	// process exit. The two copies share one activity clock: a direction that
+	// is merely quiet while the other streams (the request half of a long HTTP
+	// download, where the client sends one GET and then only reads) is NOT
+	// idle, and must not be half-closed — hyper/axum servers with the default
+	// half_close(false) abort the in-flight response on that EOF.
+	//
+	// On a real EOF we half-close the write half of the destination,
+	// preserving any in-flight data in the reverse direction (e.g. a trailing
+	// ACK or the rest of a response) rather than closing both. On an idle reap
+	// we close everything at once: nothing is in flight by definition.
+	activity := newConnActivity()
+	pump := func(dst, src net.Conn) {
 		defer wg.Done()
-		idleCopy(localConn, tsnetConn, idleTimeout)
-		closeWrite(localConn)
-	}()
-
-	go func() {
-		defer wg.Done()
-		idleCopy(tsnetConn, localConn, idleTimeout)
-		closeWrite(tsnetConn)
-	}()
+		if idleCopy(dst, src, idleTimeout, activity) {
+			closeAll()
+			return
+		}
+		closeWrite(dst)
+	}
+	go pump(localConn, tsnetConn)
+	go pump(tsnetConn, localConn)
 
 	wg.Wait()
 	// Both directions complete -> close everything
 }
 
-// idleCopy is io.Copy with an idle timeout applied to each direction: if no
-// bytes flow for `timeout`, the read deadline fires and the copy returns, so an
-// idle-but-open bridged/relayed connection can't pin a goroutine + fds forever.
-func idleCopy(dst, src net.Conn, timeout time.Duration) {
+// monoEpoch anchors connActivity timestamps to the monotonic clock, so a wall
+// clock step (NTP, sleep/wake) can neither reap a busy connection early nor
+// keep an idle one alive.
+var monoEpoch = time.Now()
+
+// connActivity is the last time bytes moved in EITHER direction of a bridged
+// connection. Both copy goroutines of one connection share it, which is what
+// makes the idle reap connection-level rather than per direction.
+type connActivity struct {
+	last atomic.Int64 // nanoseconds since monoEpoch
+}
+
+func newConnActivity() *connActivity {
+	a := &connActivity{}
+	a.touch()
+	return a
+}
+
+// touch records that bytes just moved.
+func (a *connActivity) touch() { a.last.Store(int64(time.Since(monoEpoch))) }
+
+// idleAt is the moment the connection counts as idle if nothing moves before
+// then. Used directly as the read/write deadline, so a reap happens timeout
+// after the LAST activity in either direction, not up to 2× later.
+func (a *connActivity) idleAt(timeout time.Duration) time.Time {
+	return monoEpoch.Add(time.Duration(a.last.Load()) + timeout)
+}
+
+// active reports whether the connection moved bytes within the last timeout.
+func (a *connActivity) active(timeout time.Duration) bool {
+	return time.Now().Before(a.idleAt(timeout))
+}
+
+// isTimeout reports a deadline expiry from any net.Conn implementation: the
+// standard library returns os.ErrDeadlineExceeded, gVisor's gonet (tsnet
+// connections) returns its own net.Error with Timeout() == true.
+func isTimeout(err error) bool {
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// idleCopy copies src → dst until src reports EOF/error or the WHOLE
+// connection (both directions, via the shared activity) has been idle for
+// timeout. It returns true only in the second case, so the caller can reap the
+// connection instead of half-closing it. A deadline that fires while the other
+// direction is still moving bytes is not an end: the copy re-arms and keeps
+// waiting.
+func idleCopy(dst, src net.Conn, timeout time.Duration, activity *connActivity) (idle bool) {
 	buf := make([]byte, 32*1024)
 	for {
-		_ = src.SetReadDeadline(time.Now().Add(timeout))
+		_ = src.SetReadDeadline(activity.idleAt(timeout))
 		n, rerr := src.Read(buf)
 		if n > 0 {
-			_ = dst.SetWriteDeadline(time.Now().Add(timeout))
-			if _, werr := dst.Write(buf[:n]); werr != nil {
-				return
+			activity.touch()
+			if idle, ok := writeActive(dst, buf[:n], timeout, activity); !ok {
+				return idle
 			}
 		}
 		if rerr != nil {
-			return
+			if isTimeout(rerr) && activity.active(timeout) {
+				continue // quiet direction, busy connection: keep it
+			}
+			return isTimeout(rerr)
 		}
 	}
+}
+
+// writeActive writes all of b to dst. A write that stalls past the deadline is
+// retried while the connection is otherwise active (any partial progress
+// counts as activity), and reported as an idle reap only when nothing moved
+// in either direction for timeout. ok is false when the copy must stop.
+func writeActive(dst net.Conn, b []byte, timeout time.Duration, activity *connActivity) (idle, ok bool) {
+	for len(b) > 0 {
+		_ = dst.SetWriteDeadline(activity.idleAt(timeout))
+		n, werr := dst.Write(b)
+		if n > 0 {
+			activity.touch()
+			b = b[n:]
+		}
+		if werr != nil {
+			if isTimeout(werr) && activity.active(timeout) {
+				continue
+			}
+			return isTimeout(werr), false
+		}
+	}
+	return false, true
 }
 
 // publicURL renders a proxy's tailnet URL, omitting the scheme's default
