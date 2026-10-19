@@ -266,3 +266,56 @@ type errDeadline struct{}
 func (errDeadline) Error() string   { return "i/o timeout" }
 func (errDeadline) Timeout() bool   { return true }
 func (errDeadline) Temporary() bool { return true }
+
+// BenchmarkBridgeCopyThroughput streams 64 MiB per iteration backend→player
+// through one bridgeCopy over real loopback TCP: the per-chunk cost of the
+// shared activity clock (one atomic store + monotonic read per read/write)
+// against the copy itself. Compare with the pre-fix idleCopy by running the
+// same benchmark on the parent commit.
+func BenchmarkBridgeCopyThroughput(b *testing.B) {
+	const total = 64 << 20
+	chunk := bytes.Repeat([]byte{0x5A}, 256<<10)
+	b.SetBytes(total)
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		player, tsnetSide := tcpPairB(b)
+		localSide, backend := tcpPairB(b)
+		go bridgeCopy(tsnetSide, localSide, time.Minute)
+		done := make(chan int64)
+		go func() {
+			n, _ := io.Copy(io.Discard, player)
+			done <- n
+		}()
+		b.StartTimer()
+		for sent := 0; sent < total; sent += len(chunk) {
+			if _, err := backend.Write(chunk); err != nil {
+				b.Fatal(err)
+			}
+		}
+		backend.Close()
+		if n := <-done; n != total {
+			b.Fatalf("player got %d of %d bytes", n, total)
+		}
+		b.StopTimer()
+		player.Close()
+	}
+}
+
+func tcpPairB(b *testing.B) (net.Conn, net.Conn) {
+	b.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, _ := ln.Accept()
+		accepted <- c
+	}()
+	dialed, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		b.Fatal(err)
+	}
+	return dialed, <-accepted
+}
