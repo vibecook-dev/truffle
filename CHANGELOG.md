@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.7.20](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.19...truffle-v0.7.20) (2026-10-20)
+
+
+### Features
+
+* **core,sidecar:** key expiry, control server and sidecar exit as status events (protocol 10) ([dff6033](https://github.com/vibecook-dev/truffle/commit/dff60338cadf0cad267f2e46fa1aa22cbf5a5d85))
+* **core:** app capabilities, tags and user id in WhoIs identity (protocol 9) ([dff6033](https://github.com/vibecook-dev/truffle/commit/dff60338cadf0cad267f2e46fa1aa22cbf5a5d85))
+* **core:** headless-friendly start - re-sent login URLs, start_timeout ([dff6033](https://github.com/vibecook-dev/truffle/commit/dff60338cadf0cad267f2e46fa1aa22cbf5a5d85))
+
+
+### Bug Fixes
+
+* **core:** bridge no longer holds the listener map across send; count drops ([dff6033](https://github.com/vibecook-dev/truffle/commit/dff60338cadf0cad267f2e46fa1aa22cbf5a5d85))
+* **deps:** update rustls-webpki and webpki roots for the emSign distrust advisories ([#220](https://github.com/vibecook-dev/truffle/issues/220)) ([11c7a00](https://github.com/vibecook-dev/truffle/commit/11c7a00d7a2a4d1191839490808bc1a42a46c558))
+* **sidecar:** reap bridged connections only when idle in both directions ([dff6033](https://github.com/vibecook-dev/truffle/commit/dff60338cadf0cad267f2e46fa1aa22cbf5a5d85))
+
+
+### Performance Improvements
+
+* **sidecar:** cheaper bridge copy loop for bulk streams ([dff6033](https://github.com/vibecook-dev/truffle/commit/dff60338cadf0cad267f2e46fa1aa22cbf5a5d85))
+
 ## [0.7.19](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.18...truffle-v0.7.19) (2026-10-17)
 
 
