@@ -2992,6 +2992,54 @@ func isTimeout(err error) bool {
 	return errors.As(err, &ne) && ne.Timeout()
 }
 
+// Copy buffers. Every direction starts small: request bodies, API replies and
+// idle keep-alive connections never need more, and a connection parked in
+// Read holds its buffer for as long as it stays open. A direction whose read
+// fills the small buffer is a bulk stream (a media response), and switches to
+// a pooled large buffer: 8x fewer read/write rounds — and 8x fewer gVisor
+// writes on the tailnet side — per byte.
+const (
+	copyBufSmall = 32 << 10
+	copyBufLarge = 256 << 10
+)
+
+var copyBufPool = sync.Pool{New: func() any {
+	b := make([]byte, copyBufLarge)
+	return &b
+}}
+
+// rearmSlack is how stale an armed deadline may get before the copy loop
+// re-arms it: at most once a second on a busy stream, rather than once per
+// chunk. Small timeouts (tests) scale it down so precision is unaffected.
+func rearmSlack(timeout time.Duration) time.Duration {
+	return min(time.Second, timeout/8)
+}
+
+// armedDeadline remembers the deadline last set on one side of a copy.
+// Setting a deadline is not free — a runtime timer update for a loopback
+// socket, and for gVisor's gonet (every tailnet connection) a timer stop plus
+// a fresh time.AfterFunc — and the loop used to do it twice per 32 KiB chunk.
+//
+// Skipping a re-arm is safe: the wanted deadline (last activity + timeout)
+// only ever moves forward, so an armed deadline is never LATER than wanted.
+// A stale one can only fire early, which the loop already treats as "busy:
+// re-arm and keep going" (forget, below), so a reap still happens exactly
+// one timeout after the last byte in either direction.
+type armedDeadline struct{ at time.Time }
+
+// arm sets want via set unless the armed deadline is within slack of it.
+func (d *armedDeadline) arm(set func(time.Time) error, want time.Time, slack time.Duration) {
+	if !d.at.IsZero() && want.Sub(d.at) < slack {
+		return
+	}
+	_ = set(want)
+	d.at = want
+}
+
+// forget makes the next arm set the deadline for sure: after a deadline
+// fired, the armed one is in the past and must not be kept.
+func (d *armedDeadline) forget() { d.at = time.Time{} }
+
 // idleCopy copies src → dst until src reports EOF/error or the WHOLE
 // connection (both directions, via the shared activity) has been idle for
 // timeout. It returns true only in the second case, so the caller can reap the
@@ -2999,18 +3047,31 @@ func isTimeout(err error) bool {
 // direction is still moving bytes is not an end: the copy re-arms and keeps
 // waiting.
 func idleCopy(dst, src net.Conn, timeout time.Duration, activity *connActivity) (idle bool) {
-	buf := make([]byte, 32*1024)
+	buf := make([]byte, copyBufSmall)
+	var large *[]byte
+	defer func() {
+		if large != nil {
+			copyBufPool.Put(large)
+		}
+	}()
+	slack := rearmSlack(timeout)
+	var readDL, writeDL armedDeadline
 	for {
-		_ = src.SetReadDeadline(activity.idleAt(timeout))
+		readDL.arm(src.SetReadDeadline, activity.idleAt(timeout), slack)
 		n, rerr := src.Read(buf)
 		if n > 0 {
 			activity.touch()
-			if idle, ok := writeActive(dst, buf[:n], timeout, activity); !ok {
+			if idle, ok := writeActive(dst, buf[:n], timeout, activity, &writeDL, slack); !ok {
 				return idle
+			}
+			if n == len(buf) && large == nil {
+				large = copyBufPool.Get().(*[]byte)
+				buf = *large
 			}
 		}
 		if rerr != nil {
 			if isTimeout(rerr) && activity.active(timeout) {
+				readDL.forget()
 				continue // quiet direction, busy connection: keep it
 			}
 			return isTimeout(rerr)
@@ -3022,9 +3083,9 @@ func idleCopy(dst, src net.Conn, timeout time.Duration, activity *connActivity) 
 // retried while the connection is otherwise active (any partial progress
 // counts as activity), and reported as an idle reap only when nothing moved
 // in either direction for timeout. ok is false when the copy must stop.
-func writeActive(dst net.Conn, b []byte, timeout time.Duration, activity *connActivity) (idle, ok bool) {
+func writeActive(dst net.Conn, b []byte, timeout time.Duration, activity *connActivity, dl *armedDeadline, slack time.Duration) (idle, ok bool) {
 	for len(b) > 0 {
-		_ = dst.SetWriteDeadline(activity.idleAt(timeout))
+		dl.arm(dst.SetWriteDeadline, activity.idleAt(timeout), slack)
 		n, werr := dst.Write(b)
 		if n > 0 {
 			activity.touch()
@@ -3032,6 +3093,7 @@ func writeActive(dst net.Conn, b []byte, timeout time.Duration, activity *connAc
 		}
 		if werr != nil {
 			if isTimeout(werr) && activity.active(timeout) {
+				dl.forget()
 				continue
 			}
 			return isTimeout(werr), false
