@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"io"
 	"net"
-	"syscall"
 	"testing"
 	"time"
 
@@ -83,15 +82,6 @@ func gonetPair(tb testing.TB) (client, server net.Conn) {
 		st.Close()
 	})
 	return dialed, server
-}
-
-// cpuTime is this process's user+system CPU time so far.
-func cpuTime() time.Duration {
-	var ru syscall.Rusage
-	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
-		return 0
-	}
-	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 }
 
 // BenchmarkBridgeCopyBulk streams 64 MiB backend → player through one
