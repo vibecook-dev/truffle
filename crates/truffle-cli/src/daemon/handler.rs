@@ -1031,6 +1031,7 @@ async fn handle_proxy_add(
         allow_non_loopback,
         allow,
         routes,
+        accept_app_capabilities: Vec::new(),
     };
 
     match node.proxy().add(config).await {

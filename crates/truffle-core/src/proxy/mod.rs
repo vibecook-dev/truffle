@@ -112,6 +112,7 @@ impl<'a, N: NetworkProvider + 'static> Proxy<'a, N> {
             allow_non_loopback: config.allow_non_loopback,
             allow: config.allow.clone(),
             routes: config.routes.clone(),
+            accept_app_capabilities: config.accept_app_capabilities.clone(),
         };
 
         let result = self.node.network.proxy_add(params).await?;
@@ -218,7 +219,27 @@ fn validate_config(config: &ProxyConfig) -> Result<(), String> {
     {
         return Err("route allow globs must be non-empty strings".into());
     }
+    if let Some(bad) = config
+        .accept_app_capabilities
+        .iter()
+        .find(|name| !is_app_capability_name(name))
+    {
+        return Err(format!(
+            "accept_app_capabilities entry {bad:?} is not a capability name ({{domain}}/{{path}})"
+        ));
+    }
     Ok(())
+}
+
+/// Tailscale application-capability names are `{domain}/{path}` (KB 1537).
+/// Mirrors the sidecar's `validateAcceptAppCaps`: a name without a slash or
+/// with whitespace/control characters cannot match a grant, so it is a typo
+/// that would forward nothing.
+fn is_app_capability_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 256
+        && name.contains('/')
+        && !name.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 #[cfg(test)]
@@ -236,6 +257,18 @@ mod tests {
             allow_non_loopback: false,
             allow: vec![],
             routes,
+            accept_app_capabilities: vec![],
+        }
+    }
+
+    #[test]
+    fn validate_accept_app_capabilities() {
+        let mut config = base_config(vec![]);
+        config.accept_app_capabilities = vec!["vibecook.dev/cap/flux".into()];
+        assert!(validate_config(&config).is_ok());
+        for bad in ["", "noslash", "has space/x", "tab\t/x"] {
+            config.accept_app_capabilities = vec![bad.into()];
+            assert!(validate_config(&config).is_err(), "{bad:?} accepted");
         }
     }
 

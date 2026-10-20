@@ -171,6 +171,10 @@ pub(crate) struct ProxyAddCommandData {
     pub allow: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<crate::network::ProxyRoute>,
+    /// Application capabilities forwarded as `Tailscale-App-Capabilities`
+    /// (v9 sidecars; the provider gates it).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub accept_app_caps: Vec<String>,
     /// Correlation id echoed on `proxy:added` / `proxy:error` (v4 sidecars).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
@@ -361,6 +365,15 @@ pub(crate) struct StatusEventData {
     /// features rather than let them be silently ignored.
     #[serde(default)]
     pub protocol_version: Option<u32>,
+    /// The coordination server the node uses (protocol 10): on every status
+    /// from `starting` on. Absent on older sidecars.
+    #[serde(default)]
+    pub control_url: Option<String>,
+    /// The node's own key expiry, RFC 3339 (protocol 10), on `running`
+    /// statuses. From a protocol 10+ sidecar an absent value on a running
+    /// status means key expiry is disabled; older sidecars never send it.
+    #[serde(default)]
+    pub key_expiry: Option<String>,
 }
 
 /// Data from `tsnet:authRequired` event.
@@ -984,6 +997,7 @@ mod tests {
             allow_non_loopback: false,
             allow: vec![],
             routes: vec![],
+            accept_app_caps: vec![],
             request_id: None,
         };
         let cmd = SidecarCommand {
@@ -1001,6 +1015,7 @@ mod tests {
         assert!(!json.contains("allowNonLoopback"));
         assert!(!json.contains("\"allow\""));
         assert!(!json.contains("\"routes\""));
+        assert!(!json.contains("acceptAppCaps"));
     }
 
     #[test]
@@ -1033,9 +1048,11 @@ mod tests {
                     allow: vec![],
                 },
             ],
+            accept_app_caps: vec!["example.com/cap/media".to_string()],
             request_id: None,
         };
         let json = serde_json::to_string(&data).unwrap();
+        assert!(json.contains("\"acceptAppCaps\":[\"example.com/cap/media\"]"));
         assert!(json.contains("\"allow\":[\"*@corp.com\"]"));
         assert!(json.contains("\"prefix\":\"/api\""));
         assert!(json.contains("\"targetUrl\":\"http://localhost:8000\""));
@@ -1058,6 +1075,31 @@ mod tests {
         let event: SidecarEvent = serde_json::from_str(legacy).unwrap();
         let data: StatusEventData = serde_json::from_value(event.data).unwrap();
         assert_eq!(data.protocol_version, None);
+    }
+
+    /// Protocol 10: every status carries the control URL, and running
+    /// statuses the node's key expiry; older sidecars omit both.
+    #[test]
+    fn status_event_parses_control_url_and_key_expiry() {
+        let json = r#"{"event":"tsnet:status","data":{"state":"running","hostname":"h","dnsName":"h.t.ts.net","tailscaleIP":"100.64.0.1","protocolVersion":10,"controlUrl":"https://hs.example.com","keyExpiry":"2026-06-24T10:00:00Z"}}"#;
+        let event: SidecarEvent = serde_json::from_str(json).unwrap();
+        let data: StatusEventData = serde_json::from_value(event.data).unwrap();
+        assert_eq!(data.control_url.as_deref(), Some("https://hs.example.com"));
+        assert_eq!(data.key_expiry.as_deref(), Some("2026-06-24T10:00:00Z"));
+
+        let starting = r#"{"event":"tsnet:status","data":{"state":"starting","protocolVersion":10,"controlUrl":"https://controlplane.tailscale.com"}}"#;
+        let event: SidecarEvent = serde_json::from_str(starting).unwrap();
+        let data: StatusEventData = serde_json::from_value(event.data).unwrap();
+        assert_eq!(
+            data.control_url.as_deref(),
+            Some("https://controlplane.tailscale.com")
+        );
+        assert_eq!(data.key_expiry, None);
+
+        let legacy = r#"{"event":"tsnet:status","data":{"state":"running","hostname":"h","protocolVersion":9}}"#;
+        let event: SidecarEvent = serde_json::from_str(legacy).unwrap();
+        let data: StatusEventData = serde_json::from_value(event.data).unwrap();
+        assert_eq!((data.control_url, data.key_expiry), (None, None));
     }
 
     /// RFC 025 §4: the node's own login rides `tsnet:status`/`tsnet:started`

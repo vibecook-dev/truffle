@@ -111,6 +111,7 @@ async fn create_provider(role: &str) -> TailscaleProvider {
         ephemeral: None,
         tags: None,
         idle_timeout_secs: None,
+        start_timeout: Some(truffle_core::network::tailscale::DEFAULT_START_TIMEOUT),
         login_allow: Vec::new(),
     };
 

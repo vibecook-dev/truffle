@@ -1065,6 +1065,7 @@ mod security_regressions {
             ephemeral: Some(true),
             tags: None,
             idle_timeout_secs: None,
+            start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
             login_allow: Vec::new(),
         }))
     }

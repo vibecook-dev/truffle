@@ -32,10 +32,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"tailscale.com/client/local"
+	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
@@ -49,8 +51,10 @@ const (
 
 	// maxRemoteDNSNameLen bounds the RemoteDNSName header field, which carries
 	// JSON-encoded peer identity. Must match MAX_REMOTE_DNS_NAME_LEN in
-	// crates/truffle-core/src/network/tailscale/header.rs.
-	maxRemoteDNSNameLen = 4096
+	// crates/truffle-core/src/network/tailscale/header.rs. 16 KiB (was 4 KiB
+	// before protocol v9) leaves room for the app-capability map a tailnet
+	// policy grants a peer; the field stays u16-framed on the wire.
+	maxRemoteDNSNameLen = 16 * 1024
 
 	dirIncoming = 0x01
 	dirOutgoing = 0x02
@@ -126,11 +130,19 @@ type dialResultData struct {
 // v8 = no new commands: a "running" tsnet:status is re-sent once the node's
 // own login becomes known after start (a fast restart can reach Running
 // before the netmap names our user), so a core may rely on that instead of
-// asking the LocalAPI itself.
+// asking the LocalAPI itself; v9 = WhoIs identities (bridge header and
+// tsnet:whoisResult) carry userId, tags and the peer's app-capability map
+// (capMap), the bridge identity field grows to 16 KiB, and proxy:add accepts
+// acceptAppCaps, injecting a Tailscale-App-Capabilities header; and
+// tsnet:authRequired is re-sent whenever the login URL changes (it was sent
+// once per start before); v10 = every status from "starting" on carries
+// controlUrl (the coordination server in use), "running" statuses carry the
+// node's keyExpiry (absent = key expiry disabled), and a "running" status is
+// re-sent when the key expiry changes while the node runs.
 // An absent value makes the core treat the sidecar as v1.
 // Bump on any addition to the command surface the core must not send blind,
 // or to an event the core relies on.
-const sidecarProtocolVersion = 8
+const sidecarProtocolVersion = 10
 
 type statusData struct {
 	State       string `json:"state"`
@@ -147,6 +159,16 @@ type statusData struct {
 	// omitempty: a status event must always carry it, and the "running" one is
 	// what the core reads to gate v2 features).
 	ProtocolVersion int `json:"protocolVersion"`
+	// ControlURL is the coordination server this lifecycle uses (v10), on
+	// every status from "starting" on — before any login URL or approval, so
+	// the core knows whether Tailscale's admin console exists for this node
+	// (it does not for Headscale).
+	ControlURL string `json:"controlUrl,omitempty"`
+	// KeyExpiry is when this node's key expires, RFC 3339 UTC (v10), on
+	// "running" statuses. Omitted there when key expiry is disabled (tsnet
+	// reports no expiry for the node); a core reads the omission as "never"
+	// only from a v10+ sidecar.
+	KeyExpiry string `json:"keyExpiry,omitempty"`
 }
 
 type authRequiredData struct {
@@ -196,6 +218,52 @@ type peerIdentityData struct {
 	DisplayName   string `json:"displayName,omitempty"`
 	ProfilePicURL string `json:"profilePicUrl,omitempty"`
 	NodeID        string `json:"nodeId,omitempty"`
+	// UserID is the owner's numeric Tailscale user id (UserProfile.ID). A
+	// login name can be renamed; the id cannot. 0 (omitted) = unknown.
+	UserID int64 `json:"userId,omitempty"`
+	// Tags are the peer node's ACL tags ("tag:tv"). A tagged node has no
+	// human owner (its login is the "tagged-devices" pseudo-user), so tags and
+	// nodeId are what tell two shared devices apart.
+	Tags []string `json:"tags,omitempty"`
+	// CapMap holds the application capabilities the tailnet policy grants
+	// this peer when it talks to THIS node (WhoIsResponse.CapMap: the "app"
+	// section of grants), keyed by capability name, one raw JSON value per
+	// matching grant — exactly what tailcfg.UnmarshalCapJSON consumes.
+	CapMap map[string][]json.RawMessage `json:"capMap,omitempty"`
+	// CapMapDropped is set when CapMap had to be omitted to fit the bridge
+	// header (marshalPeerIdentity), so an app deriving permissions from it can
+	// fail closed instead of mistaking "dropped" for "no capabilities".
+	CapMapDropped bool `json:"capMapDropped,omitempty"`
+}
+
+// isEmpty reports an identity that carries no information at all (the
+// anonymous case). Replaces struct equality, which maps/slices rule out.
+func (id peerIdentityData) isEmpty() bool {
+	return id.DNSName == "" && id.LoginName == "" && id.DisplayName == "" &&
+		id.ProfilePicURL == "" && id.NodeID == "" && id.UserID == 0 &&
+		len(id.Tags) == 0 && len(id.CapMap) == 0 && !id.CapMapDropped
+}
+
+// capMapFromWhois converts tailcfg's PeerCapMap (raw JSON strings) into the
+// identity's JSON-native map. An empty tailcfg.RawMessage marshals as null
+// upstream, so it does here too.
+func capMapFromWhois(caps tailcfg.PeerCapMap) map[string][]json.RawMessage {
+	if len(caps) == 0 {
+		return nil
+	}
+	out := make(map[string][]json.RawMessage, len(caps))
+	for name, values := range caps {
+		raws := make([]json.RawMessage, 0, len(values))
+		for _, v := range values {
+			if v == "" {
+				raws = append(raws, json.RawMessage("null"))
+				continue
+			}
+			raws = append(raws, json.RawMessage(v))
+		}
+		out[string(name)] = raws
+	}
+	return out
 }
 
 // listenData is the payload for tsnet:listen commands.
@@ -358,6 +426,11 @@ type proxyAddData struct {
 	Allow []string `json:"allow,omitempty"`
 	// Routes replaces the single target with path-prefix mounts (§7).
 	Routes []proxyRouteData `json:"routes,omitempty"`
+	// AcceptAppCaps names the application capabilities (tailnet policy
+	// grants, "app" section) forwarded to the backend as JSON in the
+	// Tailscale-App-Capabilities header — the allow-list `tailscale serve
+	// --accept-app-caps` takes. Empty = header never sent (protocol v9).
+	AcceptAppCaps []string `json:"acceptAppCaps,omitempty"`
 
 	// RequestID is an optional correlation id echoed on proxy:added/proxy:error.
 	RequestID string `json:"requestId,omitempty"`
@@ -655,14 +728,15 @@ type listeningPacketData struct {
 // shim is the main application state.
 type shim struct {
 	// serverMu guards server, dnsName, sessionToken, bridgePort, idleTimeout,
-	// ctx, and cancel — all written from the dispatch loop (start/stop) and read
-	// from many spawned goroutines.
+	// controlURL, ctx, and cancel — all written from the dispatch loop
+	// (start/stop) and read from many spawned goroutines.
 	serverMu     sync.RWMutex
 	server       *tsnet.Server
 	dnsName      string // set when status becomes "running"
 	sessionToken []byte // 32 bytes
 	bridgePort   uint16
 	idleTimeout  time.Duration // bridged-conn idle-reap deadline (RFC 021 §6.5)
+	controlURL   string        // coordination server of this lifecycle (v10)
 	ctx          context.Context
 	cancel       context.CancelFunc
 
@@ -844,6 +918,35 @@ func (s *shim) setIdleTimeout(d time.Duration) {
 	s.serverMu.Lock()
 	s.idleTimeout = d
 	s.serverMu.Unlock()
+}
+
+// setControlURL records the coordination server of this lifecycle, which
+// every later status reports.
+func (s *shim) setControlURL(u string) {
+	s.serverMu.Lock()
+	s.controlURL = u
+	s.serverMu.Unlock()
+}
+
+func (s *shim) getControlURL() string {
+	s.serverMu.RLock()
+	defer s.serverMu.RUnlock()
+	return s.controlURL
+}
+
+// effectiveControlURL is the coordination server a tsnet.Server with
+// ControlURL configured will use, by tsnet's own rule (Server.getControlURL
+// then LocalBackend's default): the configured URL, else TS_CONTROL_URL from
+// the environment (the core's, which the sidecar inherits — how a Headscale
+// user points an app at their server today), else Tailscale's default.
+func effectiveControlURL(configured string) string {
+	if configured != "" {
+		return configured
+	}
+	if v := os.Getenv("TS_CONTROL_URL"); v != "" {
+		return v
+	}
+	return ipn.DefaultControlURL
 }
 
 // idleTimeoutOrDefault returns the configured idle-reap deadline, falling back
@@ -1033,13 +1136,16 @@ func (s *shim) handleStart(data json.RawMessage) {
 	ctx := s.armLifecycle(token, d.BridgePort)
 	s.setIdleTimeout(resolveIdleTimeout(d.IdleTimeoutSecs))
 
-	s.sendStatus("starting", d.Hostname, "", "", "", "")
-
 	srv := &tsnet.Server{
 		Hostname:  d.Hostname,
 		Dir:       d.StateDir,
 		Ephemeral: d.Ephemeral,
 	}
+	// v10: name the coordination server on the very first status, before
+	// tsnet can ask for a login or an approval.
+	s.setControlURL(effectiveControlURL(srv.ControlURL))
+
+	s.sendStatus("starting", d.Hostname, "", "", "", "")
 	// tsnet's backend Logf is a verbose firehose (magicsock/netcheck/netmap,
 	// "fake tun", etc.). Leaving it nil makes tsnet discard those logs; only
 	// wire it to stderr under TRUFFLE_DEBUG. UserLogf is intentionally left
@@ -1092,7 +1198,12 @@ func (s *shim) waitForRunning(ctx context.Context, hostname string) {
 // way startPeerWatch is driven (RFC 025 L6: the self login must be proven to
 // come from the status this loop actually polls, not from one a test built).
 func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname string) {
-	authURLSent := false
+	// lastAuthURL is the login URL most recently reported. tsnet replaces an
+	// expired (or consumed) login URL with a new one while the node still
+	// waits; re-emitting on every CHANGE — not just once per start — keeps a
+	// headless first-run UI (a QR code on a setup page) from showing a dead
+	// link. An unchanged URL is never repeated.
+	lastAuthURL := ""
 	needsApprovalSent := false
 	for {
 		select {
@@ -1111,9 +1222,9 @@ func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname 
 			continue
 		}
 
-		if !authURLSent && status.AuthURL != "" {
+		if status.AuthURL != "" && status.AuthURL != lastAuthURL {
 			s.sendEvent("tsnet:authRequired", authRequiredData{AuthURL: status.AuthURL})
-			authURLSent = true
+			lastAuthURL = status.AuthURL
 		}
 
 		// G10: emit needsApproval only when entering the state, not every 500ms.
@@ -1127,35 +1238,21 @@ func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname 
 		}
 
 		if status.BackendState == "Running" {
-			var ip string
-			if len(status.TailscaleIPs) > 0 {
-				ip = status.TailscaleIPs[0].String()
-			}
-			dnsName := strings.TrimSuffix(status.Self.DNSName, ".")
-			nodeID := string(status.Self.ID)
-			s.setDNSName(dnsName)
 			// RFC 025 §3.3: our own login, resolved through the same User map
 			// the peer rows use. StatusWithoutPeers still carries the self
 			// profile (tailscale/tailscale#19894), so this is not empty on a
 			// logged-in node.
-			loginName := loginNameForUser(status.User, status.Self.UserID)
+			running := runningStatus(status, hostname)
+			s.setDNSName(running.DNSName)
 
-			s.sendStatus("running", hostname, dnsName, ip, "", loginName)
-			s.sendEvent("tsnet:started", statusData{
-				State:           "running",
-				Hostname:        hostname,
-				DNSName:         dnsName,
-				TailscaleIP:     ip,
-				NodeID:          nodeID,
-				LoginName:       loginName,
-				ProtocolVersion: sidecarProtocolVersion,
-			})
+			s.emitStatus("tsnet:status", running)
+			s.emitStatus("tsnet:started", running)
 			// A fast restart from saved state can reach Running before the
 			// netmap names our own user, so the login above is empty. Keep
 			// asking and report it with a follow-up "running" status once it
 			// is known (cores since protocol 5 take the login from any
 			// running status; older ones re-read the same running facts).
-			if loginName == "" {
+			if running.LoginName == "" {
 				go s.awaitSelfLogin(ctx, lc, hostname, selfLoginPollInterval, selfLoginPollBudget)
 			}
 
@@ -1166,7 +1263,7 @@ func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname 
 			// v1-era fossil :443 TLS listener that used to start here.
 
 			// Start background state monitor
-			go s.monitorState(ctx, lc)
+			go s.monitorState(ctx, lc, hostname, running.KeyExpiry)
 			return
 		}
 
@@ -1208,17 +1305,12 @@ func (s *shim) awaitSelfLogin(ctx context.Context, lc *local.Client, hostname st
 		if err != nil || status == nil || status.Self == nil || status.BackendState != "Running" {
 			continue
 		}
-		login := loginNameForUser(status.User, status.Self.UserID)
-		if login == "" {
+		running := runningStatus(status, hostname)
+		if running.LoginName == "" {
 			continue
 		}
-		var ip string
-		if len(status.TailscaleIPs) > 0 {
-			ip = status.TailscaleIPs[0].String()
-		}
-		dnsName := strings.TrimSuffix(status.Self.DNSName, ".")
 		debugf("own login resolved after start")
-		s.sendStatus("running", hostname, dnsName, ip, "", login)
+		s.emitStatus("tsnet:status", running)
 		return
 	}
 }
@@ -1730,7 +1822,7 @@ func (s *shim) handleWhois(data json.RawMessage) {
 			emit(whoisResultData{Error: fmt.Sprintf("whois lookup failed: %v", err)})
 			return
 		}
-		if identity == (peerIdentityData{}) {
+		if identity.isEmpty() {
 			emit(whoisResultData{}) // anonymous: absent, not fabricated
 			return
 		}
@@ -2249,6 +2341,25 @@ func (s *shim) handleProxyAdd(raw json.RawMessage) {
 	})
 }
 
+// validateAcceptAppCaps re-checks the capability allow-list off the wire.
+// Tailscale capability names are "{domain}/{path}" (KB 1537); anything without
+// a slash, or with whitespace/control characters, cannot be a real grant and
+// is almost certainly a config typo that would silently forward nothing.
+func validateAcceptAppCaps(names []string) *proxyAddFailure {
+	for _, name := range names {
+		bad := name == "" || len(name) > 256 || !strings.Contains(name, "/")
+		for _, r := range name {
+			if r <= ' ' || r == 0x7f {
+				bad = true
+			}
+		}
+		if bad {
+			return &proxyAddFailure{code: "INVALID_APP_CAP", message: fmt.Sprintf("acceptAppCaps entry %q is not a capability name ({domain}/{path})", name)}
+		}
+	}
+	return nil
+}
+
 // bindProxyRoutes validates every route and opens all static roots before any
 // proxy state or listener is installed. On any failure, including a panic, it
 // closes roots accumulated from earlier routes.
@@ -2395,6 +2506,10 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 	// validates shapes too, but the sidecar re-checks — it must not trust the
 	// wire (§9). Opening static roots here intentionally makes invalid roots an
 	// add-time failure rather than a later request-time 404.
+	if failure := validateAcceptAppCaps(data.AcceptAppCaps); failure != nil {
+		fail(failure.code, failure.message)
+		return
+	}
 	routes, resources, bindFailure := s.bindProxyRoutes(data)
 	if bindFailure != nil {
 		fail(bindFailure.code, bindFailure.message)
@@ -2482,6 +2597,7 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 		}
 
 		injectIdentityHeaders(r.Header, identity)
+		injectAppCapabilities(r.Header, identity, data.AcceptAppCaps)
 		r.Header.Set("X-Forwarded-Proto", forwardedProto)
 
 		// WebSocket upgrades bypass ReverseProxy via hijack — only for URL
@@ -2640,30 +2756,12 @@ func (s *shim) handleProxyWebSocket(w http.ResponseWriter, r *http.Request, entr
 		return
 	}
 
-	// P2/P3: bidirectional copy with an idle deadline in each direction. On EOF
-	// half-close the write side when supported; otherwise leave the peer to the
-	// idle deadline rather than a full Close that could truncate an in-flight
-	// reverse direction (the bug bridgeCopy documents).
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		idleCopy(targetConn, clientConn, idleDeadline)
-		if hc, ok := targetConn.(halfCloser); ok {
-			hc.CloseWrite()
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		idleCopy(clientConn, targetConn, idleDeadline)
-		if hc, ok := clientConn.(halfCloser); ok {
-			hc.CloseWrite()
-		}
-	}()
-	wg.Wait()
-	// Ensure both sides are fully closed after both goroutines finish
-	targetConn.Close()
-	clientConn.Close()
+	// P2/P3: bidirectional copy, reaped only when idle in BOTH directions for
+	// idleDeadline (a one-way server push over a WebSocket is not idle). On EOF
+	// the write side is half-closed when supported rather than fully closed,
+	// which could truncate an in-flight reverse direction; bridgeCopy closes
+	// both connections once both directions are done.
+	bridgeCopy(clientConn, targetConn, idleDeadline)
 }
 
 func (s *shim) handleProxyRemove(raw json.RawMessage) {
@@ -2844,51 +2942,191 @@ func bridgeCopy(tsnetConn, localConn net.Conn, idleTimeout time.Duration) {
 
 	// closeWrite shuts down the write half of a connection if supported.
 	closeWrite := func(c net.Conn) {
-		type closeWriter interface{ CloseWrite() error }
-		if cw, ok := c.(closeWriter); ok {
-			cw.CloseWrite()
+		if hc, ok := c.(halfCloser); ok {
+			hc.CloseWrite()
 		}
 	}
 
-	// G5: idleCopy applies an idle read/write deadline in each direction, so a
-	// bridged connection that goes silent both ways is reaped instead of leaking
-	// two goroutines + two fds until process exit. On EOF we half-close the
-	// write half of the destination, preserving any in-flight data in the
-	// reverse direction (e.g. a trailing ACK) rather than closing both.
-	go func() {
+	// G5: a bridged connection that goes silent in BOTH directions for
+	// idleTimeout is reaped instead of leaking two goroutines + two fds until
+	// process exit. The two copies share one activity clock: a direction that
+	// is merely quiet while the other streams (the request half of a long HTTP
+	// download, where the client sends one GET and then only reads) is NOT
+	// idle, and must not be half-closed — hyper/axum servers with the default
+	// half_close(false) abort the in-flight response on that EOF.
+	//
+	// On a real EOF we half-close the write half of the destination,
+	// preserving any in-flight data in the reverse direction (e.g. a trailing
+	// ACK or the rest of a response) rather than closing both. On an idle reap
+	// we close everything at once: nothing is in flight by definition.
+	activity := newConnActivity()
+	pump := func(dst, src net.Conn) {
 		defer wg.Done()
-		idleCopy(localConn, tsnetConn, idleTimeout)
-		closeWrite(localConn)
-	}()
-
-	go func() {
-		defer wg.Done()
-		idleCopy(tsnetConn, localConn, idleTimeout)
-		closeWrite(tsnetConn)
-	}()
+		if idleCopy(dst, src, idleTimeout, activity) {
+			closeAll()
+			return
+		}
+		closeWrite(dst)
+	}
+	go pump(localConn, tsnetConn)
+	go pump(tsnetConn, localConn)
 
 	wg.Wait()
 	// Both directions complete -> close everything
 }
 
-// idleCopy is io.Copy with an idle timeout applied to each direction: if no
-// bytes flow for `timeout`, the read deadline fires and the copy returns, so an
-// idle-but-open bridged/relayed connection can't pin a goroutine + fds forever.
-func idleCopy(dst, src net.Conn, timeout time.Duration) {
-	buf := make([]byte, 32*1024)
+// monoEpoch anchors connActivity timestamps to the monotonic clock, so a wall
+// clock step (NTP, sleep/wake) can neither reap a busy connection early nor
+// keep an idle one alive.
+var monoEpoch = time.Now()
+
+// connActivity is the last time bytes moved in EITHER direction of a bridged
+// connection. Both copy goroutines of one connection share it, which is what
+// makes the idle reap connection-level rather than per direction.
+type connActivity struct {
+	last atomic.Int64 // nanoseconds since monoEpoch
+}
+
+func newConnActivity() *connActivity {
+	a := &connActivity{}
+	a.touch()
+	return a
+}
+
+// touch records that bytes just moved.
+func (a *connActivity) touch() { a.last.Store(int64(time.Since(monoEpoch))) }
+
+// idleAt is the moment the connection counts as idle if nothing moves before
+// then. Used directly as the read/write deadline, so a reap happens timeout
+// after the LAST activity in either direction, not up to 2× later.
+func (a *connActivity) idleAt(timeout time.Duration) time.Time {
+	return monoEpoch.Add(time.Duration(a.last.Load()) + timeout)
+}
+
+// active reports whether the connection moved bytes within the last timeout.
+func (a *connActivity) active(timeout time.Duration) bool {
+	return time.Now().Before(a.idleAt(timeout))
+}
+
+// isTimeout reports a deadline expiry from any net.Conn implementation: the
+// standard library returns os.ErrDeadlineExceeded, gVisor's gonet (tsnet
+// connections) returns its own net.Error with Timeout() == true.
+func isTimeout(err error) bool {
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// Copy buffers. Every direction starts small: request bodies, API replies and
+// idle keep-alive connections never need more, and a connection parked in
+// Read holds its buffer for as long as it stays open. A direction whose read
+// fills the small buffer is a bulk stream (a media response), and switches to
+// a pooled large buffer: 8x fewer read/write rounds — and 8x fewer gVisor
+// writes on the tailnet side — per byte.
+const (
+	copyBufSmall = 32 << 10
+	copyBufLarge = 256 << 10
+)
+
+var copyBufPool = sync.Pool{New: func() any {
+	b := make([]byte, copyBufLarge)
+	return &b
+}}
+
+// rearmSlack is how stale an armed deadline may get before the copy loop
+// re-arms it: at most once a second on a busy stream, rather than once per
+// chunk. Small timeouts (tests) scale it down so precision is unaffected.
+func rearmSlack(timeout time.Duration) time.Duration {
+	return min(time.Second, timeout/8)
+}
+
+// armedDeadline remembers the deadline last set on one side of a copy.
+// Setting a deadline is not free — a runtime timer update for a loopback
+// socket, and for gVisor's gonet (every tailnet connection) a timer stop plus
+// a fresh time.AfterFunc — and the loop used to do it twice per 32 KiB chunk.
+//
+// Skipping a re-arm is safe: the wanted deadline (last activity + timeout)
+// only ever moves forward, so an armed deadline is never LATER than wanted.
+// A stale one can only fire early, which the loop already treats as "busy:
+// re-arm and keep going" (forget, below), so a reap still happens exactly
+// one timeout after the last byte in either direction.
+type armedDeadline struct{ at time.Time }
+
+// arm sets want via set unless the armed deadline is within slack of it.
+func (d *armedDeadline) arm(set func(time.Time) error, want time.Time, slack time.Duration) {
+	if !d.at.IsZero() && want.Sub(d.at) < slack {
+		return
+	}
+	_ = set(want)
+	d.at = want
+}
+
+// forget makes the next arm set the deadline for sure: after a deadline
+// fired, the armed one is in the past and must not be kept.
+func (d *armedDeadline) forget() { d.at = time.Time{} }
+
+// idleCopy copies src → dst until src reports EOF/error or the WHOLE
+// connection (both directions, via the shared activity) has been idle for
+// timeout. It returns true only in the second case, so the caller can reap the
+// connection instead of half-closing it. A deadline that fires while the other
+// direction is still moving bytes is not an end: the copy re-arms and keeps
+// waiting.
+func idleCopy(dst, src net.Conn, timeout time.Duration, activity *connActivity) (idle bool) {
+	buf := make([]byte, copyBufSmall)
+	var large *[]byte
+	defer func() {
+		if large != nil {
+			copyBufPool.Put(large)
+		}
+	}()
+	slack := rearmSlack(timeout)
+	var readDL, writeDL armedDeadline
 	for {
-		_ = src.SetReadDeadline(time.Now().Add(timeout))
+		readDL.arm(src.SetReadDeadline, activity.idleAt(timeout), slack)
 		n, rerr := src.Read(buf)
 		if n > 0 {
-			_ = dst.SetWriteDeadline(time.Now().Add(timeout))
-			if _, werr := dst.Write(buf[:n]); werr != nil {
-				return
+			activity.touch()
+			if idle, ok := writeActive(dst, buf[:n], timeout, activity, &writeDL, slack); !ok {
+				return idle
+			}
+			if n == len(buf) && large == nil {
+				large = copyBufPool.Get().(*[]byte)
+				buf = *large
 			}
 		}
 		if rerr != nil {
-			return
+			if isTimeout(rerr) && activity.active(timeout) {
+				readDL.forget()
+				continue // quiet direction, busy connection: keep it
+			}
+			return isTimeout(rerr)
 		}
 	}
+}
+
+// writeActive writes all of b to dst. A write that stalls past the deadline is
+// retried while the connection is otherwise active (any partial progress
+// counts as activity), and reported as an idle reap only when nothing moved
+// in either direction for timeout. ok is false when the copy must stop.
+func writeActive(dst net.Conn, b []byte, timeout time.Duration, activity *connActivity, dl *armedDeadline, slack time.Duration) (idle, ok bool) {
+	for len(b) > 0 {
+		dl.arm(dst.SetWriteDeadline, activity.idleAt(timeout), slack)
+		n, werr := dst.Write(b)
+		if n > 0 {
+			activity.touch()
+			b = b[n:]
+		}
+		if werr != nil {
+			if isTimeout(werr) && activity.active(timeout) {
+				dl.forget()
+				continue
+			}
+			return isTimeout(werr), false
+		}
+	}
+	return false, true
 }
 
 // publicURL renders a proxy's tailnet URL, omitting the scheme's default
@@ -2938,18 +3176,35 @@ func (s *shim) whoisIdentityErr(lc *local.Client, remoteAddr string) (peerIdenti
 	if err != nil {
 		return peerIdentityData{}, err
 	}
+	return identityFromWhois(whois), nil
+}
 
+// identityFromWhois maps a LocalAPI WhoIs answer onto the identity the
+// sidecar hands to Rust (bridge header, tsnet:whoisResult) and to proxied
+// backends (headers). Pure, so the mapping is unit-testable without tsnet.
+func identityFromWhois(whois *apitype.WhoIsResponse) peerIdentityData {
 	identity := peerIdentityData{}
+	if whois == nil {
+		return identity
+	}
 	if whois.Node != nil {
 		identity.DNSName = strings.TrimSuffix(whois.Node.Name, ".")
 		identity.NodeID = string(whois.Node.StableID)
+		if len(whois.Node.Tags) > 0 {
+			identity.Tags = append([]string(nil), whois.Node.Tags...)
+		}
+		identity.UserID = int64(whois.Node.User)
 	}
 	if whois.UserProfile != nil {
 		identity.LoginName = whois.UserProfile.LoginName
 		identity.DisplayName = whois.UserProfile.DisplayName
 		identity.ProfilePicURL = whois.UserProfile.ProfilePicURL
+		if whois.UserProfile.ID != 0 {
+			identity.UserID = int64(whois.UserProfile.ID)
+		}
 	}
-	return identity, nil
+	identity.CapMap = capMapFromWhois(whois.CapMap)
+	return identity
 }
 
 // whoisIdentity folds lookup failures into the anonymous case (zero
@@ -2970,7 +3225,7 @@ func (s *shim) whoisIdentity(lc *local.Client, remoteAddr string) peerIdentityDa
 // extract rich identity info about the connecting peer.
 func (s *shim) resolvePeerIdentity(lc *local.Client, remoteAddr string) string {
 	identity := s.whoisIdentity(lc, remoteAddr)
-	if identity == (peerIdentityData{}) {
+	if identity.isEmpty() {
 		return ""
 	}
 	return marshalPeerIdentity(identity)
@@ -3052,6 +3307,12 @@ const (
 	hdrNodeName   = "Tailscale-Node-Name"
 )
 
+// hdrAppCapabilities carries the caller's allow-listed application
+// capabilities as a JSON object {capName: [value, ...]}, the header (and
+// shape) `tailscale serve --accept-app-caps` uses. Stripped from inbound
+// requests with the rest of the Tailscale-* namespace.
+const hdrAppCapabilities = "Tailscale-App-Capabilities"
+
 // identityCacheTTL bounds identity staleness on the proxy request path.
 const identityCacheTTL = 60 * time.Second
 
@@ -3079,6 +3340,52 @@ func injectIdentityHeaders(h http.Header, id peerIdentityData) {
 	if id.DNSName != "" {
 		h.Set(hdrNodeName, id.DNSName)
 	}
+}
+
+// injectAppCapabilities sets Tailscale-App-Capabilities to the subset of the
+// caller's capability map named in accept. Nothing is sent when the proxy
+// accepts no capabilities or the caller is anonymous (as tailscale serve
+// does); an identified caller with none of the accepted capabilities gets
+// "{}", so a backend can tell "evaluated, none granted" from "not
+// configured". The JSON is escaped to pure ASCII (\uXXXX inside strings) so
+// it is a valid header value without RFC 2047 encoding and still parses as-is.
+func injectAppCapabilities(h http.Header, id peerIdentityData, accept []string) {
+	if len(accept) == 0 || id.isEmpty() {
+		return
+	}
+	filtered := make(map[string][]json.RawMessage, len(accept))
+	for _, name := range accept {
+		if values, ok := id.CapMap[name]; ok {
+			filtered[name] = values
+		}
+	}
+	b, err := json.Marshal(filtered)
+	if err != nil {
+		log.Printf("injectAppCapabilities: marshal failed: %v", err)
+		return
+	}
+	h.Set(hdrAppCapabilities, asciiJSON(b))
+}
+
+// asciiJSON rewrites every non-ASCII rune of a JSON document as a \uXXXX
+// escape (a surrogate pair above the BMP). Non-ASCII can only occur inside
+// JSON strings, where the escape is equivalent, so the document's meaning is
+// unchanged.
+func asciiJSON(b []byte) string {
+	var sb strings.Builder
+	sb.Grow(len(b))
+	for _, r := range string(b) {
+		switch {
+		case r < 0x80:
+			sb.WriteRune(r)
+		case r > 0xFFFF:
+			r -= 0x10000
+			fmt.Fprintf(&sb, "\\u%04x\\u%04x", 0xD800+(r>>10), 0xDC00+(r&0x3FF))
+		default:
+			fmt.Fprintf(&sb, "\\u%04x", r)
+		}
+	}
+	return sb.String()
 }
 
 // allowedLogin evaluates loginName against shell-style globs (path.Match),
@@ -3286,13 +3593,21 @@ func (s *shim) buildReverseProxy(proxyID string, target *url.URL, stripPrefix st
 
 // marshalPeerIdentity encodes identity as JSON bounded to maxRemoteDNSNameLen.
 // Oversize OPTIONAL fields are dropped (profilePicUrl, then displayName, then
-// loginName) rather than emitting a field the Rust header parser would reject;
-// dnsName and nodeId are always kept so identity verification still works.
+// the capability map — flagged by capMapDropped so consumers can fail closed —
+// then loginName) rather than emitting a field the Rust header parser would
+// reject; dnsName, nodeId, userId and tags are always kept so identity
+// verification still works.
 func marshalPeerIdentity(identity peerIdentityData) string {
 	for _, drop := range []func(*peerIdentityData){
 		func(*peerIdentityData) {},
 		func(id *peerIdentityData) { id.ProfilePicURL = "" },
 		func(id *peerIdentityData) { id.DisplayName = "" },
+		func(id *peerIdentityData) {
+			if len(id.CapMap) > 0 {
+				log.Printf("marshalPeerIdentity: capMap of %s exceeds the %d-byte bridge header; dropping it", id.DNSName, maxRemoteDNSNameLen)
+				id.CapMap, id.CapMapDropped = nil, true
+			}
+		},
 		func(id *peerIdentityData) { id.LoginName = "" },
 	} {
 		drop(&identity)
@@ -3365,12 +3680,20 @@ func (s *shim) prewarmCert(ctx context.Context, srv *tsnet.Server) {
 }
 
 // monitorState polls Tailscale status every 60 seconds and emits events for
-// state changes, upcoming key expiry, and health warnings.
-func (s *shim) monitorState(ctx context.Context, lc *local.Client) {
-	ticker := time.NewTicker(60 * time.Second)
+// state changes, upcoming key expiry, and health warnings. keyExpiry is the
+// expiry the "running" status reported; when the node's expiry moves (a
+// re-login, an admin extending or disabling it) the running status is re-sent
+// with the new value (v10).
+func (s *shim) monitorState(ctx context.Context, lc *local.Client, hostname, keyExpiry string) {
+	s.monitorStateEvery(ctx, lc, hostname, keyExpiry, 60*time.Second)
+}
+
+func (s *shim) monitorStateEvery(ctx context.Context, lc *local.Client, hostname, keyExpiry string, every time.Duration) {
+	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 
 	lastState := "Running"
+	lastKeyExpiry := keyExpiry
 
 	for {
 		select {
@@ -3394,6 +3717,14 @@ func (s *shim) monitorState(ctx context.Context, lc *local.Client) {
 				State: status.BackendState,
 			})
 			lastState = status.BackendState
+		}
+
+		// v10: a moved key expiry re-sends the running facts with it.
+		if status.BackendState == "Running" && status.Self != nil {
+			if running := runningStatus(status, hostname); running.KeyExpiry != lastKeyExpiry {
+				s.emitStatus("tsnet:status", running)
+				lastKeyExpiry = running.KeyExpiry
+			}
 		}
 
 		// Emit tsnet:keyExpiring if our own key expires within 24 hours
@@ -3430,15 +3761,42 @@ func (s *shim) sendEvent(eventType string, data interface{}) {
 // the node's own tailnet login (RFC 025 §3.3) and is empty for every state
 // emitted before a real status is in hand.
 func (s *shim) sendStatus(state, hostname, dnsName, tailscaleIP, errMsg, loginName string) {
-	s.sendEvent("tsnet:status", statusData{
-		State:           state,
-		Hostname:        hostname,
-		DNSName:         dnsName,
-		TailscaleIP:     tailscaleIP,
-		Error:           errMsg,
-		LoginName:       loginName,
-		ProtocolVersion: sidecarProtocolVersion,
+	s.emitStatus("tsnet:status", statusData{
+		State:       state,
+		Hostname:    hostname,
+		DNSName:     dnsName,
+		TailscaleIP: tailscaleIP,
+		Error:       errMsg,
+		LoginName:   loginName,
 	})
+}
+
+// emitStatus sends a status payload as eventType (tsnet:status or
+// tsnet:started), stamped with what every status carries: the protocol
+// version and this lifecycle's control URL.
+func (s *shim) emitStatus(eventType string, d statusData) {
+	d.ProtocolVersion = sidecarProtocolVersion
+	d.ControlURL = s.getControlURL()
+	s.sendEvent(eventType, d)
+}
+
+// runningStatus is the "running" status for a LocalAPI status whose backend
+// is Running: our first Tailscale IP, MagicDNS name, stable node id, own login
+// (RFC 025 §3.3) and key expiry (v10).
+func runningStatus(status *ipnstate.Status, hostname string) statusData {
+	d := statusData{State: "running", Hostname: hostname}
+	if len(status.TailscaleIPs) > 0 {
+		d.TailscaleIP = status.TailscaleIPs[0].String()
+	}
+	if self := status.Self; self != nil {
+		d.DNSName = strings.TrimSuffix(self.DNSName, ".")
+		d.NodeID = string(self.ID)
+		d.LoginName = loginNameForUser(status.User, self.UserID)
+		if self.KeyExpiry != nil && !self.KeyExpiry.IsZero() {
+			d.KeyExpiry = self.KeyExpiry.UTC().Format(time.RFC3339)
+		}
+	}
+	return d
 }
 
 // sendError sends a tsnet:error event with no correlation id — for failures

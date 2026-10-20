@@ -160,8 +160,49 @@ mod unit_tests {
                 display_name: Some("Alice".to_string()),
                 profile_pic_url: Some("https://p.example/a.png".to_string()),
                 node_id: Some("nABC123.ts-node".to_string()),
+                ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn parse_remote_identity_carries_cap_map_tags_and_user_id() {
+        // Protocol 9 sidecars add userId, tags and the app-capability map.
+        let json = r#"{"dnsName":"tv.tailnet.ts.net","loginName":"tagged-devices","nodeId":"nTV","userId":4242,"tags":["tag:tv","tag:kids"],"capMap":{"vibecook.dev/cap/flux":[{"role":"kid"},{"libraries":["Cartoons"]}]}}"#;
+        let identity = parse_remote_identity(json).expect("v9 WhoIs JSON must parse");
+        assert_eq!(identity.user_id, Some(4242));
+        assert_eq!(identity.tags, vec!["tag:tv", "tag:kids"]);
+        assert!(identity.is_tagged());
+        assert!(!identity.cap_map_dropped);
+        let values = identity
+            .capability_values("vibecook.dev/cap/flux")
+            .expect("capability present");
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0]["role"], "kid");
+
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        struct Rule {
+            role: Option<String>,
+            #[serde(default)]
+            libraries: Vec<String>,
+        }
+        let rules: Vec<Rule> = identity.capability("vibecook.dev/cap/flux").unwrap();
+        assert_eq!(rules[0].role.as_deref(), Some("kid"));
+        assert_eq!(rules[1].libraries, vec!["Cartoons"]);
+        let none: Vec<Rule> = identity.capability("example.com/cap/absent").unwrap();
+        assert!(none.is_empty());
+        // A value that does not fit the type fails closed instead of vanishing.
+        assert!(identity.capability::<u32>("vibecook.dev/cap/flux").is_err());
+    }
+
+    #[test]
+    fn parse_remote_identity_reports_a_dropped_cap_map() {
+        let identity = parse_remote_identity(
+            r#"{"dnsName":"peer.ts.net","loginName":"alice@example.com","capMapDropped":true}"#,
+        )
+        .expect("must parse");
+        assert!(identity.cap_map.is_empty());
+        assert!(identity.cap_map_dropped);
     }
 
     #[test]
@@ -173,6 +214,11 @@ mod unit_tests {
         assert_eq!(identity.dns_name.as_deref(), Some("peer.ts.net"));
         assert_eq!(identity.login_name, None);
         assert_eq!(identity.node_id, None);
+        // Pre-v9 sidecars send none of the protocol 9 fields.
+        assert_eq!(identity.user_id, None);
+        assert!(identity.tags.is_empty());
+        assert!(identity.cap_map.is_empty());
+        assert!(!identity.cap_map_dropped);
     }
 
     #[test]

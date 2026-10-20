@@ -228,6 +228,8 @@ impl NapiProxy {
                 .into_iter()
                 .map(Into::into)
                 .collect(),
+            // Not exposed to JS yet (protocol 9 capability forwarding).
+            accept_app_capabilities: Vec::new(),
         };
         let info = proxy
             .add(core_config)

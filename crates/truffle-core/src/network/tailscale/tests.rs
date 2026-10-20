@@ -370,6 +370,7 @@ fn whois_identity_normalization_drops_empty_fields() {
         display_name: Some(String::new()),
         profile_pic_url: None,
         node_id: Some("nQRJl4CNTRL".into()),
+        ..Default::default()
     }
     .normalized();
     assert_eq!(identity.dns_name, None);
@@ -384,6 +385,9 @@ fn whois_identity_normalization_drops_empty_fields() {
         display_name: None,
         profile_pic_url: None,
         node_id: Some(String::new()),
+        user_id: Some(0),
+        tags: vec![String::new()],
+        ..Default::default()
     }
     .normalized();
     assert!(
@@ -688,6 +692,7 @@ async fn test_bind_udp_returns_not_running() {
         ephemeral: None,
         tags: None,
         idle_timeout_secs: None,
+        start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
         login_allow: Vec::new(),
     };
     let provider = TailscaleProvider::new(config);
@@ -719,6 +724,7 @@ fn test_local_identity_default_before_start() {
         ephemeral: None,
         tags: None,
         idle_timeout_secs: None,
+        start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
         login_allow: Vec::new(),
     };
     let provider = TailscaleProvider::new(config);
@@ -760,6 +766,7 @@ fn test_local_addr_default_before_start() {
         ephemeral: None,
         tags: None,
         idle_timeout_secs: None,
+        start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
         login_allow: Vec::new(),
     };
     let provider = TailscaleProvider::new(config);
