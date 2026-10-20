@@ -135,11 +135,14 @@ type dialResultData struct {
 // (capMap), the bridge identity field grows to 16 KiB, and proxy:add accepts
 // acceptAppCaps, injecting a Tailscale-App-Capabilities header; and
 // tsnet:authRequired is re-sent whenever the login URL changes (it was sent
-// once per start before).
+// once per start before); v10 = every status from "starting" on carries
+// controlUrl (the coordination server in use), "running" statuses carry the
+// node's keyExpiry (absent = key expiry disabled), and a "running" status is
+// re-sent when the key expiry changes while the node runs.
 // An absent value makes the core treat the sidecar as v1.
 // Bump on any addition to the command surface the core must not send blind,
 // or to an event the core relies on.
-const sidecarProtocolVersion = 9
+const sidecarProtocolVersion = 10
 
 type statusData struct {
 	State       string `json:"state"`
@@ -156,6 +159,16 @@ type statusData struct {
 	// omitempty: a status event must always carry it, and the "running" one is
 	// what the core reads to gate v2 features).
 	ProtocolVersion int `json:"protocolVersion"`
+	// ControlURL is the coordination server this lifecycle uses (v10), on
+	// every status from "starting" on — before any login URL or approval, so
+	// the core knows whether Tailscale's admin console exists for this node
+	// (it does not for Headscale).
+	ControlURL string `json:"controlUrl,omitempty"`
+	// KeyExpiry is when this node's key expires, RFC 3339 UTC (v10), on
+	// "running" statuses. Omitted there when key expiry is disabled (tsnet
+	// reports no expiry for the node); a core reads the omission as "never"
+	// only from a v10+ sidecar.
+	KeyExpiry string `json:"keyExpiry,omitempty"`
 }
 
 type authRequiredData struct {
@@ -715,14 +728,15 @@ type listeningPacketData struct {
 // shim is the main application state.
 type shim struct {
 	// serverMu guards server, dnsName, sessionToken, bridgePort, idleTimeout,
-	// ctx, and cancel — all written from the dispatch loop (start/stop) and read
-	// from many spawned goroutines.
+	// controlURL, ctx, and cancel — all written from the dispatch loop
+	// (start/stop) and read from many spawned goroutines.
 	serverMu     sync.RWMutex
 	server       *tsnet.Server
 	dnsName      string // set when status becomes "running"
 	sessionToken []byte // 32 bytes
 	bridgePort   uint16
 	idleTimeout  time.Duration // bridged-conn idle-reap deadline (RFC 021 §6.5)
+	controlURL   string        // coordination server of this lifecycle (v10)
 	ctx          context.Context
 	cancel       context.CancelFunc
 
@@ -904,6 +918,35 @@ func (s *shim) setIdleTimeout(d time.Duration) {
 	s.serverMu.Lock()
 	s.idleTimeout = d
 	s.serverMu.Unlock()
+}
+
+// setControlURL records the coordination server of this lifecycle, which
+// every later status reports.
+func (s *shim) setControlURL(u string) {
+	s.serverMu.Lock()
+	s.controlURL = u
+	s.serverMu.Unlock()
+}
+
+func (s *shim) getControlURL() string {
+	s.serverMu.RLock()
+	defer s.serverMu.RUnlock()
+	return s.controlURL
+}
+
+// effectiveControlURL is the coordination server a tsnet.Server with
+// ControlURL configured will use, by tsnet's own rule (Server.getControlURL
+// then LocalBackend's default): the configured URL, else TS_CONTROL_URL from
+// the environment (the core's, which the sidecar inherits — how a Headscale
+// user points an app at their server today), else Tailscale's default.
+func effectiveControlURL(configured string) string {
+	if configured != "" {
+		return configured
+	}
+	if v := os.Getenv("TS_CONTROL_URL"); v != "" {
+		return v
+	}
+	return ipn.DefaultControlURL
 }
 
 // idleTimeoutOrDefault returns the configured idle-reap deadline, falling back
@@ -1093,13 +1136,16 @@ func (s *shim) handleStart(data json.RawMessage) {
 	ctx := s.armLifecycle(token, d.BridgePort)
 	s.setIdleTimeout(resolveIdleTimeout(d.IdleTimeoutSecs))
 
-	s.sendStatus("starting", d.Hostname, "", "", "", "")
-
 	srv := &tsnet.Server{
 		Hostname:  d.Hostname,
 		Dir:       d.StateDir,
 		Ephemeral: d.Ephemeral,
 	}
+	// v10: name the coordination server on the very first status, before
+	// tsnet can ask for a login or an approval.
+	s.setControlURL(effectiveControlURL(srv.ControlURL))
+
+	s.sendStatus("starting", d.Hostname, "", "", "", "")
 	// tsnet's backend Logf is a verbose firehose (magicsock/netcheck/netmap,
 	// "fake tun", etc.). Leaving it nil makes tsnet discard those logs; only
 	// wire it to stderr under TRUFFLE_DEBUG. UserLogf is intentionally left
@@ -1192,35 +1238,21 @@ func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname 
 		}
 
 		if status.BackendState == "Running" {
-			var ip string
-			if len(status.TailscaleIPs) > 0 {
-				ip = status.TailscaleIPs[0].String()
-			}
-			dnsName := strings.TrimSuffix(status.Self.DNSName, ".")
-			nodeID := string(status.Self.ID)
-			s.setDNSName(dnsName)
 			// RFC 025 §3.3: our own login, resolved through the same User map
 			// the peer rows use. StatusWithoutPeers still carries the self
 			// profile (tailscale/tailscale#19894), so this is not empty on a
 			// logged-in node.
-			loginName := loginNameForUser(status.User, status.Self.UserID)
+			running := runningStatus(status, hostname)
+			s.setDNSName(running.DNSName)
 
-			s.sendStatus("running", hostname, dnsName, ip, "", loginName)
-			s.sendEvent("tsnet:started", statusData{
-				State:           "running",
-				Hostname:        hostname,
-				DNSName:         dnsName,
-				TailscaleIP:     ip,
-				NodeID:          nodeID,
-				LoginName:       loginName,
-				ProtocolVersion: sidecarProtocolVersion,
-			})
+			s.emitStatus("tsnet:status", running)
+			s.emitStatus("tsnet:started", running)
 			// A fast restart from saved state can reach Running before the
 			// netmap names our own user, so the login above is empty. Keep
 			// asking and report it with a follow-up "running" status once it
 			// is known (cores since protocol 5 take the login from any
 			// running status; older ones re-read the same running facts).
-			if loginName == "" {
+			if running.LoginName == "" {
 				go s.awaitSelfLogin(ctx, lc, hostname, selfLoginPollInterval, selfLoginPollBudget)
 			}
 
@@ -1231,7 +1263,7 @@ func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname 
 			// v1-era fossil :443 TLS listener that used to start here.
 
 			// Start background state monitor
-			go s.monitorState(ctx, lc)
+			go s.monitorState(ctx, lc, hostname, running.KeyExpiry)
 			return
 		}
 
@@ -1273,17 +1305,12 @@ func (s *shim) awaitSelfLogin(ctx context.Context, lc *local.Client, hostname st
 		if err != nil || status == nil || status.Self == nil || status.BackendState != "Running" {
 			continue
 		}
-		login := loginNameForUser(status.User, status.Self.UserID)
-		if login == "" {
+		running := runningStatus(status, hostname)
+		if running.LoginName == "" {
 			continue
 		}
-		var ip string
-		if len(status.TailscaleIPs) > 0 {
-			ip = status.TailscaleIPs[0].String()
-		}
-		dnsName := strings.TrimSuffix(status.Self.DNSName, ".")
 		debugf("own login resolved after start")
-		s.sendStatus("running", hostname, dnsName, ip, "", login)
+		s.emitStatus("tsnet:status", running)
 		return
 	}
 }
@@ -3653,12 +3680,20 @@ func (s *shim) prewarmCert(ctx context.Context, srv *tsnet.Server) {
 }
 
 // monitorState polls Tailscale status every 60 seconds and emits events for
-// state changes, upcoming key expiry, and health warnings.
-func (s *shim) monitorState(ctx context.Context, lc *local.Client) {
-	ticker := time.NewTicker(60 * time.Second)
+// state changes, upcoming key expiry, and health warnings. keyExpiry is the
+// expiry the "running" status reported; when the node's expiry moves (a
+// re-login, an admin extending or disabling it) the running status is re-sent
+// with the new value (v10).
+func (s *shim) monitorState(ctx context.Context, lc *local.Client, hostname, keyExpiry string) {
+	s.monitorStateEvery(ctx, lc, hostname, keyExpiry, 60*time.Second)
+}
+
+func (s *shim) monitorStateEvery(ctx context.Context, lc *local.Client, hostname, keyExpiry string, every time.Duration) {
+	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 
 	lastState := "Running"
+	lastKeyExpiry := keyExpiry
 
 	for {
 		select {
@@ -3682,6 +3717,14 @@ func (s *shim) monitorState(ctx context.Context, lc *local.Client) {
 				State: status.BackendState,
 			})
 			lastState = status.BackendState
+		}
+
+		// v10: a moved key expiry re-sends the running facts with it.
+		if status.BackendState == "Running" && status.Self != nil {
+			if running := runningStatus(status, hostname); running.KeyExpiry != lastKeyExpiry {
+				s.emitStatus("tsnet:status", running)
+				lastKeyExpiry = running.KeyExpiry
+			}
 		}
 
 		// Emit tsnet:keyExpiring if our own key expires within 24 hours
@@ -3718,15 +3761,42 @@ func (s *shim) sendEvent(eventType string, data interface{}) {
 // the node's own tailnet login (RFC 025 §3.3) and is empty for every state
 // emitted before a real status is in hand.
 func (s *shim) sendStatus(state, hostname, dnsName, tailscaleIP, errMsg, loginName string) {
-	s.sendEvent("tsnet:status", statusData{
-		State:           state,
-		Hostname:        hostname,
-		DNSName:         dnsName,
-		TailscaleIP:     tailscaleIP,
-		Error:           errMsg,
-		LoginName:       loginName,
-		ProtocolVersion: sidecarProtocolVersion,
+	s.emitStatus("tsnet:status", statusData{
+		State:       state,
+		Hostname:    hostname,
+		DNSName:     dnsName,
+		TailscaleIP: tailscaleIP,
+		Error:       errMsg,
+		LoginName:   loginName,
 	})
+}
+
+// emitStatus sends a status payload as eventType (tsnet:status or
+// tsnet:started), stamped with what every status carries: the protocol
+// version and this lifecycle's control URL.
+func (s *shim) emitStatus(eventType string, d statusData) {
+	d.ProtocolVersion = sidecarProtocolVersion
+	d.ControlURL = s.getControlURL()
+	s.sendEvent(eventType, d)
+}
+
+// runningStatus is the "running" status for a LocalAPI status whose backend
+// is Running: our first Tailscale IP, MagicDNS name, stable node id, own login
+// (RFC 025 §3.3) and key expiry (v10).
+func runningStatus(status *ipnstate.Status, hostname string) statusData {
+	d := statusData{State: "running", Hostname: hostname}
+	if len(status.TailscaleIPs) > 0 {
+		d.TailscaleIP = status.TailscaleIPs[0].String()
+	}
+	if self := status.Self; self != nil {
+		d.DNSName = strings.TrimSuffix(self.DNSName, ".")
+		d.NodeID = string(self.ID)
+		d.LoginName = loginNameForUser(status.User, self.UserID)
+		if self.KeyExpiry != nil && !self.KeyExpiry.IsZero() {
+			d.KeyExpiry = self.KeyExpiry.UTC().Format(time.RFC3339)
+		}
+	}
+	return d
 }
 
 // sendError sends a tsnet:error event with no correlation id — for failures

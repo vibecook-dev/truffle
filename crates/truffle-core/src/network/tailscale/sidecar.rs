@@ -73,6 +73,11 @@ pub(crate) enum SidecarInternalEvent {
         login_name: Option<String>,
         /// Sidecar control-protocol version; `None` = pre-RFC-023 (v1).
         protocol_version: Option<u32>,
+        /// The node's key expiry, RFC 3339 (protocol 10; absent there means
+        /// expiry is disabled).
+        key_expiry: Option<String>,
+        /// The coordination server in use (protocol 10).
+        control_url: Option<String>,
     },
     /// Sidecar stopped.
     Stopped,
@@ -80,8 +85,12 @@ pub(crate) enum SidecarInternalEvent {
     AuthRequired { auth_url: String },
     /// Needs admin approval.
     NeedsApproval,
-    /// State changed.
-    StateChange { state: String },
+    /// State changed. A `starting` status (protocol 10) also names the
+    /// coordination server, before any login or approval event.
+    StateChange {
+        state: String,
+        control_url: Option<String>,
+    },
     /// Key expiring.
     KeyExpiring { expires_at: String },
     /// Health warnings.
@@ -217,6 +226,12 @@ impl Drop for ReplyGuard {
 /// after which the process watcher stops watching the sidecar child.
 const MAX_STATUS_CHECK_ERRORS: u32 = 3;
 
+/// How often the process watcher looks once the sidecar's stdout has closed
+/// (the process is exiting), and for how many polls (2 s) before it falls
+/// back to its one-second poll.
+const EXITING_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+const EXITING_POLLS: u32 = 200;
+
 /// Manages the Go sidecar child process.
 ///
 /// Handles spawning, command sending via stdin, event reading from stdout,
@@ -255,6 +270,10 @@ impl GoSidecar {
         let (event_tx, event_rx) = broadcast::channel(256);
         let (stdin_tx, stdin_rx) = mpsc::channel::<String>(64);
         let shutdown = Arc::new(Notify::new());
+        // Raised by the stdout reader when the child's stdout closes, which
+        // only happens as the process exits: the watcher then looks right
+        // away instead of at its next one-second poll.
+        let exit_hint = Arc::new(Notify::new());
         let pending_replies: PendingReplies = Arc::new(StdMutex::new(HashMap::new()));
 
         // Spawn the child process
@@ -318,11 +337,17 @@ impl GoSidecar {
             Self::spawn_stdin_writer(stdin, stdin_rx, shutdown.clone());
 
             // Spawn stdout reader task
-            Self::spawn_stdout_reader(stdout, event_tx.clone(), pending_replies, shutdown.clone());
+            Self::spawn_stdout_reader(
+                stdout,
+                event_tx.clone(),
+                pending_replies,
+                shutdown.clone(),
+                exit_hint.clone(),
+            );
         }
 
         // Spawn process watcher task
-        Self::spawn_process_watcher(child.clone(), event_tx, shutdown, pid_slot, pid);
+        Self::spawn_process_watcher(child.clone(), event_tx, shutdown, exit_hint, pid_slot, pid);
 
         Ok((sidecar, event_rx))
     }
@@ -405,6 +430,7 @@ impl GoSidecar {
         event_tx: broadcast::Sender<SidecarInternalEvent>,
         pending_replies: PendingReplies,
         shutdown: Arc<Notify>,
+        exit_hint: Arc<Notify>,
     ) {
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
@@ -428,10 +454,12 @@ impl GoSidecar {
                             }
                             Ok(None) => {
                                 tracing::info!("sidecar stdout closed (process exited)");
+                                exit_hint.notify_one();
                                 break;
                             }
                             Err(e) => {
                                 tracing::error!("sidecar stdout read error: {e}");
+                                exit_hint.notify_one();
                                 break;
                             }
                         }
@@ -506,6 +534,7 @@ impl GoSidecar {
         child: Arc<Mutex<Option<Child>>>,
         event_tx: broadcast::Sender<SidecarInternalEvent>,
         shutdown: Arc<Notify>,
+        exit_hint: Arc<Notify>,
         pid_slot: Arc<AtomicU32>,
         pid: u32,
     ) {
@@ -517,44 +546,57 @@ impl GoSidecar {
             tokio::pin!(shutdown_signal);
             shutdown_signal.as_mut().enable();
             let mut consecutive_errors = 0;
+            // After the exit hint, poll every EXITING_POLL for a while: the
+            // closed stdout says the process is going, but it is reaped a
+            // moment later.
+            let mut fast_polls_left = 0u32;
             loop {
+                let poll_every = if fast_polls_left > 0 {
+                    fast_polls_left -= 1;
+                    EXITING_POLL
+                } else {
+                    std::time::Duration::from_secs(1)
+                };
                 tokio::select! {
                     _ = &mut shutdown_signal => {
                         tracing::debug!("process watcher shutting down");
                         return;
                     }
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
-                        let mut guard = child.lock().await;
-                        if let Some(ref mut c) = *guard {
-                            match c.try_wait() {
-                                Ok(Some(status)) => {
-                                    let exit_code = status.code();
-                                    tracing::warn!("sidecar process exited with code: {exit_code:?}");
-                                    Self::clear_pid(&pid_slot, pid);
-                                    let _ = event_tx.send(SidecarInternalEvent::ProcessExited { exit_code });
-                                    *guard = None;
-                                    return;
-                                }
-                                Ok(None) => {
-                                    // Still running, continue polling
-                                    consecutive_errors = 0;
-                                }
-                                Err(e) => {
-                                    if Self::status_check_failed(&mut consecutive_errors, &pid_slot, pid) {
-                                        tracing::error!(
-                                            "failed to check sidecar process status \
-                                             {consecutive_errors} times in a row, no longer \
-                                             watching it: {e}"
-                                        );
-                                        return;
-                                    }
-                                    tracing::warn!("failed to check sidecar process status: {e}");
-                                }
-                            }
-                        } else {
+                    _ = exit_hint.notified() => {
+                        fast_polls_left = EXITING_POLLS;
+                    }
+                    _ = tokio::time::sleep(poll_every) => {}
+                }
+                let mut guard = child.lock().await;
+                if let Some(ref mut c) = *guard {
+                    match c.try_wait() {
+                        Ok(Some(status)) => {
+                            let exit_code = status.code();
+                            tracing::warn!("sidecar process exited with code: {exit_code:?}");
+                            Self::clear_pid(&pid_slot, pid);
+                            let _ =
+                                event_tx.send(SidecarInternalEvent::ProcessExited { exit_code });
+                            *guard = None;
                             return;
                         }
+                        Ok(None) => {
+                            // Still running, continue polling
+                            consecutive_errors = 0;
+                        }
+                        Err(e) => {
+                            if Self::status_check_failed(&mut consecutive_errors, &pid_slot, pid) {
+                                tracing::error!(
+                                    "failed to check sidecar process status \
+                                     {consecutive_errors} times in a row, no longer \
+                                     watching it: {e}"
+                                );
+                                return;
+                            }
+                            tracing::warn!("failed to check sidecar process status: {e}");
+                        }
                     }
+                } else {
+                    return;
                 }
             }
         });
@@ -572,6 +614,8 @@ impl GoSidecar {
                             node_id: data.node_id,
                             login_name: data.login_name.filter(|l| !l.is_empty()),
                             protocol_version: data.protocol_version,
+                            key_expiry: data.key_expiry,
+                            control_url: data.control_url.filter(|u| !u.is_empty()),
                         })
                     } else if data.state == "error" {
                         Some(SidecarInternalEvent::Error {
@@ -580,7 +624,10 @@ impl GoSidecar {
                         })
                     } else {
                         // Other status updates (starting, etc.)
-                        Some(SidecarInternalEvent::StateChange { state: data.state })
+                        Some(SidecarInternalEvent::StateChange {
+                            state: data.state,
+                            control_url: data.control_url.filter(|u| !u.is_empty()),
+                        })
                     }
                 } else {
                     None
@@ -597,7 +644,10 @@ impl GoSidecar {
             event_type::NEEDS_APPROVAL => Some(SidecarInternalEvent::NeedsApproval),
             event_type::STATE_CHANGE => serde_json::from_value::<StateChangeEventData>(event.data)
                 .ok()
-                .map(|d| SidecarInternalEvent::StateChange { state: d.state }),
+                .map(|d| SidecarInternalEvent::StateChange {
+                    state: d.state,
+                    control_url: None,
+                }),
             event_type::KEY_EXPIRING => serde_json::from_value::<KeyExpiringEventData>(event.data)
                 .ok()
                 .map(|d| SidecarInternalEvent::KeyExpiring {
@@ -1200,5 +1250,42 @@ mod status_wire_tests {
             }
             other => panic!("unexpected mapping: {other:?}"),
         }
+    }
+
+    #[test]
+    fn protocol_10_statuses_carry_control_url_and_key_expiry() {
+        let starting = r#"{"event":"tsnet:status","data":{"state":"starting","hostname":"truffle-app-dev","protocolVersion":10,"controlUrl":"https://hs.example.com"}}"#;
+        match map_line(starting) {
+            Some(SidecarInternalEvent::StateChange { state, control_url }) => {
+                assert_eq!(state, "starting");
+                assert_eq!(control_url.as_deref(), Some("https://hs.example.com"));
+            }
+            other => panic!("unexpected mapping: {other:?}"),
+        }
+        let running = r#"{"event":"tsnet:started","data":{"state":"running","hostname":"truffle-app-dev","dnsName":"truffle-app-dev.tailnet.ts.net","tailscaleIP":"100.64.0.7","nodeId":"nSELF","protocolVersion":10,"controlUrl":"https://controlplane.tailscale.com","keyExpiry":"2026-06-24T10:00:00Z"}}"#;
+        match map_line(running) {
+            Some(SidecarInternalEvent::Started {
+                key_expiry,
+                control_url,
+                protocol_version,
+                ..
+            }) => {
+                assert_eq!(key_expiry.as_deref(), Some("2026-06-24T10:00:00Z"));
+                assert_eq!(
+                    control_url.as_deref(),
+                    Some("https://controlplane.tailscale.com")
+                );
+                assert_eq!(protocol_version, Some(10));
+            }
+            other => panic!("unexpected mapping: {other:?}"),
+        }
+        // The monitor's tsnet:stateChange names no server.
+        assert!(matches!(
+            map_line(r#"{"event":"tsnet:stateChange","data":{"state":"NeedsLogin"}}"#),
+            Some(SidecarInternalEvent::StateChange {
+                control_url: None,
+                ..
+            })
+        ));
     }
 }

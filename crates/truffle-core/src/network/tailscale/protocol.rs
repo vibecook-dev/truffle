@@ -365,6 +365,15 @@ pub(crate) struct StatusEventData {
     /// features rather than let them be silently ignored.
     #[serde(default)]
     pub protocol_version: Option<u32>,
+    /// The coordination server the node uses (protocol 10): on every status
+    /// from `starting` on. Absent on older sidecars.
+    #[serde(default)]
+    pub control_url: Option<String>,
+    /// The node's own key expiry, RFC 3339 (protocol 10), on `running`
+    /// statuses. From a protocol 10+ sidecar an absent value on a running
+    /// status means key expiry is disabled; older sidecars never send it.
+    #[serde(default)]
+    pub key_expiry: Option<String>,
 }
 
 /// Data from `tsnet:authRequired` event.
@@ -1066,6 +1075,31 @@ mod tests {
         let event: SidecarEvent = serde_json::from_str(legacy).unwrap();
         let data: StatusEventData = serde_json::from_value(event.data).unwrap();
         assert_eq!(data.protocol_version, None);
+    }
+
+    /// Protocol 10: every status carries the control URL, and running
+    /// statuses the node's key expiry; older sidecars omit both.
+    #[test]
+    fn status_event_parses_control_url_and_key_expiry() {
+        let json = r#"{"event":"tsnet:status","data":{"state":"running","hostname":"h","dnsName":"h.t.ts.net","tailscaleIP":"100.64.0.1","protocolVersion":10,"controlUrl":"https://hs.example.com","keyExpiry":"2026-06-24T10:00:00Z"}}"#;
+        let event: SidecarEvent = serde_json::from_str(json).unwrap();
+        let data: StatusEventData = serde_json::from_value(event.data).unwrap();
+        assert_eq!(data.control_url.as_deref(), Some("https://hs.example.com"));
+        assert_eq!(data.key_expiry.as_deref(), Some("2026-06-24T10:00:00Z"));
+
+        let starting = r#"{"event":"tsnet:status","data":{"state":"starting","protocolVersion":10,"controlUrl":"https://controlplane.tailscale.com"}}"#;
+        let event: SidecarEvent = serde_json::from_str(starting).unwrap();
+        let data: StatusEventData = serde_json::from_value(event.data).unwrap();
+        assert_eq!(
+            data.control_url.as_deref(),
+            Some("https://controlplane.tailscale.com")
+        );
+        assert_eq!(data.key_expiry, None);
+
+        let legacy = r#"{"event":"tsnet:status","data":{"state":"running","hostname":"h","protocolVersion":9}}"#;
+        let event: SidecarEvent = serde_json::from_str(legacy).unwrap();
+        let data: StatusEventData = serde_json::from_value(event.data).unwrap();
+        assert_eq!((data.control_url, data.key_expiry), (None, None));
     }
 
     /// RFC 025 §4: the node's own login rides `tsnet:status`/`tsnet:started`

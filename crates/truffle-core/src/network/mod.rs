@@ -420,6 +420,237 @@ pub enum NetworkStatusEvent {
         /// tagged node).
         login_name: String,
     },
+    /// The coordination server this node logs in to became known (sidecar
+    /// protocol 10).
+    ///
+    /// Raised once per start, before any login URL or approval request, so
+    /// a UI can decide right away whether pointing the user at Tailscale's
+    /// admin console makes sense ([`ControlServer::machines_admin_url`]).
+    /// Also available afterwards from
+    /// [`TailscaleProvider::control_server`](tailscale::TailscaleProvider::control_server).
+    ControlServerKnown {
+        /// Tailscale's hosted service, or a custom server such as Headscale.
+        control_server: ControlServer,
+    },
+    /// This node's key expiry became known, or changed (sidecar protocol 10).
+    ///
+    /// Raised when the node comes up, and again when the expiry moves while
+    /// it runs: the node re-authenticated, or an admin extended or disabled
+    /// the expiry (noticed within about a minute). Also available afterwards
+    /// from
+    /// [`TailscaleProvider::key_expiry`](tailscale::TailscaleProvider::key_expiry).
+    KeyExpiryKnown {
+        /// When the key expires, or [`KeyExpiry::Never`].
+        key_expiry: KeyExpiry,
+    },
+    /// The provider's sidecar process exited on its own: the node is off
+    /// the tailnet and stays off (it is not restarted). Every bridged
+    /// connection ended with it.
+    ///
+    /// Raised within milliseconds of the exit, both while `start()` is
+    /// waiting (which then fails) and after the node came up. A clean
+    /// `stop()` does not raise it. Show the node as failed, and build a new
+    /// node to come back.
+    SidecarExited {
+        /// The process exit code; `None` when a signal ended it.
+        exit_code: Option<i32>,
+    },
+}
+
+/// When a node's key expires.
+///
+/// After that moment the node drops off the tailnet until someone logs it in
+/// again, so a server that should stay reachable wants to warn its owner
+/// ahead of time (or have an admin disable the expiry for it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeyExpiry {
+    /// Key expiry is disabled for this node: the admin turned it off, or the
+    /// node is tagged (tagged nodes don't expire by default).
+    Never,
+    /// The key expires (or expired) at this moment.
+    At(std::time::SystemTime),
+}
+
+impl KeyExpiry {
+    /// The expiry moment; `None` for [`KeyExpiry::Never`].
+    pub fn at(self) -> Option<std::time::SystemTime> {
+        match self {
+            KeyExpiry::Never => None,
+            KeyExpiry::At(t) => Some(t),
+        }
+    }
+
+    /// The expiry as milliseconds since the Unix epoch (negative before
+    /// 1970), the shape a JSON or JavaScript timestamp takes; `None` for
+    /// [`KeyExpiry::Never`].
+    pub fn unix_millis(self) -> Option<i64> {
+        let t = self.at()?;
+        Some(match t.duration_since(std::time::UNIX_EPOCH) {
+            Ok(after) => i64::try_from(after.as_millis()).unwrap_or(i64::MAX),
+            Err(before) => -i64::try_from(before.duration().as_millis()).unwrap_or(i64::MAX),
+        })
+    }
+
+    /// Read the sidecar's wire form: an RFC 3339 time, where an absent or
+    /// empty value means expiry is disabled. `None` for a value that does not
+    /// parse (logged by the caller, never guessed).
+    pub(crate) fn from_wire(value: Option<&str>) -> Option<KeyExpiry> {
+        match value.map(str::trim).filter(|s| !s.is_empty()) {
+            None => Some(KeyExpiry::Never),
+            Some(s) => parse_rfc3339(s).map(KeyExpiry::At),
+        }
+    }
+}
+
+/// The coordination ("control") server a node logs in to and receives its
+/// network map from.
+///
+/// Tailscale's hosted service has an admin console where devices are
+/// approved and their key expiry managed; a self-hosted server such as
+/// Headscale has none (it is managed from its own CLI), so a UI should only
+/// link to the console for [`ControlServer::Tailscale`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ControlServer {
+    /// Tailscale's hosted service (`https://controlplane.tailscale.com`,
+    /// also reachable as `https://login.tailscale.com`).
+    Tailscale,
+    /// Any other control server, such as Headscale, by URL.
+    Custom {
+        /// The control URL as configured, e.g. `https://hs.example.com`.
+        url: String,
+    },
+}
+
+impl ControlServer {
+    /// Tailscale's default control URL (tailscale's `ipn.DefaultControlURL`).
+    pub const TAILSCALE_URL: &'static str = "https://controlplane.tailscale.com";
+
+    /// Classify a control URL the way Tailscale does
+    /// (`ipn.IsLoginServerSynonym`): `https://controlplane.tailscale.com` and
+    /// `https://login.tailscale.com` are the hosted service, and so is an
+    /// empty URL (tsnet's default). The comparison also tolerates letter case
+    /// and a trailing slash. Anything else is [`ControlServer::Custom`].
+    pub fn from_url(url: &str) -> ControlServer {
+        let trimmed = url.trim();
+        let canonical = trimmed.trim_end_matches('/').to_ascii_lowercase();
+        match canonical.as_str() {
+            "" | "https://controlplane.tailscale.com" | "https://login.tailscale.com" => {
+                ControlServer::Tailscale
+            }
+            _ => ControlServer::Custom {
+                url: trimmed.to_string(),
+            },
+        }
+    }
+
+    /// True for Tailscale's hosted service.
+    pub fn is_tailscale(&self) -> bool {
+        matches!(self, ControlServer::Tailscale)
+    }
+
+    /// The control URL ([`Self::TAILSCALE_URL`] for the hosted service).
+    pub fn url(&self) -> &str {
+        match self {
+            ControlServer::Tailscale => Self::TAILSCALE_URL,
+            ControlServer::Custom { url } => url,
+        }
+    }
+
+    /// The admin console's Machines page, where an admin approves a device
+    /// waiting for approval and manages its key expiry. `None` for a custom
+    /// control server, which has no such page.
+    pub fn machines_admin_url(&self) -> Option<&'static str> {
+        match self {
+            ControlServer::Tailscale => Some("https://login.tailscale.com/admin/machines"),
+            ControlServer::Custom { .. } => None,
+        }
+    }
+}
+
+/// Parse an RFC 3339 timestamp (`2026-06-24T10:00:00Z`,
+/// `2026-06-24T12:00:00.5+02:00`) — the format Go's `time.RFC3339` writes.
+/// Returns `None` for anything else, including impossible dates, rather than
+/// guessing.
+pub(crate) fn parse_rfc3339(s: &str) -> Option<std::time::SystemTime> {
+    fn num(b: &[u8]) -> Option<i64> {
+        if b.is_empty() || !b.iter().all(u8::is_ascii_digit) {
+            return None;
+        }
+        b.iter().try_fold(0i64, |acc, d| {
+            acc.checked_mul(10)?.checked_add(i64::from(d - b'0'))
+        })
+    }
+    let b = s.as_bytes();
+    if b.len() < 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || !matches!(b[10], b'T' | b't' | b' ')
+        || b[13] != b':'
+        || b[16] != b':'
+    {
+        return None;
+    }
+    let (year, month, day) = (num(&b[0..4])?, num(&b[5..7])?, num(&b[8..10])?);
+    let (hour, min, sec) = (num(&b[11..13])?, num(&b[14..16])?, num(&b[17..19])?);
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let month_days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if !(1..=month_days).contains(&day) || hour > 23 || min > 59 || sec > 60 {
+        return None;
+    }
+    // Optional fraction, then Z or ±HH:MM.
+    let mut rest = &b[19..];
+    let mut nanos: u32 = 0;
+    if rest.first() == Some(&b'.') {
+        let digits = rest[1..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if digits == 0 {
+            return None;
+        }
+        for (i, d) in rest[1..=digits].iter().enumerate().take(9) {
+            nanos += u32::from(d - b'0') * 10u32.pow(8 - i as u32);
+        }
+        rest = &rest[1 + digits..];
+    }
+    let offset_secs = match rest {
+        [b'Z' | b'z'] => 0,
+        [sign @ (b'+' | b'-'), h1, h2, b':', m1, m2] => {
+            let (oh, om) = (num(&[*h1, *h2])?, num(&[*m1, *m2])?);
+            if oh > 23 || om > 59 {
+                return None;
+            }
+            let off = oh * 3600 + om * 60;
+            if *sign == b'+' {
+                off
+            } else {
+                -off
+            }
+        }
+        _ => return None,
+    };
+    // Days since 1970-01-01 of a proleptic Gregorian date (Hinnant's
+    // days_from_civil).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    // A leap second (:60) reads as :59.
+    let secs = days * 86_400 + hour * 3600 + min * 60 + sec.min(59) - offset_secs;
+    let epoch = std::time::UNIX_EPOCH;
+    if secs >= 0 {
+        epoch.checked_add(Duration::new(secs.unsigned_abs(), nanos))
+    } else {
+        epoch
+            .checked_sub(Duration::from_secs(secs.unsigned_abs()))?
+            .checked_add(Duration::from_nanos(u64::from(nanos)))
+    }
 }
 
 /// Network address of a peer.
@@ -476,7 +707,10 @@ pub struct PingResult {
 pub struct HealthInfo {
     /// Current backend state (e.g., "Running", "NeedsLogin").
     pub state: String,
-    /// Key expiry timestamp (RFC 3339), if applicable.
+    /// The node's key expiry (RFC 3339). Sidecars since protocol 10 report
+    /// it as soon as the node runs (`None` then means expiry is disabled;
+    /// [`KeyExpiry`] says so explicitly); older ones only within 24 hours of
+    /// the expiry.
     pub key_expiry: Option<String>,
     /// Active health warnings.
     pub warnings: Vec<String>,
@@ -950,4 +1184,113 @@ pub enum NetworkError {
         /// Human-readable detail.
         message: String,
     },
+}
+
+#[cfg(test)]
+mod status_type_tests {
+    use super::*;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn rfc3339_parses_what_go_writes() {
+        // Go's time.RFC3339 of a UTC time, as the sidecar sends it.
+        let t = parse_rfc3339("2026-06-24T10:00:00Z").unwrap();
+        assert_eq!(t, UNIX_EPOCH + Duration::from_secs(1_782_295_200));
+        assert_eq!(parse_rfc3339("1970-01-01T00:00:00Z"), Some(UNIX_EPOCH));
+        // Offsets, fractions and a leap day.
+        assert_eq!(parse_rfc3339("2026-06-24T12:00:00+02:00"), Some(t));
+        assert_eq!(parse_rfc3339("2026-06-24T05:30:00-04:30"), Some(t));
+        assert_eq!(
+            parse_rfc3339("2026-06-24T10:00:00.25Z"),
+            Some(t + Duration::from_millis(250))
+        );
+        assert_eq!(
+            parse_rfc3339("2028-02-29T00:00:00Z"),
+            Some(UNIX_EPOCH + Duration::from_secs(1_835_395_200))
+        );
+        assert_eq!(
+            parse_rfc3339("1969-12-31T23:59:59Z"),
+            UNIX_EPOCH.checked_sub(Duration::from_secs(1))
+        );
+    }
+
+    #[test]
+    fn rfc3339_rejects_rather_than_guesses() {
+        for bad in [
+            "",
+            "2026-06-24",
+            "2026-06-24T10:00:00",        // no zone
+            "2026-06-24T10:00:00+0200",   // offset without colon
+            "2026-02-30T10:00:00Z",       // no such day
+            "2027-02-29T10:00:00Z",       // not a leap year
+            "2026-13-01T10:00:00Z",       // no such month
+            "2026-06-24T24:00:00Z",       // no such hour
+            "2026-06-24T10:00:00.Z",      // empty fraction
+            "2026-06-24T10:00:00Zjunk",   // trailing bytes
+            "twenty-six-06-24T10:00:00Z", // not digits
+        ] {
+            assert_eq!(parse_rfc3339(bad), None, "{bad:?} must not parse");
+        }
+    }
+
+    #[test]
+    fn key_expiry_wire_form_and_millis() {
+        assert_eq!(KeyExpiry::from_wire(None), Some(KeyExpiry::Never));
+        assert_eq!(KeyExpiry::from_wire(Some("")), Some(KeyExpiry::Never));
+        assert_eq!(KeyExpiry::from_wire(Some("soon")), None);
+        let at = KeyExpiry::from_wire(Some("2026-06-24T10:00:00Z")).unwrap();
+        assert_eq!(at.unix_millis(), Some(1_782_295_200_000));
+        assert_eq!(
+            at.at(),
+            Some(UNIX_EPOCH + Duration::from_secs(1_782_295_200))
+        );
+        assert_eq!(KeyExpiry::Never.unix_millis(), None);
+        assert_eq!(KeyExpiry::Never.at(), None);
+        let before = KeyExpiry::At(UNIX_EPOCH - Duration::from_millis(1500));
+        assert_eq!(before.unix_millis(), Some(-1500));
+    }
+
+    #[test]
+    fn control_server_classification_matches_tailscale() {
+        for hosted in [
+            "",
+            "https://controlplane.tailscale.com",
+            "https://login.tailscale.com",
+            "https://controlplane.tailscale.com/",
+            "HTTPS://Login.Tailscale.com",
+        ] {
+            let cs = ControlServer::from_url(hosted);
+            assert!(cs.is_tailscale(), "{hosted:?}");
+            assert_eq!(cs.url(), ControlServer::TAILSCALE_URL);
+            assert_eq!(
+                cs.machines_admin_url(),
+                Some("https://login.tailscale.com/admin/machines")
+            );
+        }
+        let hs = ControlServer::from_url(" https://hs.example.com ");
+        assert_eq!(
+            hs,
+            ControlServer::Custom {
+                url: "https://hs.example.com".into()
+            }
+        );
+        assert!(!hs.is_tailscale());
+        assert_eq!(hs.url(), "https://hs.example.com");
+        assert_eq!(
+            hs.machines_admin_url(),
+            None,
+            "Headscale has no admin console"
+        );
+        // Look-alikes are not the hosted service.
+        for custom in [
+            "http://controlplane.tailscale.com",
+            "https://controlplane.tailscale.com.evil.example",
+            "https://tailscale.com",
+        ] {
+            assert!(
+                !ControlServer::from_url(custom).is_tailscale(),
+                "{custom:?}"
+            );
+        }
+    }
 }

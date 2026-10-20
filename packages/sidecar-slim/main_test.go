@@ -317,7 +317,7 @@ func TestMonitorStateExitsAcrossRestart(t *testing.T) {
 	// 60s tick would touch lc.
 	done := make(chan struct{})
 	go func() {
-		s.monitorState(ctx, nil)
+		s.monitorState(ctx, nil, "", "")
 		close(done)
 	}()
 
@@ -470,8 +470,8 @@ func TestShouldWrapTLS(t *testing.T) {
 // Update this test AND provider.rs capability gates when bumping the version.
 // Login gating still requires v5; authenticated UDP still requires v6.
 func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
-	if sidecarProtocolVersion != 9 {
-		t.Fatalf("sidecarProtocolVersion = %d, want 9 (WhoIs capMap/tags/userId, proxy acceptAppCaps)", sidecarProtocolVersion)
+	if sidecarProtocolVersion != 10 {
+		t.Fatalf("sidecarProtocolVersion = %d, want 10 (controlUrl on statuses, keyExpiry on running ones)", sidecarProtocolVersion)
 	}
 
 	var buf bytes.Buffer
@@ -479,7 +479,7 @@ func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
 	s.sendStatus("running", "host", "host.tail.ts.net", "100.64.0.1", "", "")
 
 	// The core matches the camelCase key exactly, as a JSON integer.
-	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":9`)) {
+	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":10`)) {
 		t.Errorf("status payload missing protocolVersion on the wire: %s", strings.TrimSpace(buf.String()))
 	}
 
@@ -2047,7 +2047,7 @@ func TestWaitForRunningResolvesSelfLoginFromLocalAPI(t *testing.T) {
 			t.Errorf("%s: protocolVersion = %d, want %d", name, got.ProtocolVersion, sidecarProtocolVersion)
 		}
 	}
-	// The started event additionally carries what the status one does not.
+	// The started event carries the node's own fields.
 	if started := seen["tsnet:started"]; started.NodeID != "nodeSELF" ||
 		started.DNSName != "myhost.tailnet.ts.net" {
 		t.Errorf("tsnet:started lost its node fields: %+v", started)

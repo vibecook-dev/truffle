@@ -1552,6 +1552,25 @@ impl Node<TailscaleProvider> {
     pub fn bridge_stats(&self) -> crate::network::tailscale::BridgeStats {
         self.network.bridge_stats()
     }
+
+    /// When this node's key expires ([`KeyExpiry::Never`] when expiry is
+    /// disabled), as of the latest status; changes also arrive as
+    /// [`NetworkStatusEvent::KeyExpiryKnown`]. `None` with a sidecar older
+    /// than protocol 10.
+    ///
+    /// [`KeyExpiry::Never`]: crate::network::KeyExpiry::Never
+    pub fn key_expiry(&self) -> Option<crate::network::KeyExpiry> {
+        self.network.key_expiry()
+    }
+
+    /// The coordination server this node uses: Tailscale's hosted service,
+    /// or a custom one such as Headscale. Only the hosted service has an
+    /// admin console to send users to
+    /// ([`ControlServer::machines_admin_url`](crate::network::ControlServer::machines_admin_url)).
+    /// `None` with a sidecar older than protocol 10.
+    pub fn control_server(&self) -> Option<crate::network::ControlServer> {
+        self.network.control_server()
+    }
 }
 
 impl<N: NetworkProvider + 'static> Drop for Node<N> {
@@ -1959,6 +1978,14 @@ impl NodeBuilder {
     /// Tailscale admin console" meanwhile. [`NetworkStatusEvent::LoginKnown`]
     /// reports the node's own login, which after a fast restart can arrive
     /// after `build()` returned.
+    ///
+    /// Since sidecar protocol 10,
+    /// [`NetworkStatusEvent::ControlServerKnown`] arrives before any login
+    /// URL or approval wait (link to the admin console only for Tailscale's
+    /// hosted service, not for Headscale),
+    /// [`NetworkStatusEvent::KeyExpiryKnown`] when the node comes up and
+    /// whenever its key expiry moves, and
+    /// [`NetworkStatusEvent::SidecarExited`] if the node dies under you.
     ///
     /// The handler runs on a tokio task; keep it short and non-blocking.
     /// Works with both [`build`](Self::build) and

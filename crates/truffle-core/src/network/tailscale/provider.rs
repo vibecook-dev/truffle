@@ -23,9 +23,9 @@ use super::sidecar::{GoSidecar, ReplyGuard, SidecarConfig, SidecarInternalEvent}
 use crate::egress::{BoundEgress, EgressRoute, EgressRouteInfo, HttpProxyConfig, LoopbackConfig};
 use crate::network::login_allow::login_allowed;
 use crate::network::{
-    DialOpts, HealthInfo, IncomingConnection, ListenOpts, NetworkError, NetworkPeer,
-    NetworkPeerEvent, NetworkStatusEvent, NetworkTcpListener, NodeIdentity, PeerAddr, PingResult,
-    ProxyAddParams, ProxyAddResult, ProxyListEntry, ProxyRuntimeError,
+    ControlServer, DialOpts, HealthInfo, IncomingConnection, KeyExpiry, ListenOpts, NetworkError,
+    NetworkPeer, NetworkPeerEvent, NetworkStatusEvent, NetworkTcpListener, NodeIdentity, PeerAddr,
+    PingResult, ProxyAddParams, ProxyAddResult, ProxyListEntry, ProxyRuntimeError,
 };
 
 /// How long [`TailscaleProvider::start`](crate::network::NetworkProvider::start)
@@ -191,7 +191,56 @@ pub(crate) struct StatusReporting {
     /// Set while the device waits for admin approval, so a start timeout
     /// can name the approval instead of "authentication".
     pub(crate) needs_approval: Arc<std::sync::atomic::AtomicBool>,
+    /// The node's key expiry, once a protocol 10 sidecar reported it.
+    pub(crate) key_expiry: Arc<std::sync::RwLock<Option<KeyExpiry>>>,
+    /// The coordination server, once a protocol 10 sidecar reported it.
+    pub(crate) control_server: Arc<std::sync::RwLock<Option<ControlServer>>>,
 }
+
+impl StatusReporting {
+    pub(crate) fn new(tx: broadcast::Sender<NetworkStatusEvent>) -> Self {
+        Self {
+            tx,
+            needs_approval: Arc::default(),
+            key_expiry: Arc::default(),
+            control_server: Arc::default(),
+        }
+    }
+
+    /// Record the key expiry a running status reported; announce it when it
+    /// is new or moved.
+    fn learn_key_expiry(&self, key_expiry: KeyExpiry) {
+        let mut slot = self.key_expiry.write().unwrap_or_else(|p| p.into_inner());
+        if *slot != Some(key_expiry) {
+            *slot = Some(key_expiry);
+            drop(slot);
+            let _ = self
+                .tx
+                .send(NetworkStatusEvent::KeyExpiryKnown { key_expiry });
+        }
+    }
+
+    /// Record the control URL a status reported; announce the server when it
+    /// is new or changed.
+    fn learn_control_server(&self, url: &str) {
+        let control_server = ControlServer::from_url(url);
+        let mut slot = self
+            .control_server
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
+        if slot.as_ref() != Some(&control_server) {
+            *slot = Some(control_server.clone());
+            drop(slot);
+            let _ = self
+                .tx
+                .send(NetworkStatusEvent::ControlServerKnown { control_server });
+        }
+    }
+}
+
+/// The sidecar protocol whose running statuses carry the key expiry (and
+/// whose statuses carry the control URL).
+pub(crate) const KEY_EXPIRY_PROTOCOL_VERSION: u32 = 10;
 
 impl TailscaleProvider {
     /// Create a new TailscaleProvider with the given configuration.
@@ -223,10 +272,7 @@ impl TailscaleProvider {
             local_addr: Arc::new(std::sync::RwLock::new(PeerAddr::default())),
             peers: Arc::new(RwLock::new(HashMap::new())),
             peer_event_tx,
-            status: StatusReporting {
-                tx: status_tx,
-                needs_approval: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            },
+            status: StatusReporting::new(status_tx),
             health: Arc::new(RwLock::new(HealthInfo {
                 state: "stopped".to_string(),
                 healthy: false,
@@ -265,6 +311,33 @@ impl TailscaleProvider {
     /// lost: e.g. `dropped_listener_full` when the app accepts too slowly.
     pub fn bridge_stats(&self) -> BridgeStats {
         self.bridge_counters.snapshot()
+    }
+
+    /// When this node's key expires, as the sidecar last reported it: when
+    /// the node came up, and again whenever it changed (each change is also
+    /// a [`NetworkStatusEvent::KeyExpiryKnown`]). `None` until the node runs,
+    /// and always with a sidecar older than protocol 10. Lock-free to the
+    /// caller and synchronous.
+    pub fn key_expiry(&self) -> Option<KeyExpiry> {
+        *self
+            .status
+            .key_expiry
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The coordination server this node logs in to: Tailscale's hosted
+    /// service or a custom one such as Headscale (set through
+    /// `TS_CONTROL_URL` in the environment the sidecar inherits). Known from
+    /// the sidecar's first status, before any login or approval (also a
+    /// [`NetworkStatusEvent::ControlServerKnown`]); `None` before
+    /// `start()` and always with a sidecar older than protocol 10.
+    pub fn control_server(&self) -> Option<ControlServer> {
+        self.status
+            .control_server
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// Generate a random 32-byte session token.
@@ -485,6 +558,8 @@ impl TailscaleProvider {
                                 node_id,
                                 login_name,
                                 protocol_version,
+                                key_expiry,
+                                control_url,
                             } => {
                                 // 0 = v1/unknown; gates RFC 023 v2 proxy features.
                                 sidecar_protocol_version.store(
@@ -543,10 +618,36 @@ impl TailscaleProvider {
                                     addr.ip = ip;
                                 }
 
+                                // Protocol 10: the coordination server, and
+                                // our key expiry (absent = never expires).
+                                if let Some(url) = &control_url {
+                                    status.learn_control_server(url);
+                                }
+                                let reports_expiry =
+                                    protocol_version.unwrap_or(0) >= KEY_EXPIRY_PROTOCOL_VERSION;
+                                let parsed_expiry = if reports_expiry {
+                                    let parsed = KeyExpiry::from_wire(key_expiry.as_deref());
+                                    if parsed.is_none() {
+                                        tracing::warn!(
+                                            ?key_expiry,
+                                            "sidecar reported an unreadable key expiry; ignoring it"
+                                        );
+                                    }
+                                    parsed
+                                } else {
+                                    None
+                                };
+
                                 {
                                     let mut h = health.write().await;
                                     h.state = "running".to_string();
                                     h.healthy = true;
+                                    if parsed_expiry.is_some() {
+                                        h.key_expiry = key_expiry.filter(|k| !k.is_empty());
+                                    }
+                                }
+                                if let Some(expiry) = parsed_expiry {
+                                    status.learn_key_expiry(expiry);
                                 }
 
                                 *state.write().await = ProviderState::Running;
@@ -585,9 +686,19 @@ impl TailscaleProvider {
                                 tracing::info!("tailscale provider stopped");
                                 return;
                             }
-                            SidecarInternalEvent::StateChange { state: new_state } => {
-                                let mut h = health.write().await;
-                                h.state = new_state;
+                            SidecarInternalEvent::StateChange {
+                                state: new_state,
+                                control_url,
+                            } => {
+                                {
+                                    let mut h = health.write().await;
+                                    h.state = new_state;
+                                }
+                                // The "starting" status names the server
+                                // before any login URL or approval event.
+                                if let Some(url) = &control_url {
+                                    status.learn_control_server(url);
+                                }
                             }
                             SidecarInternalEvent::KeyExpiring { expires_at } => {
                                 let mut h = health.write().await;
@@ -716,14 +827,22 @@ impl TailscaleProvider {
                             SidecarInternalEvent::ProcessExited { exit_code } => {
                                 tracing::error!("sidecar process exited: {exit_code:?}");
                                 *state.write().await = ProviderState::Stopped;
-                                let mut h = health.write().await;
-                                h.state = "crashed".to_string();
-                                h.healthy = false;
+                                {
+                                    let mut h = health.write().await;
+                                    h.state = "crashed".to_string();
+                                    h.healthy = false;
+                                }
                                 if let Some(tx) = started_tx.take() {
                                     let _ = tx.send(Err(NetworkError::SidecarError(format!(
                                         "process exited with code {exit_code:?}"
                                     ))));
                                 }
+                                // The node is gone for good (no restart):
+                                // tell the app, which otherwise keeps showing
+                                // a running node that serves nothing.
+                                let _ = status
+                                    .tx
+                                    .send(NetworkStatusEvent::SidecarExited { exit_code });
                                 return;
                             }
                             SidecarInternalEvent::ProxyError { id, code, message } => {
@@ -2237,6 +2356,8 @@ mod login_gate_tests {
         needs_approval: Arc<std::sync::atomic::AtomicBool>,
         identity: Arc<std::sync::RwLock<NodeIdentity>>,
         peers: Arc<RwLock<HashMap<String, NetworkPeer>>>,
+        reporting: StatusReporting,
+        health: Arc<RwLock<HealthInfo>>,
     }
 
     /// Spawn the real event processor for `app_id` under `login_allow`.
@@ -2246,6 +2367,11 @@ mod login_gate_tests {
         let (proxy_error_tx, _) = broadcast::channel(8);
         let (status_tx, status) = broadcast::channel(8);
         let needs_approval = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reporting = StatusReporting {
+            needs_approval: needs_approval.clone(),
+            ..StatusReporting::new(status_tx)
+        };
+        let health = Arc::new(RwLock::new(HealthInfo::default()));
         let peers = Arc::new(RwLock::new(HashMap::new()));
         let identity = Arc::new(std::sync::RwLock::new(NodeIdentity {
             app_id: app_id.to_string(),
@@ -2261,7 +2387,7 @@ mod login_gate_tests {
             sidecar_rx,
             peers.clone(),
             peer_event_tx,
-            Arc::new(RwLock::new(HealthInfo::default())),
+            health.clone(),
             identity.clone(),
             Arc::new(std::sync::RwLock::new(PeerAddr::default())),
             Arc::new(std::sync::RwLock::new(None)),
@@ -2271,10 +2397,7 @@ mod login_gate_tests {
             login_allow,
             proxy_error_tx,
             Arc::new(AtomicU32::new(LOGIN_NAME_PROTOCOL_VERSION)),
-            StatusReporting {
-                tx: status_tx,
-                needs_approval: needs_approval.clone(),
-            },
+            reporting.clone(),
         );
         Harness {
             sidecar_tx,
@@ -2283,6 +2406,8 @@ mod login_gate_tests {
             needs_approval,
             identity,
             peers,
+            reporting,
+            health,
         }
     }
 
@@ -2413,6 +2538,8 @@ mod login_gate_tests {
                 node_id: "nodeSELF".into(),
                 login_name: Some("alice@example.com".into()),
                 protocol_version: Some(LOGIN_NAME_PROTOCOL_VERSION),
+                key_expiry: None,
+                control_url: None,
             })
             .unwrap();
         tokio::time::sleep(Duration::from_millis(120)).await;
@@ -2431,6 +2558,8 @@ mod login_gate_tests {
                 node_id: "nodeSELF".into(),
                 login_name: None,
                 protocol_version: Some(4),
+                key_expiry: None,
+                control_url: None,
             })
             .unwrap();
         tokio::time::sleep(Duration::from_millis(120)).await;
@@ -2445,6 +2574,8 @@ mod login_gate_tests {
             node_id: "nodeSELF".into(),
             login_name: login.map(Into::into),
             protocol_version: Some(8),
+            key_expiry: None,
+            control_url: None,
         }
     }
 
@@ -2841,6 +2972,112 @@ mod login_gate_tests {
             None,
         ));
         assert_eq!(np.login_name, None);
+    }
+
+    fn started_v10(key_expiry: Option<&str>, protocol: u32) -> SidecarInternalEvent {
+        SidecarInternalEvent::Started {
+            hostname: "truffle-playground-dev".into(),
+            dns_name: "truffle-playground-dev.tailnet.ts.net".into(),
+            tailscale_ip: "100.64.0.1".into(),
+            node_id: "nodeSELF".into(),
+            login_name: None,
+            protocol_version: Some(protocol),
+            key_expiry: key_expiry.map(Into::into),
+            control_url: Some("https://controlplane.tailscale.com".into()),
+        }
+    }
+
+    fn status_events_so_far(
+        status: &mut broadcast::Receiver<NetworkStatusEvent>,
+    ) -> Vec<NetworkStatusEvent> {
+        let mut seen = Vec::new();
+        while let Ok(event) = status.try_recv() {
+            seen.push(event);
+        }
+        seen
+    }
+
+    /// Protocol 10 through the real event processor: the control server
+    /// from the "starting" status, the key expiry from running statuses
+    /// (absent = never), each announced once and again only on a change; an
+    /// older sidecar or an unreadable value never fabricates one.
+    #[tokio::test]
+    async fn key_expiry_and_control_server_are_learned_and_announced_on_change() {
+        let mut h = harness("playground", Vec::new());
+        h.sidecar_tx
+            .send(SidecarInternalEvent::StateChange {
+                state: "starting".into(),
+                control_url: Some("https://login.tailscale.com".into()),
+            })
+            .unwrap();
+        h.sidecar_tx
+            .send(started_v10(Some("2026-06-24T10:00:00Z"), 10))
+            .unwrap();
+        // The same running facts again (the login follow-up, a monitor tick).
+        h.sidecar_tx
+            .send(started_v10(Some("2026-06-24T10:00:00Z"), 10))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        let at = KeyExpiry::At(std::time::UNIX_EPOCH + Duration::from_secs(1_782_295_200));
+        assert_eq!(
+            status_events_so_far(&mut h.status),
+            vec![
+                NetworkStatusEvent::ControlServerKnown {
+                    control_server: ControlServer::Tailscale
+                },
+                NetworkStatusEvent::KeyExpiryKnown { key_expiry: at },
+            ],
+            "login.tailscale.com and controlplane.tailscale.com are one server, announced once"
+        );
+        assert_eq!(*h.reporting.key_expiry.read().unwrap(), Some(at));
+        assert_eq!(
+            h.health.read().await.key_expiry.as_deref(),
+            Some("2026-06-24T10:00:00Z")
+        );
+
+        // An admin disables the expiry: the next running status omits it.
+        h.sidecar_tx.send(started_v10(None, 10)).unwrap();
+        // A garbled value and a pre-10 sidecar's value are both ignored.
+        h.sidecar_tx.send(started_v10(Some("soon"), 10)).unwrap();
+        h.sidecar_tx
+            .send(started_v10(Some("2030-01-01T00:00:00Z"), 9))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert_eq!(
+            status_events_so_far(&mut h.status),
+            vec![NetworkStatusEvent::KeyExpiryKnown {
+                key_expiry: KeyExpiry::Never
+            }]
+        );
+        assert_eq!(
+            *h.reporting.key_expiry.read().unwrap(),
+            Some(KeyExpiry::Never)
+        );
+        assert_eq!(h.health.read().await.key_expiry, None);
+    }
+
+    /// A pre-10 sidecar reports neither: nothing is announced or invented.
+    #[tokio::test]
+    async fn an_older_sidecar_reports_no_key_expiry_or_control_server() {
+        let mut h = harness("playground", Vec::new());
+        h.sidecar_tx
+            .send(SidecarInternalEvent::StateChange {
+                state: "starting".into(),
+                control_url: None,
+            })
+            .unwrap();
+        h.sidecar_tx
+            .send(started(Some("alice@example.com")))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert_eq!(
+            status_events_so_far(&mut h.status),
+            vec![NetworkStatusEvent::LoginKnown {
+                login_name: "alice@example.com".into()
+            }]
+        );
+        assert_eq!(*h.reporting.key_expiry.read().unwrap(), None);
+        assert_eq!(*h.reporting.control_server.read().unwrap(), None);
     }
 }
 
@@ -3330,5 +3567,154 @@ cat > /dev/null"#,
             rx.recv().await,
             Err(broadcast::error::RecvError::Closed)
         ));
+    }
+
+    /// A hang guard, not a latency bound: the first run of a freshly written
+    /// script waits for macOS's executable assessment, seconds under load.
+    const START_GUARD: Duration = Duration::from_secs(60);
+
+    /// Protocol 10 end to end through a real child process: the "starting"
+    /// status names the control server before the approval wait, and the
+    /// running status carries the key expiry. Both reach status_events() in
+    /// that order and stay readable from the provider afterwards.
+    #[tokio::test]
+    async fn start_reports_the_control_server_first_and_the_key_expiry_when_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = scripted_sidecar(
+            dir.path(),
+            r#"read start
+echo '{"event":"tsnet:status","data":{"state":"starting","hostname":"truffle-playground-dev","protocolVersion":10,"controlUrl":"https://hs.example.com"}}'
+echo '{"event":"tsnet:needsApproval"}'
+sleep 0.2
+echo '{"event":"tsnet:status","data":{"state":"running","hostname":"truffle-playground-dev","dnsName":"truffle-playground-dev.tailnet.ts.net","tailscaleIP":"100.64.0.9","loginName":"alice@example.com","protocolVersion":10,"controlUrl":"https://hs.example.com","keyExpiry":"2026-06-24T10:00:00Z"}}'
+cat > /dev/null"#,
+        );
+        let mut provider = TailscaleProvider::new(config(script, dir.path()));
+        assert_eq!(provider.control_server(), None);
+        assert_eq!(provider.key_expiry(), None);
+        let mut status = provider.status_events();
+        tokio::time::timeout(START_GUARD, provider.start())
+            .await
+            .expect("start must complete")
+            .expect("start");
+
+        let headscale = ControlServer::Custom {
+            url: "https://hs.example.com".into(),
+        };
+        let expiry = KeyExpiry::At(std::time::UNIX_EPOCH + Duration::from_secs(1_782_295_200));
+        let mut seen = Vec::new();
+        while let Ok(event) = status.try_recv() {
+            seen.push(event);
+        }
+        assert_eq!(
+            seen,
+            vec![
+                NetworkStatusEvent::ControlServerKnown {
+                    control_server: headscale.clone()
+                },
+                NetworkStatusEvent::NeedsApproval,
+                NetworkStatusEvent::LoginKnown {
+                    login_name: "alice@example.com".into()
+                },
+                NetworkStatusEvent::KeyExpiryKnown { key_expiry: expiry },
+            ],
+            "the server is known before the approval wait, announced once"
+        );
+        assert_eq!(provider.control_server(), Some(headscale));
+        assert_eq!(provider.key_expiry(), Some(expiry));
+        assert_eq!(
+            provider.health().await.key_expiry.as_deref(),
+            Some("2026-06-24T10:00:00Z")
+        );
+        provider.stop().await.unwrap();
+    }
+
+    /// A sidecar that exits on its own after start must be reported: before,
+    /// the provider only flipped its internal state, so an app kept showing
+    /// a running node that served nothing.
+    #[tokio::test]
+    async fn a_sidecar_exit_after_start_is_reported_with_its_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = scripted_sidecar(
+            dir.path(),
+            r#"read start
+echo '{"event":"tsnet:status","data":{"state":"running","hostname":"truffle-playground-dev","dnsName":"truffle-playground-dev.tailnet.ts.net","tailscaleIP":"100.64.0.9","protocolVersion":10}}'
+sleep 0.3
+exit 3"#,
+        );
+        let mut provider = TailscaleProvider::new(config(script, dir.path()));
+        let mut status = provider.status_events();
+        tokio::time::timeout(START_GUARD, provider.start())
+            .await
+            .expect("start must complete")
+            .expect("start");
+        let exited = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match status.recv().await {
+                    Ok(NetworkStatusEvent::SidecarExited { exit_code }) => break exit_code,
+                    Ok(_) => continue,
+                    Err(e) => panic!("status events ended without the exit: {e}"),
+                }
+            }
+        })
+        .await
+        .expect("the exit must be reported");
+        assert_eq!(exited, Some(3));
+        assert_eq!(provider.health().await.state, "crashed");
+        assert_eq!(provider.sidecar_pid(), None);
+        let _ = provider.stop().await;
+    }
+
+    /// Detection latency: the closed stdout makes the watcher look at once
+    /// instead of at its next one-second poll (which put the median near
+    /// 500 ms). Five kills, median well under that.
+    #[tokio::test]
+    async fn a_killed_sidecar_is_reported_within_milliseconds() {
+        // One script for every round: macOS assesses a freshly written
+        // executable on its first run, which can take seconds on a loaded
+        // machine and has nothing to do with what is measured here.
+        let dir = tempfile::tempdir().unwrap();
+        let script = scripted_sidecar(
+            dir.path(),
+            r#"read start
+echo '{"event":"tsnet:status","data":{"state":"running","hostname":"truffle-playground-dev","dnsName":"truffle-playground-dev.tailnet.ts.net","tailscaleIP":"100.64.0.9","protocolVersion":10}}'
+while read line; do :; done"#,
+        );
+        let mut latencies = Vec::new();
+        for _ in 0..5 {
+            let mut provider = TailscaleProvider::new(config(script.clone(), dir.path()));
+            let mut status = provider.status_events();
+            tokio::time::timeout(START_GUARD, provider.start())
+                .await
+                .expect("start must complete")
+                .expect("start");
+            let pid = provider.sidecar_pid().expect("a running sidecar has a pid");
+            let killed = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status()
+                .expect("run kill");
+            assert!(killed.success());
+            let t0 = std::time::Instant::now();
+            let exit_code = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if let Ok(NetworkStatusEvent::SidecarExited { exit_code }) = status.recv().await
+                    {
+                        break exit_code;
+                    }
+                }
+            })
+            .await
+            .expect("the kill must be reported");
+            latencies.push(t0.elapsed());
+            assert_eq!(exit_code, None, "a signal leaves no exit code");
+            let _ = provider.stop().await;
+        }
+        latencies.sort();
+        eprintln!("sidecar exit -> SidecarExited latencies: {latencies:?}");
+        assert!(
+            latencies[2] < Duration::from_millis(300),
+            "median detection latency {:?} (all: {latencies:?})",
+            latencies[2]
+        );
     }
 }
