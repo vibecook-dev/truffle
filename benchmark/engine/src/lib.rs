@@ -39,6 +39,16 @@
 //! assert!(WorkloadParams::from_value(serde_json::json!({"workload": "tcp", "streams": 17})).is_err());
 //! # Ok::<(), truffle_bench::AppError>(())
 //! ```
+//!
+//! @atlas layer bench · domain bench
+//! @atlas rule bench-never-sets-hostname "truffle-bench never calls NodeBuilder::hostname, which breaks app-scoped discovery" {
+//!   forbid text ".hostname(" in this
+//!   see "docs/rfcs/027-benchmark-hub.md#53-configuration-and-sidecar-resolution"
+//! }
+//! @atlas rule legacy-transport-without-tbn1 "The legacy transport stays byte-compatible with tsnet-bench and never uses the TBN1 header" {
+//!   forbid text "TBN1", "STREAM_MAGIC", "StreamHeader", "write_header", "read_header" in path:benchmark/engine/src/legacy/
+//!   see "docs/rfcs/027-benchmark-hub.md#91-moves"
+//! }
 
 pub mod clock;
 pub mod config;

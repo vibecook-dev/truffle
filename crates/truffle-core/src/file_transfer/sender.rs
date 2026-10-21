@@ -25,6 +25,8 @@ use super::types::{
     TransferResult, TransferTimings,
 };
 
+// @atlas step file-push.offer
+// @atlas step file-push.stream
 /// Send a local file to a remote peer.
 ///
 /// Uses constant memory — the file is streamed in 64KB chunks for both

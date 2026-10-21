@@ -467,6 +467,7 @@ impl<N: NetworkProvider + 'static> Node<N> {
         });
     }
 
+    // @atlas step send.deliver
     /// Spawn a background task that reads incoming raw messages from the
     /// session layer, deserializes them as envelopes, and routes them to
     /// the global channel and per-namespace subscribers.
@@ -865,6 +866,7 @@ impl<N: NetworkProvider + 'static> Node<N> {
         peer
     }
 
+    // @atlas step discovery.fanout
     /// Subscribe to peer change events (joined, left, connected, etc.).
     pub fn on_peer_change(&self) -> broadcast::Receiver<PeerEvent> {
         self.session.on_peer_change()
@@ -1230,6 +1232,7 @@ impl<N: NetworkProvider + 'static> Node<N> {
         })
     }
 
+    // @atlas step send.encode
     /// Send a namespaced message with an explicit `msg_type` and JSON payload.
     ///
     /// Unlike [`send`](Self::send), this method takes a pre-built
@@ -1254,6 +1257,7 @@ impl<N: NetworkProvider + 'static> Node<N> {
         Ok(())
     }
 
+    // @atlas step store-update.envelope
     /// Broadcast a namespaced message with an explicit `msg_type` and JSON
     /// payload to all connected peers.
     pub async fn broadcast_typed(
@@ -1393,6 +1397,7 @@ impl<N: NetworkProvider + 'static> Node<N> {
 
     // ── Raw streams (Layer 4 direct) ─────────────────────────────────────
 
+    // @atlas step file-push.open
     /// Open a raw TCP stream to a peer on the given port.
     ///
     /// Resolves the peer ID to an IP address via the session's peer list,

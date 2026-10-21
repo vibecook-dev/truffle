@@ -525,6 +525,7 @@ impl TailscaleProvider {
         }
     }
 
+    // @atlas step discovery.admit
     /// Spawn the background event processing loop that maps sidecar events
     /// to peer events and updates cached state.
     #[allow(clippy::too_many_arguments)]
@@ -1128,6 +1129,7 @@ impl super::super::NetworkProvider for TailscaleProvider {
         self.dial_tcp_opts(addr, port, DialOpts::default()).await
     }
 
+    // @atlas step send.bridge
     async fn dial_tcp_opts(
         &self,
         addr: &str,

@@ -1,0 +1,70 @@
+// RFC 012's stack. Position is rank, top to bottom; nested layers are ordered sub-tiers. An unpublished crate with a
+// root doc places itself (`//! @atlas layer …`: truffle-napi, truffle-tauri-plugin, truffle-bench, truffle-bench-app);
+// this file places the crates.io crates (truffle-core, truffle, truffle-sidecar: no atlas text on docs.rs),
+// truffle-core's module tiers (the RFC 012 layers are modules of one crate), truffle-cli (its main.rs has no crate
+// doc), the npm packages and the directories. `exhaustive`: an unplaced production file is a violation. A truffle-core
+// module missing from the tiers below falls to node-api through `mod:truffle_core`, never to the unranked `core` band,
+// and nothing reports it: `explain` a new module.
+
+layers stack "RFC 012: each layer builds only on the layers below it" exhaustive {
+  see "docs/rfcs/012-layered-architecture-redesign.md#2-architecture-overview"
+  see "CLAUDE.md#architecture"
+  layer apps "Layer 7 · Applications" code L7 {
+    intent "User code, not part of truffle-core: every app and binding reaches the mesh through the Node API."
+    layer examples "Example apps" { contains pkg:@vibecook/example-* }
+    layer cli "truffle CLI, TUI and daemon" {
+      contains crate:truffle-cli, pkg:@vibecook/truffle-cli
+      note pkg:@vibecook/truffle-cli "Private TS CLI (dev, init, status) absent from README's package table; RFC 008 had the Rust CLI replace it."
+    }
+    layer bench "Benchmarks (RFC 027): the truffle-bench engine and CLI, and the truffle bench desktop app" {
+      contains pkg:@vibecook/truffle-bench-app, path:benchmark/schema/
+      note path:benchmark/schema/ "Generated from the engine's Rust types (schemars); the app's mock API and its tests read the fixtures."
+    }
+    layer react "React hooks" { contains pkg:@vibecook/truffle-react }
+    layer js-api "JS API" { contains pkg:@vibecook/truffle }
+    layer bindings "Native bindings (NAPI addon, Tauri plugin)" {
+      contains pkg:@vibecook/truffle-native, path:crates/truffle-tauri-plugin/guest-js/
+    }
+  }
+  layer core "truffle-core: the Node API and Layers 3-6" {
+    intent "Structure only: the package as a whole. Every production module ranks in a tier below; node-api takes the crate root and any module the tiers do not list."
+    contains crate:truffle-core
+    layer node-api "Node API and core subsystems" {
+      intent "Node wires Layers 3-6; FileTransfer, SyncedStore, request/reply and the serve proxy are built on it."
+      contains mod:truffle_core, mod:truffle_core::{node, identity, egress}, $subsystems
+      note mod:truffle_core "The crate root (lib.rs, the pub use facade). A module not placed in a tier below lands here, so layered still ranks it."
+      note mod:truffle_core::egress "egress.rs documents the Node::loopback and egress_* API and lib.rs re-exports its types, yet the NetworkProvider egress verbs name them."
+      see "docs/rfcs/012-layered-architecture-redesign.md#4-the-node-api"
+    }
+    layer envelope "Layer 6 · Envelope" code L6 { contains mod:truffle_core::envelope }
+    layer session "Layer 5 · Session" code L5 { contains mod:truffle_core::session }
+    layer transport "Layer 4 · Transport" code L4 { contains mod:truffle_core::transport }
+    layer network "Layer 3 · Network" code L3 {
+      contains mod:truffle_core::network
+      note mod:truffle_core::network::tailscale::{bridge, header, protocol, sidecar} "RFC 012 Layers 1-2 on the Rust side: located in network/tailscale/ and private to TailscaleProvider (RFC 012 §3.6), so they rank with Layer 3."
+    }
+  }
+  layer sidecar "Layer 1 · Sidecar (Go process embedding tsnet)" code L1 {
+    contains path:packages/sidecar-slim/
+    intent "A child process of TailscaleProvider; it talks to Rust over stdin/stdout JSON lines and the loopback bridge, never in code."
+  }
+  layer apple "Truffle Swift: the Apple engine" outside {
+    intent "A second engine for the same product on TailscaleKit, joined to truffle-core by the wire contract only."
+    see "docs/rfcs/024-truffle-swift.md#51-layering-maps-to-rfc-012-apple-runtime"
+    layer apple-support "Swift tests and the TailscaleKit scripts: they import or build the tiers below" {
+      contains path:apple/Tests/, path:apple/scripts/
+    }
+    layer apple-examples "Host app example: host apps import only RFC 024 Layers 3-4" { contains path:apple/Examples/ }
+    layer apple-product "Truffle and TruffleSwiftUI (RFC 024 Layers 2-4)" {
+      contains path:apple/Sources/Truffle/, path:apple/Sources/TruffleSwiftUI/
+    }
+    layer apple-tailscale "TruffleTailscale (RFC 024 Layers 0-1)" { contains path:apple/Sources/TruffleTailscale/ }
+    layer apple-vendor "Pinned libtailscale and patches (RFC 024 Layer 0)" { contains path:apple/Vendor/, path:apple/patches/ }
+  }
+  layer distribution "Re-export crate and sidecar distribution" outside {
+    contains crate:truffle, crate:truffle-sidecar, pkg:@vibecook/truffle-sidecar-*
+  }
+  layer tooling "Release tooling, CI, docs and the Go baseline bench" outside {
+    contains path:scripts/, path:.github/, path:.githooks/, path:docs/, path:packages/sidecar-slim/cmd/
+  }
+}
