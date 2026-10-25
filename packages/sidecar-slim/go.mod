@@ -1,6 +1,6 @@
 module github.com/vibecook-dev/truffle/packages/sidecar-slim
 
-go 1.27.2
+go 1.27.3
 
 require (
 	gvisor.dev/gvisor v0.0.0-20260915211658-a6f909f08a72

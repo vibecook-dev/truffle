@@ -1,3 +1,37 @@
+# Go 1.27.3 for the sidecar (October 2026)
+
+The sidecar now builds with Go 1.27.3 for CVE-2026-111943 (GO-2026-6809):
+`crypto/x509` now rejects a set of compromised intermediate certificates. Under
+Go 1.27.2, govulncheck reports it as reachable through the sidecar's TLS dial
+(`handleDial` → `tls.Conn.HandshakeContext` → `x509.Certificate.Verify`).
+Tailscale stays at 1.104.1: 1.104.2 moves Tailscale's own builds to Go 1.27.3
+and otherwise only fixes Windows DNS, which tsnet does not use.
+
+The Apple graph keeps Go 1.27.2 until the next TailscaleKit artifact, so the two
+graphs now record different Go versions:
+
+- `apple-tests` keeps Go 1.27.2, because the materializer requires the exact Go
+  version in `apple/Vendor/libtailscale/go.mod`.
+- The security workflow scans both graphs with Go 1.27.3, so it does not report
+  GO-2026-6809 for the published framework, which was built with 1.27.2. On
+  macOS and iOS, Go verifies against system roots with Apple's platform
+  verifier, so the framework relies on Apple's trust store updates rather than
+  Go's denylist.
+
+The materializer's Tailscale version check now also reads a `require` block.
+Since gVisor became a direct sidecar dependency (`7ef088e`), the check read an
+empty sidecar version and every materialization stopped with "Apple and sidecar
+Tailscale module versions must match".
+
+Validation on October 24, 2026: `go mod tidy -diff`, `go mod verify`, `go vet`
+and `go test -race` pass for the sidecar. All five release targets build with
+`CGO_ENABLED=0`, and each binary embeds Go 1.27.3 and Tailscale 1.104.1.
+`scripts/check-go-security.sh` (govulncheck 1.9.0) finds no reachable
+vulnerabilities in either graph under Go 1.27.3; the same scan of the sidecar
+under Go 1.27.2 reports GO-2026-6809.
+
+---
+
 # Tailscale 1.104.1 upgrade (October 2026)
 
 Both Go module graphs pin Tailscale 1.104.1 and Go 1.27.2, with WireGuard/gVisor
