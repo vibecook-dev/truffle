@@ -5,6 +5,7 @@
 decision rust-core-go-shim "Rust core over a thin Go shim that keeps tsnet" code RFC-003 status accepted date 2026-02-24 {
   because "The Go shim keeps only tsnet lifecycle and TCP bridging; its no-HTTP clause was later reversed by RFC 023 (the serve engine) and RFC 026 (egress)."
   affects crate:truffle-core, path:packages/sidecar-slim/
+  confirmed-by shim-speaks-no-mesh-protocol
   see "docs/rfcs/003-rust-rewrite.md#6-what-stays-go"
   see "docs/rfcs/023-http-serving.md#12-decisions"
 }
@@ -23,7 +24,8 @@ decision binary-frames-009 "Binary frame header and a typed Namespace enum" code
 
 decision cli-daemon "A CLI daemon over a local socket; no STAR topology or election" code RFC-010 status accepted date 2026-03-20 {
   because "The header still says Proposed; the daemon, IPC and JSON-RPC protocol shipped in truffle-cli."
-  affects crate:truffle-cli
+  affects crate:truffle-cli, crate:truffle-core
+  confirmed-by daemon-ipc-is-local, commands-are-daemon-clients, no-star-or-election
   see "docs/rfcs/010-p2p-and-cli-redesign.md#3-cli-daemon-architecture"
 }
 
@@ -60,6 +62,7 @@ decision raw-tcp-for-files "Raw TCP for bulk data, WebSocket for messages" code 
 
 decision tui-is-the-daemon "The TUI runs the daemon in-process; agents use one-shot commands" code RFC-013 status accepted date 2026-03-28 {
   affects crate:truffle-cli
+  confirmed-by tui-hosts-the-daemon, commands-are-daemon-clients
   see "docs/rfcs/013-tui-redesign.md#3-architecture-decision-tui--foreground-daemon"
   see "docs/rfcs/013-tui-redesign.md#11-agent-mode-one-shot-commands"
 }
@@ -90,6 +93,7 @@ decision synced-store "SyncedStore and a request/reply helper in core" code RFC-
 decision app-namespacing "appId isolation and the truffle- hostname prefix" code RFC-017 status accepted date 2026-04-11 {
   affects mod:truffle_core::{identity, session::hello}, path:apple/Sources/Truffle/Identity/
   affects mod:truffle_core::transport::websocket, mod:truffle_core::network::tailscale::provider
+  confirmed-by hostname-from-identity, apps-isolated
   see "docs/rfcs/017-identity-and-namespacing.md#4-design-two-namespaces"
   see "docs/rfcs/017-identity-and-namespacing.md#8-wire-protocol-peer-metadata-exchange"
 }
@@ -112,6 +116,7 @@ decision raw-transport-js "Raw TCP, UDP and QUIC in the JS API with pull-model h
 decision peer-handles "Peer handles; an honest deviceId; WhoIs attribution" code RFC-022 status accepted date 2026-07-09 {
   because "The header says in progress and unreleased; it shipped in 0.6.0. Phase D (hostinfo) has not started."
   affects mod:truffle_core::session, mod:truffle_napi::peer, file:packages/core/src/peer.ts
+  confirmed-by peer-handles-interned, device-id-honest, from-is-the-connection
   see "docs/rfcs/022-peer-handle-api.md#61-peer-handle"
   see "docs/rfcs/022-peer-handle-api.md#75-message-path"
 }
@@ -119,6 +124,7 @@ decision peer-handles "Peer handles; an honest deviceId; WhoIs attribution" code
 decision http-serving "Serve over the tailnet: JS handlers over the bridge, other targets in the Go engine" code RFC-023 status accepted date 2026-07-12 {
   because "Phases 1-3 shipped; Funnel (4) and service discovery (5) are future, and proxy/discovery.rs stays inert until then (D10)."
   affects mod:truffle_core::proxy, file:packages/core/src/{serve, http}.ts, path:packages/sidecar-slim/
+  confirmed-by serve-engine-in-go, proxy-discovery-inert, no-fixed-sidecar-listener
   see "docs/rfcs/023-http-serving.md#5-design-overview"
   see "docs/rfcs/023-http-serving.md#12-decisions"
 }
@@ -133,6 +139,7 @@ decision swift-engine "Truffle Swift: an Apple-native engine on TailscaleKit" co
 decision login-scoped-nodes "A per-node login allow-list as the mesh boundary" code RFC-025 status accepted date 2026-09-16 {
   affects mod:truffle_core::{network::login_allow, session::hello, synced_store}
   affects mod:truffle_core::transport::websocket, mod:truffle_core::network::tailscale::provider
+  confirmed-by login-gate-at-admission-and-hello, store-slices-bound-to-sender
   see "docs/rfcs/025-login-scoped-nodes.md#2-decision"
   see "docs/rfcs/025-login-scoped-nodes.md#8-decisions"
 }
@@ -161,8 +168,12 @@ decision public-surfaces "Which artifacts are stable surfaces, and which are imp
   see "docs/API-STABILITY.md#from-10"
 }
 
+// Not confirmed by release-lockstep and sidecar-fail-closed on purpose: `truffle update`, the auto-update and
+// scripts/install.{sh,ps1} install the CLI archive's sidecar-slim with no checksum, and truffle-sidecar's resolver
+// falls back to "sidecar-slim" on PATH at runtime, which the release contract allows only through its two escape
+// hatches. Confirm the decision once those paths fail closed or the contract is narrowed (found 2026-10-24).
 decision one-release-unit "Every public artifact ships at one version; sidecar binaries fail closed" status accepted {
-  because "scripts/check-release-versions.mjs enforces the lockstep; manifests are config, so Atlas cannot see it. The unpublished benchmark hub keeps its own versions."
+  because "scripts/check-release-versions.mjs enforces the lockstep; manifests are config, so the rules check the release scripts, not the versions. The unpublished benchmark hub keeps its own versions."
   affects path:scripts/, crate:truffle-sidecar
   see "docs/RELEASING.md#release-contract"
   see "docs/RELEASING.md#the-benchmark-hub-is-not-released"

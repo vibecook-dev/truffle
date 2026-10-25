@@ -23,3 +23,6 @@ system truffle "Truffle" {
 // truffle-core's subsystems on Node: file transfer, synced store and request/reply (the send_typed docs in node.rs)
 // and the serve proxy (RFC 023 D2). Egress is Node API, not a subsystem: it sends no message.
 let $subsystems = mod:truffle_core::{file_transfer, synced_store, request_reply, proxy}
+
+// The Go shim's production code: sidecar-slim without cmd/, the Go baseline bench (tooling).
+let $shim = path:packages/sidecar-slim/, !path:packages/sidecar-slim/cmd/

@@ -90,8 +90,8 @@ agent -> daemon "JSON-RPC 2.0, one object per line, over a Unix socket or named 
   witness "truffle.sock"
   witness "push_file"
 }
-agent -> daemon "truffle up re-execs itself detached as `up --foreground`" via spawn {
-  at file:crates/truffle-cli/src/commands/up.rs
+agent -> daemon "truffle up, and any command when auto_up is on, re-execs the binary detached as `up --foreground`" via spawn {
+  at file:crates/truffle-cli/src/commands/up.rs, file:crates/truffle-cli/src/daemon/client.rs
   witness "--foreground"
 }
 tauri-guest -> tauri "invoke plugin:truffle commands; listen to truffle:// events" via ipc {
