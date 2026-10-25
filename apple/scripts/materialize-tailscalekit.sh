@@ -26,10 +26,12 @@ if [[ ! -f "$PRIVACY_MANIFEST" ]]; then
 fi
 
 # libtailscale's upstream Go pin lags the sidecar. Build from the reviewed
-# module graph we commit, using the same recorded toolchain as the sidecar.
+# module graph we commit, with the exact Go version it records (this can trail
+# the sidecar's). Its Tailscale version must match the sidecar's. A go.mod lists
+# a module on a one-line require or inside a require block, so read both forms.
 GO_VERSION="$(awk '$1 == "go" { print $2 }' "$GO_DEPS/go.mod")"
 TAILSCALE_VERSION="$(awk '$1 == "tailscale.com" { print $2 } $1 == "require" && $2 == "tailscale.com" { print $3 }' "$GO_DEPS/go.mod")"
-SIDECAR_TAILSCALE_VERSION="$(awk '$1 == "require" && $2 == "tailscale.com" { print $3 }' "$ROOT/../packages/sidecar-slim/go.mod")"
+SIDECAR_TAILSCALE_VERSION="$(awk '$1 == "tailscale.com" { print $2 } $1 == "require" && $2 == "tailscale.com" { print $3 }' "$ROOT/../packages/sidecar-slim/go.mod")"
 if [[ -z "$TAILSCALE_VERSION" || "$TAILSCALE_VERSION" != "$SIDECAR_TAILSCALE_VERSION" ]]; then
   echo "error: Apple and sidecar Tailscale module versions must match" >&2
   exit 1
