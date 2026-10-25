@@ -58,12 +58,12 @@ Skip with `git commit --no-verify` when you need to (rare).
 
 ## Release Workflow
 
-1. Push `feat:` or `fix:` commit to main
-2. release-please creates/updates a release PR
-3. Checkout release branch, bump Cargo.toml versions (`sed -i '' 's/^version = "OLD"/version = "NEW"/'`), push
-4. Wait for CI, merge PR with `--admin`
-5. Binary builds (CLI + sidecar) auto-trigger via `actions: write` permission
-6. Use `--ref truffle-v<VERSION>` if manually triggering workflows (NOT `--ref main`)
+Automated by `.github/workflows/release-please.yml`. Never bump versions by hand.
+
+1. Squash-merge `feat:`/`fix:` PRs to main (the PR title becomes the commit subject)
+2. release-please opens or updates the release PR (`chore(main): release truffle X.Y.Z`): it bumps every `extra-files` entry in `release-please-config.json`, then a bot commit syncs generated lockfiles. The PR's `pull_request` runs stay `action_required` (bot push); release-please dispatches CI, integration tests and CodeQL on the release branch instead
+3. Once those pass, squash-merge the release PR. **Merging publishes to crates.io and npm.** release-please tags `truffle-vX.Y.Z` with a draft release, waits for CI/integration/CodeQL on that commit, and dispatches the CLI, sidecar and NAPI builds. `release-sidecar.yml` pins the sidecar checksums in a bot commit on main and dispatches crates.io/npm publishing. release-please then publishes the GitHub release and adds the SwiftPM `vX.Y.Z` tag
+4. To re-run a release workflow, use `--ref truffle-v<VERSION>` (NOT `--ref main`); `publish-crates.yml` and `release-npm.yml` take `release_tag` to resume a draft release
 
 ## Key Conventions
 
