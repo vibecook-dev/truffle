@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.22](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.21...truffle-v0.7.22) (2026-10-25)
+
+
+### Bug Fixes
+
+* **deps:** rebuild TailscaleKit with Go 1.27.3 on libtailscale main ([#226](https://github.com/vibecook-dev/truffle/issues/226)) ([19b4ea9](https://github.com/vibecook-dev/truffle/commit/19b4ea94b80ade17f734b200259328986b61d605))
+
 ## [0.7.21](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.20...truffle-v0.7.21) (2026-10-25)
 
 
