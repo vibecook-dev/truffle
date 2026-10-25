@@ -86,7 +86,7 @@ jobs:
       - name: Install recorded Go toolchain
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: '1.27.2'
+          go-version: '1.27.3'
           cache: false
 
       - name: Materialize pinned TailscaleKit
@@ -127,6 +127,23 @@ jobs:
         run: |
           xcodebuild -project MeshChatDemo.xcodeproj -scheme MeshChatDemo \
             -destination 'generic/platform=iOS Simulator' build CODE_SIGNING_ALLOWED=NO
+
+      # Publication input: the exact framework this job built and validated
+      # above. A new dependency release publishes this archive unchanged.
+      - name: Package validated TailscaleKit
+        working-directory: apple/Vendor
+        run: |
+          xcodebuild -version
+          zip -qry "$RUNNER_TEMP/TailscaleKit.xcframework.zip" TailscaleKit.xcframework
+          shasum -a 256 "$RUNNER_TEMP/TailscaleKit.xcframework.zip"
+
+      - name: Upload validated TailscaleKit
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v5
+        with:
+          name: TailscaleKit.xcframework
+          path: ${{ runner.temp }}/TailscaleKit.xcframework.zip
+          if-no-files-found: error
+          retention-days: 30
 
   fixtures-rust:
     name: Interop fixtures (Rust side)

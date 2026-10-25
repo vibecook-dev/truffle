@@ -5,36 +5,37 @@
 | Input | Pin |
 | --- | --- |
 | Upstream | `https://github.com/tailscale/libtailscale.git` |
-| Revision | `59d4bb82744915815178e0f0776d60026a397ee7` |
+| Revision | `d1dc45d039edb7759ecbee6ba2aea0c4bca884b8` |
 | Embedded Tailscale | `tailscale.com v1.104.1` |
-| Go | `1.27.2` |
-| Recorded Apple toolchain | Xcode 26.6 (17F113), Apple Swift 6.3.3, Apple silicon macOS |
+| Go | `1.27.3` |
+| Recorded Apple toolchain | Xcode 16.4 (16F6), Apple Swift 6.1.2, GitHub Actions macOS 15 arm64 runner |
 | License | BSD-3-Clause; see `TAILSCALE-LICENSE` |
 
-Upstream libtailscale still pins Tailscale 1.94.1. The tracked
-`libtailscale/go.mod` and `libtailscale/go.sum` replace that dependency graph
-in a temporary detached worktree. The materializer requires the same
+Upstream libtailscale `main` also pins Tailscale 1.104.1, but with Go 1.27.1
+and `golang.org/x/net` 0.59.0. The tracked `libtailscale/go.mod` and
+`libtailscale/go.sum` replace that dependency graph in a temporary detached
+worktree. The materializer requires the same
 Tailscale version as the sidecar, checks the Go toolchain, builds with
 `-mod=readonly -trimpath -buildvcs=false`, and verifies the Go/Tailscale
 versions embedded in the resulting framework binaries.
 
 ## Patches
 
-- `libtailscale-104-testcontrol.patch` adapts the upstream test server to
-  Tailscale's typed DERP region IDs. The materializer now tests all Go packages,
-  including these C test utilities.
+- `libtailscale-conn-cleanup.patch` keys connection cleanup by the Go-owned
+  socket. Upstream registers each connection under its C-side descriptor,
+  which `TsnetListen` closes right after passing it over `SCM_RIGHTS`. The
+  next connection's socketpair reuses that number and overwrites the entry, so
+  the earlier connection's cleanup never closes its `net.Conn` (7 of 8
+  connections in a test). The Go-owned descriptor stays open until cleanup, so
+  its number cannot be reused while the connection is alive. `newConn` returns
+  the C descriptor so the added `TestConnCleanupAfterFDReuse` can drive it; the
+  test fails without the fix. The same change has been prepared for upstream;
+  drop this patch once upstream includes it.
 
-- `libtailscale-remote-address-fd.patch` preserves the authenticated remote
-  address across `SCM_RIGHTS`. The receiving file descriptor can differ from
-  the sending descriptor, and the sender's descriptor can be reused before
-  accept. The patch carries a unique, fixed-size transfer token in a separate
-  pending-address map, associates the address with the received descriptor,
-  and consumes it after lookup. A queued connection retains an owned socket
-  reference until accept or listener cleanup. Connection cleanup uses the Go-owned
-  descriptor, which stays open for the connection's lifetime, and holds a file
-  reference during shutdown so close/reuse cannot race it. Regression
-  tests cover descriptor reuse, split tokens, failed transfers, and queued
-  IPv4/IPv6 connections through the C API.
+  Upstream's framed fd-passing records (`4e3b222`, `258321b9f`) replaced
+  truffle's earlier remote-address patch: each connection's remote address
+  travels with its descriptor in one fixed-size record and is recorded under
+  the received descriptor. The typed-DERP-ID test patch is upstream as well.
 - `libtailscale-peer-notifications.patch` exposes the upstream `peerChanges`
   and `noNetMap` watch options to Swift. Truffle subscribes to peer deltas
   and refreshes LocalAPI status on each notification. This keeps discovery
@@ -48,49 +49,45 @@ versions embedded in the resulting framework binaries.
 
 | Input file | SHA-256 |
 | --- | --- |
-| `libtailscale-remote-address-fd.patch` | `6248c03f1d631c221d26a3f6cf7df19b29db78a2d060eac0ef75f9b938d27f94` |
+| `libtailscale-conn-cleanup.patch` | `4b473188ad1c7149769b97d19347812802cf07d7a62f98e145b6cb99f2308ace` |
 | `libtailscale-peer-notifications.patch` | `23be455e4c2b1637a276c5574d5e976d1c2c1f23ac5e21418e9b6f2db8fe96bf` |
 | `libtailscale-ipn-stream-recovery.patch` | `9bc20231b7e8dc81e0a09ddd178e7a6b45396882663ba57d42a0c3bb89c0bb22` |
-| `libtailscale-104-testcontrol.patch` | `478c36c17e35a22455daaa75b4addb1d91db26ae17a875821f6c16a89a1a3cb6` |
-| `libtailscale/go.mod` | `131bb9f3a7e7b7f7576e5c30439f1caa34a722ed03d85249e4d41e8700c09855` |
+| `libtailscale/go.mod` | `9969fc1f5b10da3b4f7693b32e576160adcd15432f93528bf9c8c8a4e031ea4b` |
 | `libtailscale/go.sum` | `86cc3286bdd486996ef3d012d83de656d605b6e854f8d0a7b8c1e4802424280b` |
 
 ## Published artifact
 
-The rebuilt local framework uses the inputs above, including `golang.org/x/net
-v0.60.0` for the October HTTP/2 security fixes. On October 12, 2026 it passed
-all C-binding Go packages under the race detector, six exact-source Swift
-stream tests, 70 Swift package tests, and iOS device/simulator builds.
-`govulncheck` reports no reachable vulnerabilities in either Go graph.
+CI built the framework from the inputs above, including `golang.org/x/net
+v0.60.0` for the October HTTP/2 security fixes. On October 25, 2026 the
+[apple-tests source build](https://github.com/vibecook-dev/truffle/actions/runs/40184193955/job/121141398540)
+passed all patched Go packages under the race detector, six exact-source Swift
+stream tests, 107 Swift package tests, and iOS device, simulator and example-app
+builds, then uploaded the archive. `govulncheck` reports no reachable
+vulnerabilities in either Go graph.
 
-The [dependency release](https://github.com/vibecook-dev/truffle/releases/tag/tailscalekit-59d4bb82-ts1.104.1-go1.27.2)
-was published from source commit
-[`b1541c5dff71d870640d69f773ec5a2549ca3cd5`](https://github.com/vibecook-dev/truffle/commit/b1541c5dff71d870640d69f773ec5a2549ca3cd5).
-The root `Package.swift` pins its URL and checksum. A fresh clone of that tag,
-with fresh SwiftPM/Xcode caches and no materialized local framework, downloaded
-the public archive, passed all 70 Swift tests, and built the production runtime
-for iOS devices and simulators. GitHub's uploaded digests and the freshly
-downloaded archive/binaries match the validated hashes. The exact patched
-source archive and `provenance.json` are attached to the release.
-
-Publication occurred before GitHub Actions CI ran on the source commit.
-The subsequent [Apple CI run](https://github.com/vibecook-dev/truffle/actions/runs/38235663650)
-checked out that exact commit and passed all three jobs, including source
-builds and public-download consumer validation. The repository-wide audit
-found separate Rust dependency/lint failures; see the
-[upgrade record](../../docs/tailscale-upgrade.md#apple-artifact-publication).
-Future dependency releases must pass source-build CI on their committed
-inputs before publication, then pass public-download consumer CI before
-the package update is merged.
+The [dependency release](https://github.com/vibecook-dev/truffle/releases/tag/tailscalekit-d1dc45d0-ts1.104.1-go1.27.3)
+publishes that uploaded archive unchanged, from source commit
+[`25f6e8af4f9b222ea5458f634c916f047bc9c02d`](https://github.com/vibecook-dev/truffle/commit/25f6e8af4f9b222ea5458f634c916f047bc9c02d).
+Its SHA-256 matches the checksum the CI run logged, GitHub's stored asset
+digest, and a fresh unauthenticated download. Both binaries embed Go 1.27.3,
+Tailscale 1.104.1 and `golang.org/x/net` 0.60.0, and both slices carry the
+reviewed privacy manifest and Swift interfaces. The root `Package.swift` pins
+the URL and checksum, and the published-package CI job resolves it before the
+package update merges. The exact patched source archive and `provenance.json`
+are attached to the release.
 
 | Field | Value |
 | --- | --- |
-| Release tag | `tailscalekit-59d4bb82-ts1.104.1-go1.27.2` |
+| Release tag | `tailscalekit-d1dc45d0-ts1.104.1-go1.27.3` |
 | Asset | `TailscaleKit.xcframework.zip` (about 24 MiB) |
-| SwiftPM checksum | `f8a61a742e42cbf04983213ea28f8a2370802b17fe420ea9cac7f59249c3238f` |
-| Patched source archive | `463de5953d3f94790922b8cc495958aafd3713f856eb7986ec99461d84db47ca` |
-| Device binary | `c9a7d20999b41889958f1c5c8dc3f9d3cc94d0ca82ad8409e114ac0a77bc0b55` |
-| Simulator binary | `4d6defab38abd26d6d60430efb59b17ad930edb9fe0a42dd524141ba49ce1d54` |
+| SwiftPM checksum | `0895dc67fc6531b4b0183ae63648a8378aacd7a5a04aa35cacfdba5931fe71d3` |
+| Patched source archive | `956500d6ccd47e16ea12ffce1d73d3bcca4fd5105f7eb54173de40bcde69026f` |
+| Device binary | `7c96a548b97689e86f66e7c24d8e85d80d62f971ff725ea9978ec985efb3fd74` |
+| Simulator binary | `ff71b9ca15e62565b864a0f00f96879f374f6cf3cf0310b24b756206fe03c8c4` |
+
+The previous artifact, `tailscalekit-59d4bb82-ts1.104.1-go1.27.2` (checksum
+`f8a61a742e42cbf04983213ea28f8a2370802b17fe420ea9cac7f59249c3238f`), stays
+published for rollback.
 
 The artifact key includes the wrapper revision, embedded Tailscale version,
 and Go toolchain. A wrapper revision alone is insufficient because its Go
@@ -107,7 +104,9 @@ TAILSCALE_RUN_TESTS=1 apple/scripts/materialize-tailscalekit.sh
 ```
 
 The script requires full Xcode; set `DEVELOPER_DIR` if it is installed at a
-different path. `TAILSCALE_RUN_TESTS=1` runs the patched C-binding tests with
+different path. Without a local Xcode, use CI: the `apple-tests` source build
+uploads the archive it validated, and a dependency release can publish that
+archive unchanged. `TAILSCALE_RUN_TESTS=1` runs the patched C-binding tests with
 the race detector against a local test coordination server, followed by the
 Swift IPN stream tests in `Tests/TailscaleKitRegression`. The latter compile
 the source being built rather than resolving an existing framework. CI

@@ -6,10 +6,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REVISION="$(cat "$ROOT/Vendor/libtailscale/REVISION")"
 SOURCE="${TAILSCALE_SOURCE_DIR:-$ROOT/.vendor/libtailscale-$REVISION}"
 DESTINATION="$ROOT/Vendor/TailscaleKit.xcframework"
-PATCH="$ROOT/patches/libtailscale-remote-address-fd.patch"
+CLEANUP_PATCH="$ROOT/patches/libtailscale-conn-cleanup.patch"
 PEER_PATCH="$ROOT/patches/libtailscale-peer-notifications.patch"
 STREAM_PATCH="$ROOT/patches/libtailscale-ipn-stream-recovery.patch"
-COMPAT_PATCH="$ROOT/patches/libtailscale-104-testcontrol.patch"
 GO_DEPS="$ROOT/Vendor/libtailscale"
 PRIVACY_MANIFEST="$ROOT/Vendor/TailscaleKit-PrivacyInfo.xcprivacy"
 DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
@@ -61,19 +60,19 @@ if [[ -n "$(git -C "$SOURCE" status --porcelain)" ]]; then
   exit 1
 fi
 
+mkdir -p "$ROOT/.vendor"
 BUILD_SOURCE="$(mktemp -d "$ROOT/.vendor/libtailscale-build.XXXXXX")"
 cleanup() {
   git -C "$SOURCE" worktree remove --force "$BUILD_SOURCE" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 git -C "$SOURCE" worktree add --detach "$BUILD_SOURCE" "$REVISION"
-git -C "$BUILD_SOURCE" apply --check "$PATCH"
-git -C "$BUILD_SOURCE" apply "$PATCH"
+git -C "$BUILD_SOURCE" apply --check "$CLEANUP_PATCH"
+git -C "$BUILD_SOURCE" apply "$CLEANUP_PATCH"
 git -C "$BUILD_SOURCE" apply --check "$PEER_PATCH"
 git -C "$BUILD_SOURCE" apply "$PEER_PATCH"
 git -C "$BUILD_SOURCE" apply --check "$STREAM_PATCH"
 git -C "$BUILD_SOURCE" apply "$STREAM_PATCH"
-git -C "$BUILD_SOURCE" apply "$COMPAT_PATCH"
 cp "$GO_DEPS/go.mod" "$BUILD_SOURCE/go.mod"
 cp "$GO_DEPS/go.sum" "$BUILD_SOURCE/go.sum"
 ACTUAL_TAILSCALE_VERSION="$(cd "$BUILD_SOURCE" && go list -m -f '{{.Version}}' tailscale.com)"
