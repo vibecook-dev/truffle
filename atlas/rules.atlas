@@ -57,8 +57,10 @@ rule envelope-knows-no-transport "Layer 6 knows no transport and names no applic
 
 rule bridge-is-private "Layers 1-2 are invisible outside TailscaleProvider" {
   deny *, !mod:truffle_core::network::tailscale -> mod:truffle_core::network::tailscale::{bridge, header, protocol, sidecar}
+  except mod:truffle_core::node -> sym:truffle_core::network::tailscale::BridgeStats "Node::bridge_stats exposes the bridge's delivery and drop counters (protocol 10, #218), which the tailscale module documents as public"
   see "docs/rfcs/012-layered-architecture-redesign.md#36-layers-1-2-bridge--sidecar-internal-to-tailscaleprovider"
   see "docs/rfcs/012-layered-architecture-redesign.md#10-success-criteria"
+  see "crates/truffle-core/src/network/tailscale/mod.rs#L16-L17"
 }
 
 rule apps-use-node-api "Applications reach the mesh through the Node API only, never a lower layer" {
