@@ -15,7 +15,8 @@ cites them, never replaces them. Read CLAUDE.md "Atlas" first. The DSL spec is
 ## Where it lives
 
 - `atlas/system.atlas` — system, thesis, `let $subsystems` (truffle-core's file_transfer,
-  synced_store, request_reply and proxy).
+  synced_store, request_reply and proxy) and `let $shim` (the Go shim: sidecar-slim without the
+  Go baseline bench in `cmd/`).
 - `atlas/layers.atlas` — the RFC 012 stack (position is rank): truffle-core's module tiers
   (node-api, envelope, session, transport, network; `mod:truffle_core` makes node-api the default),
   the L7 sub-tiers (examples, cli, bench, react, js-api, bindings), the Go sidecar, Truffle Swift,
@@ -36,7 +37,9 @@ cites them, never replaces them. Read CLAUDE.md "Atlas" first. The DSL spec is
   `via`/`direct`, `by`, and the two steps done in Go (`at file:packages/sidecar-slim/main.go`).
 - `atlas/rules.atlas`, `atlas/decisions.atlas` — the rules (including the single-crate rules of
   the crates.io crates and truffle-cli, with `crate:` scopes); one decision per significant RFC
-  with its real status.
+  with its real status. Every accepted decision has a `confirmed-by` but `one-release-unit`: the
+  comment above it names the release paths that do not fail closed yet. `bridge-is-private` holds
+  the one sanctioned `except` (`BridgeStats`, public since 0.7.20).
 - In code (`grep -rn '@atlas' crates benchmark`):
   - the roots of the unpublished crates with a crate doc: truffle-napi (its placement and
     `napi-pull-model`), truffle-tauri-plugin, truffle-bench (`benchmark/engine/src/lib.rs`: its
@@ -97,8 +100,9 @@ TRUFFLE_SIDECAR_SKIP_DOWNLOAD=1 npm --prefix "$ATLAS" run -s atlas -- explain "$
   and duplicate ids only, no selector or reference checks. It also parses `.go` and `.swift`
   comments, which a real build ignores. It calls Atlas's own `tsx` directly: truffle has none, and
   `npx` would fetch one from the registry.
-- Do not use `--rust-source-only` on truffle: without rustdoc symbols, 69 claims dangle (contract
-  anchors, domain `touches`, flow steps and hops) and 10 are violated instead of 7.
+- Do not use `--rust-source-only` on truffle: without rustdoc symbols, 81 claims dangle (contract
+  anchors, `sym:`-scoped checks, domain `touches`, flow steps and hops) and 14 are violated instead
+  of 7 (the `BridgeStats` except needs its symbol too).
 - `baseline` (`TRUFFLE_SIDECAR_SKIP_DOWNLOAD=1 npm --prefix "$ATLAS" run -s atlas -- baseline "$PWD" --intent "$PWD/atlas"`)
   writes `atlas/atlas.baseline.json` with every violation of that run, so whatever your change
   added becomes `known` too. The committed one holds the 7 findings kept for the user. It runs
@@ -107,37 +111,37 @@ TRUFFLE_SIDECAR_SKIP_DOWNLOAD=1 npm --prefix "$ATLAS" run -s atlas -- explain "$
 
 ## Reading `check`
 
-An excerpt of the run on 0.7.18 with this atlas and its baseline committed (the header's hash
+An excerpt of the run on 0.7.20 with this atlas and its baseline committed (the header's hash
 changes with every commit); `…` marks what is left out here. Claims sort by severity, then by the
 file and line that declare them: today the decisions (`atlas/decisions.atlas`), then the rules
 (`atlas/rules.atlas`), then the in-code contract:
 
 ```
-atlas check · Truffle @ 0c08350 · 520 claims
-  473 verified · 40 asserted · 7 violated (0 new, 7 known) · 0 dangling · 0 ambiguous · 0 stale
-  coverage: layers 100.0% · domains 100.0% of 88,816 prod lines · rules 23 pass, 4 fail, 0 unchecked
+atlas check · Truffle @ 59fab9c · 630 claims
+  590 verified · 33 asserted · 7 violated (0 new, 7 known) · 0 dangling · 0 ambiguous · 0 stale
+  coverage: layers 100.0% · domains 100.0% of 89,563 prod lines · rules 40 pass, 4 fail, 0 unchecked
 
 VIOLATED · known (in the baseline) (7)
   decision:layered-architecture  decision layered-architecture "Layers 3-6 behind one Node API; applications are Layer 7" code RFC-0…
-    at atlas/decisions.atlas:36 · decision · basis none
+    at atlas/decisions.atlas:38 · decision · basis none
     rule:layers-point-down  violated
     rule:network-knows-no-upper-layer  violated
     rule:transport-knows-no-session  violated
     rule:apps-use-node-api  violated
     → Accepted, but rule:layers-point-down, rule:network-knows-no-upper-layer, rule:transport-knows-no-session, rule:apps-use-node-api are failing: the code has drifted from this decision.
   decision:synced-store  decision synced-store "SyncedStore and a request/reply helper in core" code RFC-016 status accepted
-    at atlas/decisions.atlas:82 · decision · basis none
+    at atlas/decisions.atlas:85 · decision · basis none
     contract:sync-wire  violated
     → Accepted, but contract:sync-wire is failing: the code has drifted from this decision.
   rule:layers-point-down  layered
     at atlas/rules.atlas:10 · rule · basis edge
     mod:rs/truffle_core::network → mod:rs/truffle_core::egress
-      crates/truffle-core/src/network/mod.rs:260  ) -> impl std::future::Future<Output = Result<crate::egress::LoopbackConfig, NetworkError…
+      crates/truffle-core/src/network/mod.rs:261  ) -> impl std::future::Future<Output = Result<crate::egress::LoopbackConfig, NetworkError…
       …
     → 3 production edges go up the layer order; first: truffle_core::network (layer:network) → truffle_core::egress (layer:node-api) …
   … rule:network-knows-no-upper-layer, rule:transport-knows-no-session
   rule:apps-use-node-api  deny layer:apps -> layer:network, layer:transport, layer:session, layer:envelope
-    at atlas/rules.atlas:65 · rule · basis edge
+    at atlas/rules.atlas:74 · rule · basis edge
     pkg:cargo/truffle-bench → pkg:cargo/truffle-core
       benchmark/engine/src/control.rs:34  use truffle_core::session::{SessionError, DIAL_CANCELLED_SHUTTING_DOWN};
       benchmark/engine/src/control.rs:35  use truffle_core::transport::quic::QuicListener;
@@ -145,9 +149,9 @@ VIOLATED · known (in the baseline) (7)
     → 66 forbidden dependencies from layer:apps into layer:network, layer:transport, layer:session, layer:envelope (code); …
   … contract:sync-wire
 
-ASSERTED (40): not listed; --all lists them
+ASSERTED (33): not listed; --all lists them
 
-VERIFIED (473): not listed; --all lists them
+VERIFIED (590): not listed; --all lists them
 
 ok: no new violations
 ```
@@ -231,7 +235,7 @@ ok: no new violations
   - `decision:synced-store`: `contract:sync-wire`;
   - `rule:layers-point-down`: 3 module edges, the two egress ones below and the hello one;
   - `rule:network-knows-no-upper-layer`: 2 edges. The `NetworkProvider` egress verbs
-    (`network/mod.rs:260`, `:270`, `:271`, `:291`, `:301`) and `tailscale/provider.rs:23` name
+    (`network/mod.rs:261`, `:271`, `:272`, `:292`, `:302`) and `tailscale/provider.rs:23` name
     `egress` types, while `egress.rs` documents them as the Node API of RFC 026 and `egress` sits in
     node-api;
   - `rule:transport-knows-no-session`: 1 edge. `transport::websocket` imports `session::hello`
@@ -266,7 +270,10 @@ ok: no new violations
   grep) and fix the selector in the same change as the rename. Module paths also sit in brace
   forms (`mod:truffle_core::{node, identity, egress}`, `mod:truffle_napi::{raw_socket, udp_socket, quic}`,
   `mod:truffle_bench::workloads::{tcp, udp, quic}`) that a grep for the full path misses: grep the
-  stem. If the code is gone for good, delete the claim with it.
+  stem. If the code is gone for good, delete the claim with it. Some text checks search one
+  function (`sym:…::validate_hello`, `is_app_peer`, `spawn_connection_task`,
+  `Node::spawn_envelope_router`, `handle_incoming_message`, `sender_owns`): renaming it dangles
+  them, and the decision they confirm then grades violated.
 - **Dangling `see`.** The message suggests the nearest heading (`Did you mean #…?`). An RFC
   heading rename dangles every `see` pointing at it: fix them together. A `#L<n>` reference
   (`crates/truffle/src/lib.rs#L38-L41`) dangles only when the file gets shorter; re-check that
