@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.21](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.20...truffle-v0.7.21) (2026-10-25)
+
+
+### Bug Fixes
+
+* **deps:** build the sidecar with Go 1.27.3 (CVE-2026-111943) ([#221](https://github.com/vibecook-dev/truffle/issues/221)) ([ef0f8b9](https://github.com/vibecook-dev/truffle/commit/ef0f8b937f8cadf5b7152e2c1381425971fde07c))
+* **deps:** update ctutils and tokio for RUSTSEC-2026-0385 and -0386 ([#222](https://github.com/vibecook-dev/truffle/issues/222)) ([06c0598](https://github.com/vibecook-dev/truffle/commit/06c0598c3b058f738eeac106f7533b0f6073e3d2))
+
 ## [0.7.20](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.19...truffle-v0.7.20) (2026-10-20)
 
 
