@@ -13,7 +13,7 @@ git -C "$SOURCE" init -q
 git -C "$SOURCE" fetch -q --depth 1 https://github.com/tailscale/libtailscale.git "$REVISION"
 git -C "$SOURCE" checkout -q --detach FETCH_HEAD
 test "$(git -C "$SOURCE" rev-parse HEAD)" = "$REVISION"
-for patch in libtailscale-remote-address-fd libtailscale-peer-notifications libtailscale-ipn-stream-recovery libtailscale-104-testcontrol; do
+for patch in libtailscale-conn-cleanup libtailscale-peer-notifications libtailscale-ipn-stream-recovery; do
   git -C "$SOURCE" apply "$ROOT/apple/patches/$patch.patch"
 done
 cp "$ROOT/apple/Vendor/libtailscale/"go.{mod,sum} "$SOURCE/"
