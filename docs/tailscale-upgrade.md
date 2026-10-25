@@ -1,3 +1,46 @@
+# TailscaleKit on libtailscale main with Go 1.27.3 (October 2026)
+
+The Apple framework now uses the sidecar's Go 1.27.3 (CVE-2026-111943) and
+builds from upstream libtailscale `main` (`d1dc45d`). Tailscale stays at
+1.104.1 in both graphs.
+
+Upstream's framed fd-passing records replace our remote-address patch, and the
+typed-DERP-ID test patch is upstream. Upstream still keys connection cleanup by
+the C-side descriptor, whose number is reused almost immediately: in a test,
+7 of 8 accepted connections never had their `net.Conn` closed. The new
+`libtailscale-conn-cleanup.patch` keys cleanup by the Go-owned descriptor and
+adds a regression test that fails without it. The peer-notification and
+IPN-stream-recovery patches are unchanged. See
+[the provenance record](../apple/Vendor/README.md).
+
+The machine preparing this change had no full Xcode, so CI built the artifact:
+`apple-tests` now uploads the framework its source build validated, and the
+dependency release publishes that archive unchanged. The recorded toolchain is
+therefore Xcode 16.4 (Swift 6.1.2) instead of the Xcode 26.6 used for the
+previous artifact. The framework ships Swift interfaces, so newer Xcode
+versions can consume it.
+
+Validation on October 25, 2026:
+
+- Local (macOS 26.3, Go 1.27.3): all three patches apply to `d1dc45d`,
+  `go mod tidy -diff` is clean, and the patched Go packages pass `go vet` and
+  `go test -race`. The materializer passes source checks, patch application,
+  version gates and the Go tests. `scripts/check-go-security.sh` finds no
+  reachable vulnerabilities in either graph.
+- [CI source build](https://github.com/vibecook-dev/truffle/actions/runs/40184193955/job/121141398540):
+  patched Go race tests, six exact-source Swift stream tests, 107 Swift package
+  tests, and iOS device, simulator and example-app builds.
+- The published archive's SHA-256 matches the CI log, GitHub's asset digest
+  and a fresh public download. Both binaries embed Go 1.27.3, Tailscale
+  1.104.1 and `golang.org/x/net` 0.60.0.
+
+Rollback: revert this change. The previous artifact,
+`tailscalekit-59d4bb82-ts1.104.1-go1.27.2` (checksum
+`f8a61a742e42cbf04983213ea28f8a2370802b17fe420ea9cac7f59249c3238f`), stays
+published.
+
+---
+
 # Go 1.27.3 for the sidecar (October 2026)
 
 The sidecar now builds with Go 1.27.3 for CVE-2026-111943 (GO-2026-6809):
