@@ -9,7 +9,9 @@ typed-DERP-ID test patch is upstream. Upstream still keys connection cleanup by
 the C-side descriptor, whose number is reused almost immediately: in a test,
 7 of 8 accepted connections never had their `net.Conn` closed. The new
 `libtailscale-conn-cleanup.patch` keys cleanup by the Go-owned descriptor and
-adds a regression test that fails without it. The peer-notification and
+adds a regression test that fails without it. The same change is proposed
+upstream in [tailscale/libtailscale#69](https://github.com/tailscale/libtailscale/pull/69)
+(issue [tailscale/tailscale#21934](https://github.com/tailscale/tailscale/issues/21934)). The peer-notification and
 IPN-stream-recovery patches are unchanged. See
 [the provenance record](../apple/Vendor/README.md).
 

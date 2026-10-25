@@ -29,8 +29,10 @@ versions embedded in the resulting framework binaries.
   connections in a test). The Go-owned descriptor stays open until cleanup, so
   its number cannot be reused while the connection is alive. `newConn` returns
   the C descriptor so the added `TestConnCleanupAfterFDReuse` can drive it; the
-  test fails without the fix. The same change has been prepared for upstream;
-  drop this patch once upstream includes it.
+  test fails without the fix. The same change is proposed upstream in
+  [tailscale/libtailscale#69](https://github.com/tailscale/libtailscale/pull/69)
+  (issue [tailscale/tailscale#21934](https://github.com/tailscale/tailscale/issues/21934));
+  drop this patch once it lands.
 
   Upstream's framed fd-passing records (`4e3b222`, `258321b9f`) replaced
   truffle's earlier remote-address patch: each connection's remote address
