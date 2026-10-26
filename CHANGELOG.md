@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.23](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.22...truffle-v0.7.23) (2026-10-26)
+
+
+### Bug Fixes
+
+* **core:** the sidecar's stderr forwarder keeps a dying sidecar's last words ([#229](https://github.com/vibecook-dev/truffle/issues/229)) ([daa0eed](https://github.com/vibecook-dev/truffle/commit/daa0eedca07824bdfcb013c4229a62fde78ef48e))
+
 ## [0.7.22](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.21...truffle-v0.7.22) (2026-10-25)
 
 
