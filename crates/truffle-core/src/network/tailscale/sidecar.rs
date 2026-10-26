@@ -232,6 +232,57 @@ const MAX_STATUS_CHECK_ERRORS: u32 = 3;
 const EXITING_POLL: std::time::Duration = std::time::Duration::from_millis(10);
 const EXITING_POLLS: u32 = 200;
 
+/// How long the stderr forwarder keeps reading once shutdown is signalled:
+/// the same grace [`GoSidecar::shutdown`] gives the process before it kills
+/// it. The pipe reaches EOF as soon as the child is gone, so the bound only
+/// matters for a child (or a descendant holding its stderr) that outlives
+/// its shutdown.
+const STDERR_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Forward each line the sidecar writes to stderr to `sink`, until EOF.
+///
+/// A sidecar that fails at start writes why and exits at once, and the
+/// handle's shutdown follows its exit within a millisecond or two. So a
+/// signalled shutdown never ends the forwarding by itself: a line that is
+/// ready is forwarded first (`biased`), and after the signal what is still
+/// in the pipe is read to EOF, for at most [`STDERR_DRAIN_GRACE`]. (An
+/// unbiased `select!` picks a ready branch at random, and on a busy host the
+/// task often finds both ready, so it used to drop the last words half of
+/// those times.)
+async fn forward_stderr<R, F>(stderr: R, shutdown: Arc<Notify>, mut sink: F)
+where
+    R: tokio::io::AsyncRead + Unpin,
+    F: FnMut(&str),
+{
+    let mut reader = BufReader::new(stderr).lines();
+    // One waiter for the whole loop, registered before the first read: a
+    // fresh `notified()` per pass would miss a `notify_waiters()` landing
+    // while a line is being forwarded.
+    let shutdown_signal = shutdown.notified();
+    tokio::pin!(shutdown_signal);
+    shutdown_signal.as_mut().enable();
+    loop {
+        tokio::select! {
+            biased;
+            result = reader.next_line() => match result {
+                Ok(Some(line)) => sink(&line),
+                Ok(None) => return,
+                Err(e) => {
+                    tracing::warn!("sidecar stderr read error: {e}");
+                    return;
+                }
+            },
+            _ = &mut shutdown_signal => break,
+        }
+    }
+    let _ = tokio::time::timeout(STDERR_DRAIN_GRACE, async {
+        while let Ok(Some(line)) = reader.next_line().await {
+            sink(&line);
+        }
+    })
+    .await;
+}
+
 /// Manages the Go sidecar child process.
 ///
 /// Handles spawning, command sending via stdin, event reading from stdout,
@@ -310,27 +361,9 @@ impl GoSidecar {
 
             // Forward sidecar stderr so Go log.Printf output is visible.
             if let Some(stderr) = child_proc.stderr.take() {
-                let stderr_shutdown = shutdown.clone();
-                tokio::spawn(async move {
-                    let mut reader = BufReader::new(stderr).lines();
-                    loop {
-                        tokio::select! {
-                            _ = stderr_shutdown.notified() => break,
-                            result = reader.next_line() => {
-                                match result {
-                                    Ok(Some(line)) => {
-                                        eprintln!("[sidecar-stderr] {line}");
-                                    }
-                                    Ok(None) => break,
-                                    Err(e) => {
-                                        tracing::warn!("sidecar stderr read error: {e}");
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                });
+                tokio::spawn(forward_stderr(stderr, shutdown.clone(), |line| {
+                    eprintln!("[sidecar-stderr] {line}");
+                }));
             }
 
             // Spawn stdin writer task
@@ -1287,5 +1320,87 @@ mod status_wire_tests {
                 ..
             })
         ));
+    }
+}
+
+/// The stderr forwarder keeps a dying sidecar's last words: a sidecar that
+/// fails at start writes why and exits, and the handle's shutdown follows
+/// within a millisecond or two (truffle 0.7.22 dropped the line whenever
+/// that shutdown reached the forwarder first, on a busy host).
+#[cfg(test)]
+mod stderr_forward_tests {
+    use super::*;
+    use std::time::Duration;
+
+    type Lines = Arc<StdMutex<Vec<String>>>;
+
+    fn forwarder(
+        stderr: tokio::io::DuplexStream,
+        shutdown: &Arc<Notify>,
+    ) -> (tokio::task::JoinHandle<()>, Lines) {
+        let lines: Lines = Arc::new(StdMutex::new(Vec::new()));
+        let sink = lines.clone();
+        let task = tokio::spawn(forward_stderr(stderr, shutdown.clone(), move |line| {
+            sink.lock().unwrap().push(line.to_string());
+        }));
+        (task, lines)
+    }
+
+    /// The race, forced: the forwarder is waiting on the pipe and the signal;
+    /// then, before it runs again, the child's last line lands, its stderr
+    /// closes and the shutdown is signalled, so it wakes to both at once.
+    /// Many rounds, because an unbiased `select!` drops the line only when
+    /// its coin says so (each round's chance is one half).
+    #[tokio::test]
+    async fn last_words_survive_a_shutdown_that_reaches_the_forwarder_first() {
+        for round in 0..64 {
+            let (mut child, stderr) = tokio::io::duplex(1024);
+            let shutdown = Arc::new(Notify::new());
+            let (task, lines) = forwarder(stderr, &shutdown);
+            // the forwarder's first pass: nothing to read, nothing signalled
+            tokio::task::yield_now().await;
+            child
+                .write_all(b"sidecar: failed to start: why\n")
+                .await
+                .unwrap();
+            drop(child);
+            shutdown.notify_waiters();
+            tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .expect("the forwarder ends at the pipe's EOF")
+                .unwrap();
+            assert_eq!(
+                *lines.lock().unwrap(),
+                ["sidecar: failed to start: why"],
+                "round {round}: the dying sidecar's last line was dropped"
+            );
+        }
+    }
+
+    /// A child that outlives its shutdown with its stderr still open: what it
+    /// wrote is forwarded, and the forwarder stops at the grace instead of
+    /// waiting on the pipe for ever.
+    #[tokio::test(start_paused = true)]
+    async fn a_child_that_outlives_its_shutdown_holds_the_forwarder_only_for_the_grace() {
+        let (mut child, stderr) = tokio::io::duplex(1024);
+        let shutdown = Arc::new(Notify::new());
+        let (task, lines) = forwarder(stderr, &shutdown);
+        tokio::task::yield_now().await;
+        child.write_all(b"still here\n").await.unwrap();
+        shutdown.notify_waiters();
+        let signalled = tokio::time::Instant::now();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("the grace bounds the drain")
+            .unwrap();
+        // the paused clock only moves to a timer's deadline (rounded up to the
+        // timer's millisecond tick): the drain's grace, and nothing longer
+        let held = signalled.elapsed();
+        assert!(
+            held >= STDERR_DRAIN_GRACE && held < STDERR_DRAIN_GRACE + Duration::from_millis(10),
+            "held {held:?}"
+        );
+        assert_eq!(*lines.lock().unwrap(), ["still here"]);
+        drop(child);
     }
 }
