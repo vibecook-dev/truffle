@@ -7,6 +7,14 @@ updates:
     labels:
       - dependencies
       - rust
+    groups:
+      # The napi crates release as one family: napi-derive's expansion targets
+      # its own napi and napi-derive-backend, so one bumped alone breaks the
+      # truffle-napi build (#204).
+      napi:
+        patterns:
+          - 'napi'
+          - 'napi-*'
 
   - package-ecosystem: npm
     directory: /
