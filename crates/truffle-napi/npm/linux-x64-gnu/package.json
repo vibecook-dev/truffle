@@ -1,6 +1,6 @@
 {
   "name": "@vibecook/truffle-native-linux-x64-gnu",
-  "version": "0.7.23",
+  "version": "0.7.24",
   "cpu": [
     "x64"
   ],
