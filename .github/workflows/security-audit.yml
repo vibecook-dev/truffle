@@ -9,6 +9,9 @@ on:
       - 'deny.toml'
       - '**/go.mod'
       - '**/go.sum'
+      - '**/package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
       - 'packages/sidecar-slim/**/*.go'
       - 'apple/patches/**'
       - 'apple/Vendor/libtailscale/REVISION'
@@ -62,3 +65,21 @@ jobs:
 
       - name: Run cargo-audit
         run: cargo audit
+
+  pnpm-audit:
+    name: pnpm audit (npm advisories, high and above)
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v5
+
+      - name: Install pnpm
+        run: npm install -g pnpm@10.20.0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v5
+        with:
+          node-version: 22
+
+      # Reads pnpm-lock.yaml alone: nothing is installed, so no package
+      # script runs. Every workspace importer counts, examples included.
+      - name: Run pnpm audit
+        run: pnpm audit --audit-level=high
