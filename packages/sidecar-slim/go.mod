@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	gvisor.dev/gvisor v0.0.0-20260915211658-a6f909f08a72
-	tailscale.com v1.104.1
+	tailscale.com v1.104.2
 )
 
 require (
