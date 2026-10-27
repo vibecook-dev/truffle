@@ -189,6 +189,7 @@ fn command_start_serialization() {
         ephemeral: Some(true),
         tags: Some(vec!["tag:truffle".to_string()]),
         idle_timeout_secs: None,
+        client_log_upload: None,
     };
     let cmd = SidecarCommand {
         command: command_type::START,
@@ -694,6 +695,7 @@ async fn test_bind_udp_returns_not_running() {
         idle_timeout_secs: None,
         start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
         login_allow: Vec::new(),
+        client_log_upload: true,
     };
     let provider = TailscaleProvider::new(config);
 
@@ -726,6 +728,7 @@ fn test_local_identity_default_before_start() {
         idle_timeout_secs: None,
         start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
         login_allow: Vec::new(),
+        client_log_upload: true,
     };
     let provider = TailscaleProvider::new(config);
 
@@ -768,6 +771,7 @@ fn test_local_addr_default_before_start() {
         idle_timeout_secs: None,
         start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
         login_allow: Vec::new(),
+        client_log_upload: true,
     };
     let provider = TailscaleProvider::new(config);
 

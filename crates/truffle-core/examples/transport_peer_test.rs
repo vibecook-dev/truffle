@@ -113,6 +113,7 @@ async fn create_provider(role: &str) -> TailscaleProvider {
         idle_timeout_secs: None,
         start_timeout: Some(truffle_core::network::tailscale::DEFAULT_START_TIMEOUT),
         login_allow: Vec::new(),
+        client_log_upload: true,
     };
 
     let mut provider = TailscaleProvider::new(config);

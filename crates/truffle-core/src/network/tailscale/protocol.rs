@@ -51,6 +51,11 @@ pub(crate) struct StartCommandData {
     /// when None so old sidecars ignore it (RFC 021 §6.5).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_timeout_secs: Option<u64>,
+    /// `Some(false)` stops tsnet's client-log upload (protocol 11). Omitted
+    /// otherwise; an older sidecar would ignore it, so the provider asks the
+    /// sidecar's version before sending it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_log_upload: Option<bool>,
     // NOTE: keep the manual Debug impl below in sync when adding fields.
 }
 
@@ -67,8 +72,17 @@ impl std::fmt::Debug for StartCommandData {
             .field("ephemeral", &self.ephemeral)
             .field("tags", &self.tags)
             .field("idle_timeout_secs", &self.idle_timeout_secs)
+            .field("client_log_upload", &self.client_log_upload)
             .finish()
     }
+}
+
+/// Data payload for a command that carries only a correlation id
+/// (`tsnet:logout`, `tsnet:version`; protocol 11).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RequestCommandData {
+    pub request_id: String,
 }
 
 /// Data payload for `bridge:dial`.
@@ -269,6 +283,8 @@ pub(crate) struct EgressProxyCommandData {
 pub(crate) mod command_type {
     pub const START: &str = "tsnet:start";
     pub const STOP: &str = "tsnet:stop";
+    pub const LOGOUT: &str = "tsnet:logout";
+    pub const VERSION: &str = "tsnet:version";
     pub const GET_PEERS: &str = "tsnet:getPeers";
     pub const DIAL: &str = "bridge:dial";
     pub const LISTEN: &str = "tsnet:listen";
@@ -310,6 +326,10 @@ pub(crate) mod event_type {
     pub const AUTH_REQUIRED: &str = "tsnet:authRequired";
     pub const NEEDS_APPROVAL: &str = "tsnet:needsApproval";
     pub const STATE_CHANGE: &str = "tsnet:stateChange";
+    pub const LOGGED_OUT: &str = "tsnet:loggedOut";
+    pub const VERSION_RESULT: &str = "tsnet:versionResult";
+    pub const LOCK_STATUS: &str = "tsnet:lockStatus";
+    pub const LOGGING_REQUIRED: &str = "tsnet:loggingRequired";
     pub const KEY_EXPIRING: &str = "tsnet:keyExpiring";
     pub const HEALTH_WARNING: &str = "tsnet:healthWarning";
     pub const PEERS: &str = "tsnet:peers";
@@ -374,6 +394,34 @@ pub(crate) struct StatusEventData {
     /// status means key expiry is disabled; older sidecars never send it.
     #[serde(default)]
     pub key_expiry: Option<String>,
+    /// The Tailscale release the sidecar embeds, e.g. `1.104.1` (protocol
+    /// 11), on every status.
+    #[serde(default)]
+    pub tailscale_version: Option<String>,
+    /// The version string the node reports to its control server (protocol
+    /// 11).
+    #[serde(default)]
+    pub tailscale_version_long: Option<String>,
+}
+
+/// Data from `tsnet:versionResult` (protocol 11).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct VersionResultEventData {
+    pub protocol_version: u32,
+    #[serde(default)]
+    pub tailscale_version: Option<String>,
+    #[serde(default)]
+    pub tailscale_version_long: Option<String>,
+}
+
+/// Data from `tsnet:lockStatus` (protocol 11): Tailnet Lock is on for the
+/// tailnet, and whether this node's key is signed.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LockStatusEventData {
+    pub enabled: bool,
+    pub signed: bool,
 }
 
 /// Data from `tsnet:authRequired` event.
@@ -697,6 +745,7 @@ mod tests {
             ephemeral: None,
             tags: None,
             idle_timeout_secs: None,
+            client_log_upload: None,
         };
         let cmd = SidecarCommand {
             command: command_type::START,
@@ -723,6 +772,7 @@ mod tests {
             ephemeral: None,
             tags: None,
             idle_timeout_secs: Some(300),
+            client_log_upload: None,
         };
         let json = serde_json::to_string(&data).unwrap();
         assert!(json.contains("\"idleTimeoutSecs\":300"));
@@ -739,6 +789,7 @@ mod tests {
             ephemeral: None,
             tags: None,
             idle_timeout_secs: None,
+            client_log_upload: None,
         };
         let dbg = format!("{data:?}");
         assert!(!dbg.contains("SECRET123"));

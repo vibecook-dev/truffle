@@ -26,4 +26,4 @@ mod sidecar;
 mod tests;
 
 pub use bridge::BridgeStats;
-pub use provider::{TailscaleConfig, TailscaleProvider, DEFAULT_START_TIMEOUT};
+pub use provider::{TailscaleConfig, TailscaleProvider, DEFAULT_START_TIMEOUT, LOGOUT_TIMEOUT};

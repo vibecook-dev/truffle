@@ -15,7 +15,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, Notify};
 
 use super::protocol::*;
-use crate::network::NetworkError;
+use crate::network::{NetworkError, TailscaleVersion};
 
 /// Configuration for spawning the Go sidecar.
 #[derive(Clone)]
@@ -39,6 +39,9 @@ pub(crate) struct SidecarConfig {
     /// Override the bridged-connection idle-reap deadline (seconds); `None`
     /// leaves the sidecar's 600s default (RFC 021 §6.5).
     pub idle_timeout_secs: Option<u64>,
+    /// `Some(false)` stops tsnet's client-log upload (protocol 11); `None`
+    /// keeps Tailscale's default.
+    pub client_log_upload: Option<bool>,
 }
 
 /// Manual `Debug`: `auth_key` (tailnet credential) and `session_token_hex`
@@ -55,6 +58,7 @@ impl std::fmt::Debug for SidecarConfig {
             .field("ephemeral", &self.ephemeral)
             .field("tags", &self.tags)
             .field("idle_timeout_secs", &self.idle_timeout_secs)
+            .field("client_log_upload", &self.client_log_upload)
             .finish()
     }
 }
@@ -78,6 +82,8 @@ pub(crate) enum SidecarInternalEvent {
         key_expiry: Option<String>,
         /// The coordination server in use (protocol 10).
         control_url: Option<String>,
+        /// The embedded Tailscale client (protocol 11).
+        tailscale_version: Option<TailscaleVersion>,
     },
     /// Sidecar stopped.
     Stopped,
@@ -85,12 +91,30 @@ pub(crate) enum SidecarInternalEvent {
     AuthRequired { auth_url: String },
     /// Needs admin approval.
     NeedsApproval,
-    /// State changed. A `starting` status (protocol 10) also names the
-    /// coordination server, before any login or approval event.
+    /// A non-running status (`starting`, …). A `starting` status (protocol
+    /// 10) also names the coordination server, before any login or approval
+    /// event, and (protocol 11) the embedded Tailscale client.
     StateChange {
         state: String,
         control_url: Option<String>,
+        tailscale_version: Option<TailscaleVersion>,
     },
+    /// The Tailscale backend's state changed after start
+    /// (`tsnet:stateChange`, an `ipn.State` name such as `NeedsLogin`).
+    BackendStateChanged { state: String },
+    /// `tsnet:logout` succeeded (protocol 11).
+    LoggedOut,
+    /// The answer to `tsnet:version` (protocol 11).
+    VersionResult {
+        protocol_version: u32,
+        tailscale_version: Option<TailscaleVersion>,
+    },
+    /// Tailnet Lock's state for this node: when it first runs, and on every
+    /// change (protocol 11).
+    LockStatus { enabled: bool, signed: bool },
+    /// The tailnet requires client logs, and this node opted out
+    /// (protocol 11).
+    LoggingRequired,
     /// Key expiring.
     KeyExpiring { expires_at: String },
     /// Health warnings.
@@ -639,6 +663,10 @@ impl GoSidecar {
         match event.event.as_str() {
             event_type::STATUS | event_type::STARTED => {
                 if let Ok(data) = serde_json::from_value::<StatusEventData>(event.data) {
+                    let tailscale_version = TailscaleVersion::from_wire(
+                        data.tailscale_version.as_deref(),
+                        data.tailscale_version_long.as_deref(),
+                    );
                     if data.state == "running" {
                         Some(SidecarInternalEvent::Started {
                             hostname: data.hostname,
@@ -649,6 +677,7 @@ impl GoSidecar {
                             protocol_version: data.protocol_version,
                             key_expiry: data.key_expiry,
                             control_url: data.control_url.filter(|u| !u.is_empty()),
+                            tailscale_version,
                         })
                     } else if data.state == "error" {
                         Some(SidecarInternalEvent::Error {
@@ -660,12 +689,32 @@ impl GoSidecar {
                         Some(SidecarInternalEvent::StateChange {
                             state: data.state,
                             control_url: data.control_url.filter(|u| !u.is_empty()),
+                            tailscale_version,
                         })
                     }
                 } else {
                     None
                 }
             }
+            event_type::LOGGED_OUT => Some(SidecarInternalEvent::LoggedOut),
+            event_type::VERSION_RESULT => {
+                serde_json::from_value::<VersionResultEventData>(event.data)
+                    .ok()
+                    .map(|d| SidecarInternalEvent::VersionResult {
+                        protocol_version: d.protocol_version,
+                        tailscale_version: TailscaleVersion::from_wire(
+                            d.tailscale_version.as_deref(),
+                            d.tailscale_version_long.as_deref(),
+                        ),
+                    })
+            }
+            event_type::LOCK_STATUS => serde_json::from_value::<LockStatusEventData>(event.data)
+                .ok()
+                .map(|d| SidecarInternalEvent::LockStatus {
+                    enabled: d.enabled,
+                    signed: d.signed,
+                }),
+            event_type::LOGGING_REQUIRED => Some(SidecarInternalEvent::LoggingRequired),
             event_type::STOPPED => Some(SidecarInternalEvent::Stopped),
             event_type::AUTH_REQUIRED => {
                 serde_json::from_value::<AuthRequiredEventData>(event.data)
@@ -677,10 +726,7 @@ impl GoSidecar {
             event_type::NEEDS_APPROVAL => Some(SidecarInternalEvent::NeedsApproval),
             event_type::STATE_CHANGE => serde_json::from_value::<StateChangeEventData>(event.data)
                 .ok()
-                .map(|d| SidecarInternalEvent::StateChange {
-                    state: d.state,
-                    control_url: None,
-                }),
+                .map(|d| SidecarInternalEvent::BackendStateChanged { state: d.state }),
             event_type::KEY_EXPIRING => serde_json::from_value::<KeyExpiringEventData>(event.data)
                 .ok()
                 .map(|d| SidecarInternalEvent::KeyExpiring {
@@ -816,6 +862,7 @@ impl GoSidecar {
             ephemeral: config.ephemeral,
             tags: config.tags.clone(),
             idle_timeout_secs: config.idle_timeout_secs,
+            client_log_upload: config.client_log_upload,
         };
         self.send_command(SidecarCommand {
             command: command_type::START,
@@ -1032,6 +1079,23 @@ impl GoSidecar {
         .await
     }
 
+    /// Send a command whose payload is only a correlation id (`tsnet:logout`,
+    /// `tsnet:version`; protocol 11). Register the reply slot first.
+    pub async fn send_request(
+        &self,
+        command: &'static str,
+        request_id: &str,
+    ) -> Result<(), NetworkError> {
+        let data = RequestCommandData {
+            request_id: request_id.to_string(),
+        };
+        self.send_command(SidecarCommand {
+            command,
+            data: Some(serde_json::to_value(&data)?),
+        })
+        .await
+    }
+
     /// Subscribe to sidecar internal events.
     pub fn subscribe(&self) -> broadcast::Receiver<SidecarInternalEvent> {
         self.event_tx.subscribe()
@@ -1084,6 +1148,7 @@ mod config_debug_tests {
             ephemeral: None,
             tags: None,
             idle_timeout_secs: None,
+            client_log_upload: None,
         };
         let dbg = format!("{config:?}");
         assert!(!dbg.contains("SECRET123"));
@@ -1202,6 +1267,7 @@ mod pid_tests {
             ephemeral: None,
             tags: None,
             idle_timeout_secs: None,
+            client_log_upload: None,
         }
     }
 
@@ -1289,9 +1355,17 @@ mod status_wire_tests {
     fn protocol_10_statuses_carry_control_url_and_key_expiry() {
         let starting = r#"{"event":"tsnet:status","data":{"state":"starting","hostname":"truffle-app-dev","protocolVersion":10,"controlUrl":"https://hs.example.com"}}"#;
         match map_line(starting) {
-            Some(SidecarInternalEvent::StateChange { state, control_url }) => {
+            Some(SidecarInternalEvent::StateChange {
+                state,
+                control_url,
+                tailscale_version,
+            }) => {
                 assert_eq!(state, "starting");
                 assert_eq!(control_url.as_deref(), Some("https://hs.example.com"));
+                assert_eq!(
+                    tailscale_version, None,
+                    "a v10 status names no Tailscale client"
+                );
             }
             other => panic!("unexpected mapping: {other:?}"),
         }
@@ -1312,14 +1386,77 @@ mod status_wire_tests {
             }
             other => panic!("unexpected mapping: {other:?}"),
         }
-        // The monitor's tsnet:stateChange names no server.
+        // The monitor's tsnet:stateChange is the backend's own state, never
+        // a status (it names no server).
         assert!(matches!(
             map_line(r#"{"event":"tsnet:stateChange","data":{"state":"NeedsLogin"}}"#),
+            Some(SidecarInternalEvent::BackendStateChanged { state }) if state == "NeedsLogin"
+        ));
+    }
+
+    #[test]
+    fn protocol_11_statuses_name_the_tailscale_client() {
+        let starting = r#"{"event":"tsnet:status","data":{"state":"starting","protocolVersion":11,"controlUrl":"https://controlplane.tailscale.com","tailscaleVersion":"1.104.1","tailscaleVersionLong":"1.104.1-dev20261020-g0123abcd"}}"#;
+        let want = Some(TailscaleVersion {
+            version: "1.104.1".into(),
+            long: "1.104.1-dev20261020-g0123abcd".into(),
+        });
+        match map_line(starting) {
             Some(SidecarInternalEvent::StateChange {
-                control_url: None,
+                tailscale_version, ..
+            }) => assert_eq!(tailscale_version, want),
+            other => panic!("unexpected mapping: {other:?}"),
+        }
+        let running = r#"{"event":"tsnet:started","data":{"state":"running","hostname":"h","dnsName":"h.tailnet.ts.net","tailscaleIP":"100.64.0.7","protocolVersion":11,"tailscaleVersion":"1.104.1","tailscaleVersionLong":"1.104.1-dev20261020-g0123abcd"}}"#;
+        match map_line(running) {
+            Some(SidecarInternalEvent::Started {
+                tailscale_version, ..
+            }) => assert_eq!(tailscale_version, want),
+            other => panic!("unexpected mapping: {other:?}"),
+        }
+        // An empty release is no release.
+        let blank = r#"{"event":"tsnet:status","data":{"state":"starting","protocolVersion":11,"tailscaleVersion":" "}}"#;
+        assert!(matches!(
+            map_line(blank),
+            Some(SidecarInternalEvent::StateChange {
+                tailscale_version: None,
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn protocol_11_lines_map_to_their_events() {
+        assert!(matches!(
+            map_line(r#"{"event":"tsnet:loggedOut","data":{"requestId":"r1"}}"#),
+            Some(SidecarInternalEvent::LoggedOut)
+        ));
+        assert!(matches!(
+            map_line(r#"{"event":"tsnet:loggingRequired"}"#),
+            Some(SidecarInternalEvent::LoggingRequired)
+        ));
+        assert!(matches!(
+            map_line(r#"{"event":"tsnet:lockStatus","data":{"enabled":true,"signed":false}}"#),
+            Some(SidecarInternalEvent::LockStatus {
+                enabled: true,
+                signed: false
+            })
+        ));
+        match map_line(
+            r#"{"event":"tsnet:versionResult","data":{"requestId":"v1","protocolVersion":11,"tailscaleVersion":"1.104.1","tailscaleVersionLong":"1.104.1-ERR-BuildInfo"}}"#,
+        ) {
+            Some(SidecarInternalEvent::VersionResult {
+                protocol_version,
+                tailscale_version,
+            }) => {
+                assert_eq!(protocol_version, 11);
+                assert_eq!(
+                    tailscale_version.map(|v| (v.version, v.long)),
+                    Some(("1.104.1".into(), "1.104.1-ERR-BuildInfo".into()))
+                );
+            }
+            other => panic!("unexpected mapping: {other:?}"),
+        }
     }
 }
 

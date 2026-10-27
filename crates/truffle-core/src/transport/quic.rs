@@ -1067,6 +1067,7 @@ mod security_regressions {
             idle_timeout_secs: None,
             start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
             login_allow: Vec::new(),
+            client_log_upload: true,
         }))
     }
     #[tokio::test]
