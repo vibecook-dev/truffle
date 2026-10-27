@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.24](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.23...truffle-v0.7.24) (2026-10-27)
+
+
+### Features
+
+* **core,sidecar:** sign-out, the client-log opt-out, Tailnet Lock state and the Tailscale version (protocol 11) ([#233](https://github.com/vibecook-dev/truffle/issues/233)) ([a21b563](https://github.com/vibecook-dev/truffle/commit/a21b56332886f7bfe299bda3e0de0fa5caeb3bf4))
+
 ## [0.7.23](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.22...truffle-v0.7.23) (2026-10-26)
 
 
