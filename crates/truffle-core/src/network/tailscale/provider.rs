@@ -23,9 +23,10 @@ use super::sidecar::{GoSidecar, ReplyGuard, SidecarConfig, SidecarInternalEvent}
 use crate::egress::{BoundEgress, EgressRoute, EgressRouteInfo, HttpProxyConfig, LoopbackConfig};
 use crate::network::login_allow::login_allowed;
 use crate::network::{
-    ControlServer, DialOpts, HealthInfo, IncomingConnection, KeyExpiry, ListenOpts, NetworkError,
-    NetworkPeer, NetworkPeerEvent, NetworkStatusEvent, NetworkTcpListener, NodeIdentity, PeerAddr,
-    PingResult, ProxyAddParams, ProxyAddResult, ProxyListEntry, ProxyRuntimeError,
+    BackendState, ControlServer, DialOpts, HealthInfo, IncomingConnection, KeyExpiry, ListenOpts,
+    NetworkError, NetworkPeer, NetworkPeerEvent, NetworkStatusEvent, NetworkTcpListener,
+    NodeIdentity, PeerAddr, PingResult, ProxyAddParams, ProxyAddResult, ProxyListEntry,
+    ProxyRuntimeError, TailscaleVersion,
 };
 
 /// How long [`TailscaleProvider::start`](crate::network::NetworkProvider::start)
@@ -76,6 +77,13 @@ pub struct TailscaleConfig {
     /// and the provider refuses to start on a sidecar that cannot report
     /// logins (protocol < 5).
     pub login_allow: Vec<String>,
+    /// Whether the embedded Tailscale client uploads its client logs to
+    /// Tailscale (`log.tailscale.com`), as Tailscale's own clients do by
+    /// default. `true` is that default. `false` opts out: the node then needs
+    /// a sidecar speaking protocol 11 (`start()` refuses an older one before
+    /// starting anything), and a tailnet with network flow logs on refuses it
+    /// ([`NetworkStatusEvent::LoggingRequired`]).
+    pub client_log_upload: bool,
 }
 
 /// Manual `Debug`: `auth_key` is a tailnet credential and must never reach
@@ -95,6 +103,7 @@ impl std::fmt::Debug for TailscaleConfig {
             .field("idle_timeout_secs", &self.idle_timeout_secs)
             .field("start_timeout", &self.start_timeout)
             .field("login_allow", &self.login_allow)
+            .field("client_log_upload", &self.client_log_upload)
             .finish()
     }
 }
@@ -195,6 +204,11 @@ pub(crate) struct StatusReporting {
     pub(crate) key_expiry: Arc<std::sync::RwLock<Option<KeyExpiry>>>,
     /// The coordination server, once a protocol 10 sidecar reported it.
     pub(crate) control_server: Arc<std::sync::RwLock<Option<ControlServer>>>,
+    /// The embedded Tailscale client, once a protocol 11 sidecar named it.
+    pub(crate) tailscale_version: Arc<std::sync::RwLock<Option<TailscaleVersion>>>,
+    /// Whether Tailnet Lock has this node locked out, once a protocol 11
+    /// sidecar reported its lock state.
+    pub(crate) locked_out: Arc<std::sync::RwLock<Option<bool>>>,
 }
 
 impl StatusReporting {
@@ -204,6 +218,37 @@ impl StatusReporting {
             needs_approval: Arc::default(),
             key_expiry: Arc::default(),
             control_server: Arc::default(),
+            tailscale_version: Arc::default(),
+            locked_out: Arc::default(),
+        }
+    }
+
+    /// Record the embedded Tailscale client a status or version answer
+    /// named. A property of the binary, so nothing is announced.
+    fn learn_tailscale_version(&self, version: Option<TailscaleVersion>) {
+        if let Some(version) = version {
+            *self
+                .tailscale_version
+                .write()
+                .unwrap_or_else(|p| p.into_inner()) = Some(version);
+        }
+    }
+
+    /// Record a Tailnet Lock state report. Becoming locked out raises
+    /// [`NetworkStatusEvent::NeedsSignature`]; leaving it raises
+    /// [`NetworkStatusEvent::Signed`]; an unchanged report raises nothing.
+    fn learn_lock(&self, enabled: bool, signed: bool) {
+        let locked_out = enabled && !signed;
+        let mut slot = self.locked_out.write().unwrap_or_else(|p| p.into_inner());
+        let was_locked_out = slot.replace(locked_out) == Some(true);
+        drop(slot);
+        if locked_out && !was_locked_out {
+            tracing::warn!(
+                "tailscale: Tailnet Lock has this node locked out until a signing node signs it"
+            );
+            let _ = self.tx.send(NetworkStatusEvent::NeedsSignature);
+        } else if !locked_out && was_locked_out {
+            let _ = self.tx.send(NetworkStatusEvent::Signed);
         }
     }
 
@@ -241,6 +286,20 @@ impl StatusReporting {
 /// The sidecar protocol whose running statuses carry the key expiry (and
 /// whose statuses carry the control URL).
 pub(crate) const KEY_EXPIRY_PROTOCOL_VERSION: u32 = 10;
+
+/// The sidecar protocol that answers `tsnet:logout` and `tsnet:version`,
+/// honours `clientLogUpload: false` at start, and reports Tailnet Lock and the
+/// embedded Tailscale version.
+pub(crate) const LOGOUT_PROTOCOL_VERSION: u32 = 11;
+
+/// How long [`TailscaleProvider::logout`] waits for the control server to
+/// take the logout before it stops the node anyway (the sidecar's own bound
+/// is 10 s).
+pub const LOGOUT_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// How long `start()` waits for a sidecar to say which protocol it speaks
+/// when a start option depends on it.
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl TailscaleProvider {
     /// Create a new TailscaleProvider with the given configuration.
@@ -338,6 +397,32 @@ impl TailscaleProvider {
             .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
+    }
+
+    /// The Tailscale client this node's sidecar embeds. Known from the
+    /// sidecar's first status, before any login; `None` before `start()`
+    /// and always with a sidecar older than protocol 11. Lock-free to the
+    /// caller and synchronous.
+    pub fn tailscale_version(&self) -> Option<TailscaleVersion> {
+        self.status
+            .tailscale_version
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// Whether Tailnet Lock has this node locked out (it runs, but reaches no
+    /// peer until a signing node signs its key), as the sidecar last reported
+    /// it; each change is also a [`NetworkStatusEvent::NeedsSignature`] or
+    /// [`NetworkStatusEvent::Signed`]. `Some(false)` on a tailnet without
+    /// Tailnet Lock. `None` until the node runs, and always with a sidecar
+    /// older than protocol 11.
+    pub fn needs_signature(&self) -> Option<bool> {
+        *self
+            .status
+            .locked_out
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
     }
 
     /// Generate a random 32-byte session token.
@@ -560,7 +645,9 @@ impl TailscaleProvider {
                                 protocol_version,
                                 key_expiry,
                                 control_url,
+                                tailscale_version,
                             } => {
+                                status.learn_tailscale_version(tailscale_version);
                                 // 0 = v1/unknown; gates RFC 023 v2 proxy features.
                                 sidecar_protocol_version.store(
                                     protocol_version.unwrap_or(0),
@@ -689,15 +776,48 @@ impl TailscaleProvider {
                             SidecarInternalEvent::StateChange {
                                 state: new_state,
                                 control_url,
+                                tailscale_version,
                             } => {
                                 {
                                     let mut h = health.write().await;
                                     h.state = new_state;
                                 }
                                 // The "starting" status names the server
-                                // before any login URL or approval event.
+                                // before any login URL or approval event,
+                                // and (protocol 11) the Tailscale client.
                                 if let Some(url) = &control_url {
                                     status.learn_control_server(url);
+                                }
+                                status.learn_tailscale_version(tailscale_version);
+                            }
+                            SidecarInternalEvent::BackendStateChanged { state: new_state } => {
+                                {
+                                    let mut h = health.write().await;
+                                    h.state = new_state.clone();
+                                }
+                                let _ = status.tx.send(NetworkStatusEvent::BackendStateChanged {
+                                    state: BackendState::from_wire(&new_state),
+                                });
+                            }
+                            SidecarInternalEvent::LockStatus { enabled, signed } => {
+                                status.learn_lock(enabled, signed);
+                            }
+                            SidecarInternalEvent::LoggingRequired => {
+                                // Only an opted-out node hears this (the
+                                // sidecar checks); tsnet has stopped it.
+                                tracing::error!(
+                                    "tailscale: this tailnet requires client logging (network \
+                                     flow logs are on), and the node opted out of it"
+                                );
+                                let _ = status.tx.send(NetworkStatusEvent::LoggingRequired);
+                                if let Some(tx) = started_tx.take() {
+                                    let _ = tx.send(Err(NetworkError::StartFailed(
+                                        "this tailnet requires client logging (network flow \
+                                         logs are on), and the node opted out of it with \
+                                         client_log_upload(false); allow uploads, or turn the \
+                                         tailnet's flow logs off"
+                                            .into(),
+                                    )));
                                 }
                             }
                             SidecarInternalEvent::KeyExpiring { expires_at } => {
@@ -881,6 +1001,124 @@ impl TailscaleProvider {
     }
 }
 
+impl TailscaleProvider {
+    /// Ask a freshly spawned sidecar which protocol it speaks, before any
+    /// start (`tsnet:version`, protocol 11), and learn the Tailscale client
+    /// it embeds. `None`: a sidecar older than 11, which does not know the
+    /// command and answers `UNKNOWN_CMD` without a `requestId`.
+    async fn probe_protocol(&self, sidecar: &GoSidecar) -> Result<Option<u32>, NetworkError> {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let mut events = sidecar.subscribe();
+        let mut reply = sidecar.register_reply(&request_id);
+        sidecar
+            .send_request(command_type::VERSION, &request_id)
+            .await?;
+        let answer = async {
+            loop {
+                tokio::select! {
+                    routed = reply.recv() => return match routed? {
+                        SidecarInternalEvent::VersionResult { protocol_version, tailscale_version } => {
+                            self.status.learn_tailscale_version(tailscale_version);
+                            Ok(Some(protocol_version))
+                        }
+                        other => Err(Self::unexpected_reply("tsnet:version", other)),
+                    },
+                    event = events.recv() => match event {
+                        Ok(SidecarInternalEvent::Error { code, .. }) if code == "UNKNOWN_CMD" => {
+                            return Ok(None);
+                        }
+                        Ok(SidecarInternalEvent::ProcessExited { exit_code }) => {
+                            return Err(NetworkError::SidecarError(format!(
+                                "process exited with code {exit_code:?} before saying its version"
+                            )));
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            return Err(NetworkError::SidecarError(
+                                "sidecar events closed before it said its version".into(),
+                            ));
+                        }
+                        _ => {}
+                    },
+                }
+            }
+        };
+        tokio::time::timeout(VERSION_PROBE_TIMEOUT, answer)
+            .await
+            .map_err(|_| {
+                NetworkError::SidecarError(format!(
+                    "the sidecar did not say its version within {VERSION_PROBE_TIMEOUT:?}"
+                ))
+            })?
+    }
+
+    /// Sign this node out of its tailnet, then stop it.
+    ///
+    /// The control server expires the node's key: the device stops counting
+    /// as signed in on the admin console's Machines page, and an ephemeral
+    /// node is removed. Then the provider stops, as
+    /// [`stop`](crate::network::NetworkProvider::stop) does. Logging in again
+    /// takes a new login (or auth key); the state directory keeps nothing
+    /// usable.
+    ///
+    /// Bounded like `stop`: if the control server does not take the logout
+    /// within [`LOGOUT_TIMEOUT`] (offline, say), the node is stopped anyway
+    /// and the error says the logout did not happen — the key then stays
+    /// valid until it expires or an admin removes the device. Needs sidecar
+    /// protocol 11; on an older sidecar it fails with
+    /// [`NetworkError::Unsupported`] and stops nothing.
+    pub async fn logout(&self) -> Result<(), NetworkError> {
+        if *self.state.read().await != ProviderState::Running {
+            return Err(NetworkError::NotRunning);
+        }
+        let version = self.sidecar_version();
+        if version < LOGOUT_PROTOCOL_VERSION {
+            return Err(NetworkError::Unsupported(format!(
+                "logout requires sidecar protocol {LOGOUT_PROTOCOL_VERSION}; this sidecar \
+                 speaks {version}"
+            )));
+        }
+        let outcome = self.logout_rpc().await;
+        if let Err(e) = &outcome {
+            tracing::warn!("tailscale: logout failed, stopping the node anyway: {e}");
+        }
+        if let Err(e) = super::super::NetworkProvider::stop(self).await {
+            tracing::warn!("tailscale: stop after logout failed: {e}");
+        }
+        outcome
+    }
+
+    async fn logout_rpc(&self) -> Result<(), NetworkError> {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let mut reply = {
+            let sidecar_guard = self.sidecar.lock().await;
+            let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
+            let reply = sidecar.register_reply(&request_id);
+            sidecar
+                .send_request(command_type::LOGOUT, &request_id)
+                .await?;
+            reply
+        };
+        let answer = tokio::time::timeout(LOGOUT_TIMEOUT, reply.recv())
+            .await
+            .map_err(|_| {
+                NetworkError::SidecarError(format!(
+                    "logout: the control server did not answer within {LOGOUT_TIMEOUT:?}"
+                ))
+            })??;
+        match answer {
+            SidecarInternalEvent::LoggedOut => Ok(()),
+            SidecarInternalEvent::Error { code, message } if code == "NOT_RUNNING" => {
+                tracing::debug!("logout: {message}");
+                Err(NetworkError::NotRunning)
+            }
+            SidecarInternalEvent::Error { code, message } => Err(NetworkError::SidecarError(
+                format!("logout failed [{code}]: {message}"),
+            )),
+            other => Err(Self::unexpected_reply("tsnet:logout", other)),
+        }
+    }
+}
+
 /// Check if a hostname belongs to a truffle node in the given app.
 ///
 /// RFC 017 §4: every truffle-managed Tailscale hostname has the shape
@@ -985,11 +1223,38 @@ impl super::super::NetworkProvider for TailscaleProvider {
             ephemeral: self.config.ephemeral,
             tags: self.config.tags.clone(),
             idle_timeout_secs: self.config.idle_timeout_secs,
+            client_log_upload: (!self.config.client_log_upload).then_some(false),
         };
 
         // Spawn the sidecar
         let (sidecar, sidecar_rx) =
             GoSidecar::spawn(sidecar_config.clone(), self.sidecar_pid.clone()).await?;
+
+        // An older sidecar would ignore `clientLogUpload: false` and upload
+        // the logs it was asked not to, so the opt-out is checked before the
+        // start command, not after (the way `login_allow` is): nothing has
+        // started yet when an older sidecar is refused.
+        if !self.config.client_log_upload {
+            let refusal = match self.probe_protocol(&sidecar).await {
+                Ok(Some(version)) if version >= LOGOUT_PROTOCOL_VERSION => None,
+                Ok(version) => Some(NetworkError::StartFailed(format!(
+                    "client_log_upload(false) requires sidecar protocol \
+                     {LOGOUT_PROTOCOL_VERSION}; this sidecar speaks {}",
+                    version.map_or_else(|| "an older one".to_string(), |v| v.to_string())
+                ))),
+                Err(e) => Some(e),
+            };
+            if let Some(e) = refusal {
+                tracing::error!("{e}");
+                sidecar.shutdown().await;
+                if let Some(tx) = self.bridge_shutdown_tx.lock().await.take() {
+                    let _ = tx.send(true);
+                }
+                *self.bridge.lock().await = None;
+                *self.state.write().await = ProviderState::Stopped;
+                return Err(e);
+            }
+        }
 
         // Create a channel for the event processor to signal when we're running
         let (started_tx, started_rx) = oneshot::channel();
@@ -2187,6 +2452,7 @@ mod config_debug_tests {
             idle_timeout_secs: None,
             start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
             login_allow: Vec::new(),
+            client_log_upload: true,
         };
         let dbg = format!("{config:?}");
         assert!(!dbg.contains("SECRET123"));
@@ -2223,6 +2489,7 @@ mod diagnostic_tests {
             idle_timeout_secs: None,
             start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
             login_allow: Vec::new(),
+            client_log_upload: true,
         });
         *provider.state.write().await = ProviderState::Running;
         provider
@@ -2249,6 +2516,7 @@ mod diagnostic_tests {
             idle_timeout_secs: None,
             start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
             login_allow: Vec::new(),
+            client_log_upload: true,
         });
         *provider.state.write().await = ProviderState::Running;
         provider
@@ -2288,6 +2556,7 @@ mod diagnostic_tests {
             idle_timeout_secs: None,
             start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
             login_allow: Vec::new(),
+            client_log_upload: true,
         });
         assert_eq!(provider.sidecar_pid(), None);
         // The slot is what a spawned sidecar writes; 0 stays "no process".
@@ -2540,6 +2809,7 @@ mod login_gate_tests {
                 protocol_version: Some(LOGIN_NAME_PROTOCOL_VERSION),
                 key_expiry: None,
                 control_url: None,
+                tailscale_version: None,
             })
             .unwrap();
         tokio::time::sleep(Duration::from_millis(120)).await;
@@ -2560,6 +2830,7 @@ mod login_gate_tests {
                 protocol_version: Some(4),
                 key_expiry: None,
                 control_url: None,
+                tailscale_version: None,
             })
             .unwrap();
         tokio::time::sleep(Duration::from_millis(120)).await;
@@ -2576,6 +2847,7 @@ mod login_gate_tests {
             protocol_version: Some(8),
             key_expiry: None,
             control_url: None,
+            tailscale_version: None,
         }
     }
 
@@ -2984,6 +3256,7 @@ mod login_gate_tests {
             protocol_version: Some(protocol),
             key_expiry: key_expiry.map(Into::into),
             control_url: Some("https://controlplane.tailscale.com".into()),
+            tailscale_version: None,
         }
     }
 
@@ -3008,6 +3281,7 @@ mod login_gate_tests {
             .send(SidecarInternalEvent::StateChange {
                 state: "starting".into(),
                 control_url: Some("https://login.tailscale.com".into()),
+                tailscale_version: None,
             })
             .unwrap();
         h.sidecar_tx
@@ -3056,6 +3330,93 @@ mod login_gate_tests {
         assert_eq!(h.health.read().await.key_expiry, None);
     }
 
+    /// Protocol 11 through the real event processor: Tailnet Lock reports
+    /// become NeedsSignature on entering the locked-out state and Signed on
+    /// leaving it (signed, or Lock turned off), and nothing on a repeat.
+    #[tokio::test]
+    async fn lock_reports_announce_entering_and_leaving_the_locked_out_state() {
+        let mut h = harness("playground", Vec::new());
+        assert_eq!(*h.reporting.locked_out.read().unwrap(), None);
+        let lock = |enabled, signed| SidecarInternalEvent::LockStatus { enabled, signed };
+        for (event, want, slot) in [
+            (lock(false, false), vec![], Some(false)),
+            (
+                lock(true, false),
+                vec![NetworkStatusEvent::NeedsSignature],
+                Some(true),
+            ),
+            (lock(true, false), vec![], Some(true)),
+            (
+                lock(true, true),
+                vec![NetworkStatusEvent::Signed],
+                Some(false),
+            ),
+            (
+                lock(true, false),
+                vec![NetworkStatusEvent::NeedsSignature],
+                Some(true),
+            ),
+            (
+                lock(false, false),
+                vec![NetworkStatusEvent::Signed],
+                Some(false),
+            ),
+        ] {
+            let sent = format!("{event:?}");
+            h.sidecar_tx.send(event).unwrap();
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            assert_eq!(status_events_so_far(&mut h.status), want, "after {sent}");
+            assert_eq!(
+                *h.reporting.locked_out.read().unwrap(),
+                slot,
+                "after {sent}"
+            );
+        }
+    }
+
+    /// Protocol 11: the monitor's backend state reaches status_events()
+    /// typed, and health keeps Tailscale's name for it; the starting status
+    /// names the Tailscale client.
+    #[tokio::test]
+    async fn backend_states_and_the_tailscale_client_are_reported() {
+        let mut h = harness("playground", Vec::new());
+        h.sidecar_tx
+            .send(SidecarInternalEvent::StateChange {
+                state: "starting".into(),
+                control_url: None,
+                tailscale_version: TailscaleVersion::from_wire(
+                    Some("1.104.1"),
+                    Some("1.104.1-dev20261020-g0123abcd"),
+                ),
+            })
+            .unwrap();
+        for state in ["NeedsLogin", "InUseOtherUser"] {
+            h.sidecar_tx
+                .send(SidecarInternalEvent::BackendStateChanged {
+                    state: state.into(),
+                })
+                .unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert_eq!(
+            status_events_so_far(&mut h.status),
+            vec![
+                NetworkStatusEvent::BackendStateChanged {
+                    state: BackendState::NeedsLogin
+                },
+                NetworkStatusEvent::BackendStateChanged {
+                    state: BackendState::Other("InUseOtherUser".into())
+                },
+            ]
+        );
+        assert_eq!(h.health.read().await.state, "InUseOtherUser");
+        let version = h.reporting.tailscale_version.read().unwrap().clone();
+        assert_eq!(
+            version.map(|v| (v.version, v.long)),
+            Some(("1.104.1".into(), "1.104.1-dev20261020-g0123abcd".into()))
+        );
+    }
+
     /// A pre-10 sidecar reports neither: nothing is announced or invented.
     #[tokio::test]
     async fn an_older_sidecar_reports_no_key_expiry_or_control_server() {
@@ -3064,6 +3425,7 @@ mod login_gate_tests {
             .send(SidecarInternalEvent::StateChange {
                 state: "starting".into(),
                 control_url: None,
+                tailscale_version: None,
             })
             .unwrap();
         h.sidecar_tx
@@ -3107,6 +3469,7 @@ mod egress_tests {
             idle_timeout_secs: None,
             start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
             login_allow,
+            client_log_upload: true,
         }
     }
 
@@ -3386,6 +3749,7 @@ mod status_event_process_tests {
             idle_timeout_secs: None,
             start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
             login_allow: Vec::new(),
+            client_log_upload: true,
         }
     }
 
@@ -3716,5 +4080,239 @@ while read line; do :; done"#,
             "median detection latency {:?} (all: {latencies:?})",
             latencies[2]
         );
+    }
+
+    fn drain_status(
+        status: &mut broadcast::Receiver<NetworkStatusEvent>,
+    ) -> Vec<NetworkStatusEvent> {
+        let mut seen = Vec::new();
+        while let Ok(event) = status.try_recv() {
+            seen.push(event);
+        }
+        seen
+    }
+
+    /// The shell half of a protocol 11 sidecar: logs every command line to
+    /// `log`, answers tsnet:version, and runs `on_start` / `on_logout` for
+    /// those commands (answers carry the command's requestId as `$id`).
+    fn v11_script(
+        dir: &std::path::Path,
+        log: &std::path::Path,
+        on_start: &str,
+        on_logout: &str,
+    ) -> PathBuf {
+        scripted_sidecar(
+            dir,
+            &format!(
+                r#"log='{log}'
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$log"
+  id=$(printf '%s' "$line" | sed -n 's/.*"requestId":"\([^"]*\)".*/\1/p')
+  case "$line" in
+    *'"tsnet:version"'*)
+      echo "{{\"event\":\"tsnet:versionResult\",\"data\":{{\"requestId\":\"$id\",\"protocolVersion\":11,\"tailscaleVersion\":\"1.104.1\",\"tailscaleVersionLong\":\"1.104.1-dev20261020-g0123abcd\"}}}}" ;;
+    *'"tsnet:start"'*)
+{on_start} ;;
+    *'"tsnet:logout"'*)
+{on_logout} ;;
+  esac
+done"#,
+                log = log.display()
+            ),
+        )
+    }
+
+    const RUNNING_V11: &str = r#"      echo '{"event":"tsnet:status","data":{"state":"starting","protocolVersion":11,"tailscaleVersion":"1.104.1","tailscaleVersionLong":"1.104.1-dev20261020-g0123abcd"}}'
+      echo '{"event":"tsnet:lockStatus","data":{"enabled":true,"signed":false}}'
+      echo '{"event":"tsnet:status","data":{"state":"running","hostname":"truffle-playground-dev","dnsName":"truffle-playground-dev.tailnet.ts.net","tailscaleIP":"100.64.0.9","protocolVersion":11,"tailscaleVersion":"1.104.1","tailscaleVersionLong":"1.104.1-dev20261020-g0123abcd"}}'"#;
+
+    fn commands(log: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).expect("a JSON command")["command"]
+                    .as_str()
+                    .expect("a command name")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Protocol 11 end to end: an opted-out node asks the sidecar's version
+    /// before it starts anything, sends the opt-out with the start, learns
+    /// the Tailscale client, hears it is locked out before start() returns,
+    /// and logout signs out first and stops after.
+    #[tokio::test]
+    async fn an_opted_out_node_asks_first_and_logout_signs_out_before_it_stops() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("commands.log");
+        let script = v11_script(
+            dir.path(),
+            &log,
+            RUNNING_V11,
+            r#"      echo "{\"event\":\"tsnet:loggedOut\",\"data\":{\"requestId\":\"$id\"}}""#,
+        );
+        let mut cfg = config(script, dir.path());
+        cfg.client_log_upload = false;
+        let mut provider = TailscaleProvider::new(cfg);
+        let mut status = provider.status_events();
+        tokio::time::timeout(START_GUARD, provider.start())
+            .await
+            .expect("start must complete")
+            .expect("start");
+
+        assert_eq!(
+            drain_status(&mut status),
+            vec![
+                NetworkStatusEvent::NeedsSignature,
+                NetworkStatusEvent::KeyExpiryKnown {
+                    key_expiry: KeyExpiry::Never
+                },
+            ],
+            "the lock state arrives before start() returns"
+        );
+        assert_eq!(provider.needs_signature(), Some(true));
+        assert_eq!(
+            provider.tailscale_version().map(|v| v.version),
+            Some("1.104.1".to_string())
+        );
+        let start_line = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            start_line.contains(r#""clientLogUpload":false"#),
+            "the opt-out rides tsnet:start"
+        );
+
+        provider.logout().await.expect("logout");
+        // Stopped once the answer came: no sidecar left, nothing running.
+        // (Whether the tsnet:stop line itself reaches the sidecar before
+        // its stdin closes is GoSidecar::shutdown's race; either ends it.)
+        assert_eq!(provider.health().await.state, "stopped");
+        assert_eq!(provider.sidecar_pid(), None);
+        let sent = commands(&log);
+        assert_eq!(sent[..2], ["tsnet:version", "tsnet:start"]);
+        assert!(sent.iter().any(|c| c == "tsnet:logout"), "{sent:?}");
+    }
+
+    /// An older sidecar would ignore the opt-out and upload anyway, so it is
+    /// refused before tsnet:start is ever sent.
+    #[tokio::test]
+    async fn an_opt_out_refuses_an_older_sidecar_before_anything_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("commands.log");
+        let script = scripted_sidecar(
+            dir.path(),
+            &format!(
+                r#"while IFS= read -r line; do
+  printf '%s\n' "$line" >> '{}'
+  case "$line" in
+    *'"tsnet:version"'*)
+      echo '{{"event":"tsnet:error","data":{{"code":"UNKNOWN_CMD","message":"unknown command: tsnet:version"}}}}' ;;
+  esac
+done"#,
+                log.display()
+            ),
+        );
+        let mut cfg = config(script, dir.path());
+        cfg.client_log_upload = false;
+        let mut provider = TailscaleProvider::new(cfg);
+        let err = tokio::time::timeout(START_GUARD, provider.start())
+            .await
+            .expect("the refusal must not wait for a start timeout")
+            .expect_err("an older sidecar must be refused");
+        assert!(
+            matches!(&err, NetworkError::StartFailed(m) if m.contains("protocol 11") && m.contains("an older one")),
+            "unexpected error: {err:?}"
+        );
+        let sent = commands(&log);
+        assert!(
+            !sent.iter().any(|c| c == "tsnet:start"),
+            "nothing may start on an older sidecar: {sent:?}"
+        );
+        assert_eq!(provider.sidecar_pid(), None);
+    }
+
+    /// An opted-out node on a tailnet that requires client logs never runs;
+    /// start() fails at once, naming why, instead of waiting out its timeout.
+    #[tokio::test]
+    async fn logging_required_fails_the_start_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("commands.log");
+        let script = v11_script(
+            dir.path(),
+            &log,
+            r#"      echo '{"event":"tsnet:status","data":{"state":"starting","protocolVersion":11}}'
+      echo '{"event":"tsnet:loggingRequired"}'"#,
+            ":",
+        );
+        let mut cfg = config(script, dir.path());
+        cfg.client_log_upload = false;
+        let mut provider = TailscaleProvider::new(cfg);
+        let mut status = provider.status_events();
+        let err = tokio::time::timeout(START_GUARD, provider.start())
+            .await
+            .expect("the start must not wait out its 5-minute timeout")
+            .expect_err("the node can never run");
+        assert!(
+            matches!(&err, NetworkError::StartFailed(m) if m.contains("requires client logging") && m.contains("client_log_upload(false)")),
+            "unexpected error: {err:?}"
+        );
+        assert!(drain_status(&mut status).contains(&NetworkStatusEvent::LoggingRequired));
+        let _ = provider.stop().await;
+    }
+
+    /// A logout the control server does not take still stops the node, and
+    /// the error says the device stayed signed in.
+    #[tokio::test]
+    async fn a_refused_logout_still_stops_the_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("commands.log");
+        let script = v11_script(
+            dir.path(),
+            &log,
+            RUNNING_V11,
+            r#"      echo "{\"event\":\"tsnet:error\",\"data\":{\"code\":\"LOGOUT_ERROR\",\"message\":\"control server unreachable\",\"requestId\":\"$id\"}}""#,
+        );
+        let mut provider = TailscaleProvider::new(config(script, dir.path()));
+        tokio::time::timeout(START_GUARD, provider.start())
+            .await
+            .expect("start must complete")
+            .expect("start");
+        let err = provider.logout().await.expect_err("the logout was refused");
+        assert!(
+            matches!(&err, NetworkError::SidecarError(m) if m.contains("LOGOUT_ERROR") && m.contains("unreachable")),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(provider.health().await.state, "stopped");
+        assert_eq!(provider.sidecar_pid(), None);
+        // The default start asks nothing first.
+        assert_eq!(commands(&log)[0], "tsnet:start");
+    }
+
+    /// On an older sidecar logout is refused locally, and the node keeps
+    /// running: the caller decides what to do instead.
+    #[tokio::test]
+    async fn logout_on_an_older_sidecar_is_unsupported_and_stops_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = scripted_sidecar(
+            dir.path(),
+            r#"read start
+echo '{"event":"tsnet:status","data":{"state":"running","hostname":"truffle-playground-dev","dnsName":"truffle-playground-dev.tailnet.ts.net","tailscaleIP":"100.64.0.9","protocolVersion":10}}'
+cat > /dev/null"#,
+        );
+        let mut provider = TailscaleProvider::new(config(script, dir.path()));
+        tokio::time::timeout(START_GUARD, provider.start())
+            .await
+            .expect("start must complete")
+            .expect("start");
+        let err = provider.logout().await.expect_err("v10 cannot log out");
+        assert!(
+            matches!(&err, NetworkError::Unsupported(m) if m.contains("protocol 11") && m.contains("speaks 10")),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(provider.health().await.state, "running");
+        assert_eq!(provider.tailscale_version(), None);
+        assert_eq!(provider.needs_signature(), None);
+        provider.stop().await.unwrap();
     }
 }

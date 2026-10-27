@@ -36,12 +36,16 @@ import (
 	"syscall"
 	"time"
 
+	tailscaleroot "tailscale.com"
 	"tailscale.com/client/local"
 	"tailscale.com/client/tailscale/apitype"
+	"tailscale.com/envknob"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/logtail"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
+	"tailscale.com/version"
 )
 
 // Bridge header constants (must match Rust truffle-core/src/bridge/header.rs)
@@ -99,6 +103,10 @@ type startData struct {
 	// IdleTimeoutSecs overrides the bridged-connection idle-reap deadline.
 	// nil or <=0 falls back to idleDeadline (RFC 021 §6.5).
 	IdleTimeoutSecs *int `json:"idleTimeoutSecs,omitempty"`
+	// ClientLogUpload false stops tsnet from uploading its client logs to
+	// Tailscale (v11; see optOutOfClientLogs). nil or true keeps Tailscale's
+	// default, which is to upload them.
+	ClientLogUpload *bool `json:"clientLogUpload,omitempty"`
 }
 
 type dialData struct {
@@ -138,11 +146,18 @@ type dialResultData struct {
 // once per start before); v10 = every status from "starting" on carries
 // controlUrl (the coordination server in use), "running" statuses carry the
 // node's keyExpiry (absent = key expiry disabled), and a "running" status is
-// re-sent when the key expiry changes while the node runs.
+// re-sent when the key expiry changes while the node runs; v11 = tsnet:logout
+// (answered by tsnet:loggedOut, or a tsnet:error carrying its requestId),
+// tsnet:version (answered by tsnet:versionResult, before or without a start),
+// tsnet:start's clientLogUpload:false and the tsnet:loggingRequired event it
+// can lead to, every status carries tailscaleVersion and tailscaleVersionLong,
+// tsnet:lockStatus (Tailnet Lock) when the node first runs and on every change,
+// and backend state changes (tsnet:stateChange) are seen through the IPN bus
+// within a second rather than at the next minute's poll.
 // An absent value makes the core treat the sidecar as v1.
 // Bump on any addition to the command surface the core must not send blind,
 // or to an event the core relies on.
-const sidecarProtocolVersion = 10
+const sidecarProtocolVersion = 11
 
 type statusData struct {
 	State       string `json:"state"`
@@ -169,6 +184,12 @@ type statusData struct {
 	// reports no expiry for the node); a core reads the omission as "never"
 	// only from a v10+ sidecar.
 	KeyExpiry string `json:"keyExpiry,omitempty"`
+	// TailscaleVersion is the Tailscale release this sidecar embeds
+	// ("1.104.1"), and TailscaleVersionLong the version string the node
+	// reports to its control server (tsnet's version.Long(), what the admin
+	// console shows). On every status (v11).
+	TailscaleVersion     string `json:"tailscaleVersion,omitempty"`
+	TailscaleVersionLong string `json:"tailscaleVersionLong,omitempty"`
 }
 
 type authRequiredData struct {
@@ -1029,6 +1050,10 @@ func main() {
 			s.handleStart(cmd.Data)
 		case "tsnet:stop":
 			s.handleStop()
+		case "tsnet:logout":
+			s.handleLogout(cmd.Data)
+		case "tsnet:version":
+			s.handleVersion(cmd.Data)
 		case "tsnet:getPeers":
 			s.handleGetPeers()
 		case "bridge:dial":
@@ -1135,6 +1160,10 @@ func (s *shim) handleStart(data json.RawMessage) {
 	}
 	ctx := s.armLifecycle(token, d.BridgePort)
 	s.setIdleTimeout(resolveIdleTimeout(d.IdleTimeoutSecs))
+	// v11: before srv.Start(), which starts tsnet's log uploader.
+	if d.ClientLogUpload != nil && !*d.ClientLogUpload {
+		optOutOfClientLogs()
+	}
 
 	srv := &tsnet.Server{
 		Hostname:  d.Hostname,
@@ -1205,6 +1234,7 @@ func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname 
 	// link. An unchanged URL is never repeated.
 	lastAuthURL := ""
 	needsApprovalSent := false
+	loggingRequiredSent := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -1237,6 +1267,18 @@ func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname 
 			needsApprovalSent = false
 		}
 
+		// v11: an opted-out node on a tailnet that requires client logs is
+		// stopped by tsnet and never runs; say so once instead of leaving the
+		// core waiting for a Running that cannot come.
+		if loggingRequired(status) {
+			if !loggingRequiredSent {
+				s.sendEvent("tsnet:loggingRequired", nil)
+				loggingRequiredSent = true
+			}
+		} else {
+			loggingRequiredSent = false
+		}
+
 		if status.BackendState == "Running" {
 			// RFC 025 §3.3: our own login, resolved through the same User map
 			// the peer rows use. StatusWithoutPeers still carries the self
@@ -1244,6 +1286,14 @@ func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname 
 			// logged-in node.
 			running := runningStatus(status, hostname)
 			s.setDNSName(running.DNSName)
+
+			// v11: a node Tailnet Lock has not signed reaches Running too, cut
+			// off from every peer, so its lock state goes out before the
+			// running events end the core's wait.
+			lock, lockKnown := s.readLockStatus(ctx, lc)
+			if lockKnown {
+				s.sendEvent("tsnet:lockStatus", lock)
+			}
 
 			s.emitStatus("tsnet:status", running)
 			s.emitStatus("tsnet:started", running)
@@ -1263,7 +1313,11 @@ func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname 
 			// v1-era fossil :443 TLS listener that used to start here.
 
 			// Start background state monitor
-			go s.monitorState(ctx, lc, hostname, running.KeyExpiry)
+			var lockBaseline *lockStatusData
+			if lockKnown {
+				lockBaseline = &lock
+			}
+			go s.monitorState(ctx, lc, hostname, running.KeyExpiry, lockBaseline)
 			return
 		}
 
@@ -3679,27 +3733,35 @@ func (s *shim) prewarmCert(ctx context.Context, srv *tsnet.Server) {
 	debugf("cert pre-warm for %s complete", domain)
 }
 
-// monitorState polls Tailscale status every 60 seconds and emits events for
-// state changes, upcoming key expiry, and health warnings. keyExpiry is the
-// expiry the "running" status reported; when the node's expiry moves (a
-// re-login, an admin extending or disabling it) the running status is re-sent
-// with the new value (v10).
-func (s *shim) monitorState(ctx context.Context, lc *local.Client, hostname, keyExpiry string) {
-	s.monitorStateEvery(ctx, lc, hostname, keyExpiry, 60*time.Second)
+// monitorState reads Tailscale status whenever the IPN bus reports a backend
+// state, health or error change (v11), and every 60 seconds regardless, and
+// emits events for state changes, upcoming key expiry, and health warnings.
+// keyExpiry is the expiry the "running" status reported; when the node's
+// expiry moves (a re-login, an admin extending or disabling it) the running
+// status is re-sent with the new value (v10). lock is the Tailnet Lock state
+// the start loop reported (nil when it could not be read); a change is re-sent
+// as tsnet:lockStatus (v11).
+func (s *shim) monitorState(ctx context.Context, lc *local.Client, hostname, keyExpiry string, lock *lockStatusData) {
+	s.monitorStateEvery(ctx, lc, hostname, keyExpiry, lock, 60*time.Second)
 }
 
-func (s *shim) monitorStateEvery(ctx context.Context, lc *local.Client, hostname, keyExpiry string, every time.Duration) {
+func (s *shim) monitorStateEvery(ctx context.Context, lc *local.Client, hostname, keyExpiry string, lock *lockStatusData, every time.Duration) {
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
+	kick := make(chan struct{}, 1)
+	go s.watchBackendChanges(ctx, lc, kick)
 
 	lastState := "Running"
 	lastKeyExpiry := keyExpiry
+	lastLock := lock
+	loggingRequiredSent := false
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-kick:
 		}
 
 		status, err := lc.StatusWithoutPeers(ctx)
@@ -3727,6 +3789,27 @@ func (s *shim) monitorStateEvery(ctx context.Context, lc *local.Client, hostname
 			}
 		}
 
+		// v11: a signing node signed us, Tailnet Lock was turned on or off, or
+		// our key was re-signed away. Only while running: a stopped node has
+		// no key to sign.
+		if status.BackendState == "Running" {
+			if current, ok := s.readLockStatus(ctx, lc); ok && (lastLock == nil || *lastLock != current) {
+				s.sendEvent("tsnet:lockStatus", current)
+				lastLock = &current
+			}
+		}
+
+		// v11: client logging became required while we run (an admin turned
+		// network flow logs on); tsnet has stopped the node for it.
+		if loggingRequired(status) {
+			if !loggingRequiredSent {
+				s.sendEvent("tsnet:loggingRequired", nil)
+				loggingRequiredSent = true
+			}
+		} else {
+			loggingRequiredSent = false
+		}
+
 		// Emit tsnet:keyExpiring if our own key expires within 24 hours
 		if status.Self != nil && status.Self.KeyExpiry != nil {
 			expiresAt := *status.Self.KeyExpiry
@@ -3746,6 +3829,194 @@ func (s *shim) monitorStateEvery(ctx context.Context, lc *local.Client, hostname
 			})
 		}
 	}
+}
+
+// watchBackendChanges kicks the state monitor whenever the IPN bus reports a
+// backend state, health or error change (v11), so a sign-out (NeedsLogin once
+// the key expired or an admin removed the node) reaches the core within a
+// second rather than at the next minute's poll. Every watcher gets those
+// fields whatever its mask; NotifyNoNetMap keeps full network maps off this
+// stream. The poll stays as the safety net, and a broken watch reconnects with
+// backoff, as the peer watcher's does.
+func (s *shim) watchBackendChanges(ctx context.Context, lc *local.Client, kick chan<- struct{}) {
+	defer s.recoverPanic("watchBackendChanges")
+
+	backoff := time.Second
+	for ctx.Err() == nil {
+		watcher, err := lc.WatchIPNBus(ctx, ipn.NotifyNoNetMap)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			log.Printf("state watch: WatchIPNBus failed: %v", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+			continue
+		}
+		backoff = time.Second
+		for {
+			n, err := watcher.Next()
+			if err != nil {
+				if ctx.Err() == nil {
+					log.Printf("state watch: %v", err)
+				}
+				break
+			}
+			if n.State == nil && n.Health == nil && n.ErrMessage == nil {
+				continue
+			}
+			select {
+			case kick <- struct{}{}:
+			default: // a read is already due
+			}
+		}
+		watcher.Close()
+	}
+}
+
+// lockStatusData is the tsnet:lockStatus payload (v11): whether the tailnet
+// uses Tailnet Lock, and whether this node's key is signed. A node with Lock
+// on and an unsigned key is "locked out": it runs, but reaches no peer until a
+// signing node signs it.
+type lockStatusData struct {
+	Enabled bool `json:"enabled"`
+	Signed  bool `json:"signed"`
+}
+
+// readLockStatus asks the LocalAPI for this node's Tailnet Lock state. ok is
+// false when it cannot say: the call failed, which is never guessed at, and
+// costs only the lock events (a debug line, since the monitor asks again on
+// every read).
+func (s *shim) readLockStatus(ctx context.Context, lc *local.Client) (lock lockStatusData, ok bool) {
+	ctx, cancel := context.WithTimeout(ctx, statusTimeout)
+	defer cancel()
+	st, err := lc.TailnetLockStatus(ctx)
+	if err != nil {
+		debugf("Tailnet Lock status unavailable: %v", err)
+		return lockStatusData{}, false
+	}
+	return lockStatusData{Enabled: st.Enabled, Signed: st.NodeKeySigned}, true
+}
+
+// clientLogsOptedOut records that this process stopped tsnet's client-log
+// upload (v11). Like the switches it records, it is process-wide and lasts
+// for the life of the process.
+var clientLogsOptedOut atomic.Bool
+
+// disableTailscaleClientLogs is what optOutOfClientLogs switches off; tests
+// replace it, because the real switches cannot be undone in their process.
+var disableTailscaleClientLogs = func() {
+	logtail.Disable()
+	envknob.SetNoLogsNoSupport()
+}
+
+// optOutOfClientLogs stops tsnet from uploading its client logs to Tailscale
+// (v11). tsnet's own logger checks neither TS_NO_LOGS_NO_SUPPORT nor any
+// option: it reads only whether it runs in a test. So the sidecar throws the
+// two process-wide switches tailscaled's --no-logs-no-support throws, which
+// is also what the control server's DisableLogTail does: logtail.Disable()
+// stops every upload, and envknob.SetNoLogsNoSupport() tells the control
+// server so through Hostinfo. It must run before srv.Start(). A tailnet with
+// network flow logs on refuses such a node (see loggingRequired). There is no
+// way back within the process: a later start that asks for uploads keeps
+// them off.
+func optOutOfClientLogs() {
+	if clientLogsOptedOut.Swap(true) {
+		return
+	}
+	disableTailscaleClientLogs()
+}
+
+// loggingRequired reports an opted-out node on a tailnet that requires client
+// logs (v11). Network flow logs grant the node the data-plane-audit-logs
+// capability, and tsnet then stops a node that has NoLogsNoSupport set: it
+// turns WantRunning off with the health error "tailnet requires logging to be
+// enabled". The capability is read from Self, which keeps the last network map
+// after the node stops.
+func loggingRequired(status *ipnstate.Status) bool {
+	return clientLogsOptedOut.Load() && status != nil && status.Self != nil &&
+		status.Self.CapMap.Contains(tailcfg.CapabilityDataPlaneAuditLogs)
+}
+
+// logoutTimeout bounds tsnet:logout's LocalAPI call. The core gives up after
+// its own, longer bound and stops the node either way.
+const logoutTimeout = 10 * time.Second
+
+// loggedOutData is the tsnet:loggedOut payload (v11).
+type loggedOutData struct {
+	RequestID string `json:"requestId,omitempty"`
+}
+
+// handleLogout signs the node out of its tailnet (v11): the control server
+// expires the node key, so the device no longer shows as signed in, and an
+// ephemeral node is removed. It does not stop the node; the core stops it
+// next. Answered with tsnet:loggedOut, or a tsnet:error carrying the
+// command's requestId.
+func (s *shim) handleLogout(data json.RawMessage) {
+	requestID := requestIDOf(data)
+	srv := s.getServer()
+	if srv == nil {
+		s.sendErrorFor("NOT_RUNNING", "node not running", requestID)
+		return
+	}
+	lc, err := s.localClientFor(srv)
+	if err != nil {
+		s.sendErrorFor("LOGOUT_ERROR", fmt.Sprintf("failed to get local client: %v", err), requestID)
+		return
+	}
+	s.logout(s.lifecycleCtx(), lc, requestID)
+}
+
+// logout is handleLogout's call and answer with the LocalAPI client passed
+// in, so a test can drive it against a fake LocalAPI. It does not block the
+// command loop.
+func (s *shim) logout(lifecycle context.Context, lc *local.Client, requestID string) {
+	go func() {
+		defer s.recoverPanic("handleLogout")
+		ctx, cancel := context.WithTimeout(lifecycle, logoutTimeout)
+		defer cancel()
+		if err := lc.Logout(ctx); err != nil {
+			s.sendErrorFor("LOGOUT_ERROR", err.Error(), requestID)
+			return
+		}
+		s.sendEvent("tsnet:loggedOut", loggedOutData{RequestID: requestID})
+	}()
+}
+
+// versionResultData is the tsnet:versionResult payload (v11).
+type versionResultData struct {
+	RequestID            string `json:"requestId,omitempty"`
+	ProtocolVersion      int    `json:"protocolVersion"`
+	TailscaleVersion     string `json:"tailscaleVersion"`
+	TailscaleVersionLong string `json:"tailscaleVersionLong"`
+}
+
+// handleVersion answers what this sidecar speaks and embeds (v11). It needs no
+// node, so a core can ask before tsnet:start — and must, for a start option an
+// older sidecar would ignore (clientLogUpload): an older one answers
+// UNKNOWN_CMD instead.
+func (s *shim) handleVersion(data json.RawMessage) {
+	short, long := tailscaleVersions()
+	s.sendEvent("tsnet:versionResult", versionResultData{
+		RequestID:            requestIDOf(data),
+		ProtocolVersion:      sidecarProtocolVersion,
+		TailscaleVersion:     short,
+		TailscaleVersionLong: long,
+	})
+}
+
+// tailscaleVersions is the embedded Tailscale release ("1.104.1", the module's
+// own VERSION.txt) and the version string the node reports to its control
+// server (version.Long(): for an embedder like this one,
+// "1.104.1-dev<date>-g<this repo's commit>").
+func tailscaleVersions() (short, long string) {
+	return strings.TrimSpace(tailscaleroot.VersionDotTxt), version.Long()
 }
 
 // sendEvent writes a JSON event to stdout.
@@ -3773,10 +4044,11 @@ func (s *shim) sendStatus(state, hostname, dnsName, tailscaleIP, errMsg, loginNa
 
 // emitStatus sends a status payload as eventType (tsnet:status or
 // tsnet:started), stamped with what every status carries: the protocol
-// version and this lifecycle's control URL.
+// version, this lifecycle's control URL and the embedded Tailscale version.
 func (s *shim) emitStatus(eventType string, d statusData) {
 	d.ProtocolVersion = sidecarProtocolVersion
 	d.ControlURL = s.getControlURL()
+	d.TailscaleVersion, d.TailscaleVersionLong = tailscaleVersions()
 	s.sendEvent(eventType, d)
 }
 

@@ -455,6 +455,120 @@ pub enum NetworkStatusEvent {
         /// The process exit code; `None` when a signal ended it.
         exit_code: Option<i32>,
     },
+    /// The node's Tailscale backend changed state after it came up.
+    ///
+    /// The one to act on is [`BackendState::NeedsLogin`]: the node's key
+    /// expired, or an admin removed or logged out the device in the console,
+    /// and it is off the tailnet until someone logs it in again. Since
+    /// sidecar protocol 11 a change arrives within about a second; older
+    /// sidecars notice it at their next once-a-minute check.
+    BackendStateChanged {
+        /// The new state.
+        state: BackendState,
+    },
+    /// The tailnet requires client logging, and this node opted out of it
+    /// with [`NodeBuilder::client_log_upload(false)`](crate::NodeBuilder::client_log_upload)
+    /// (sidecar protocol 11).
+    ///
+    /// A tailnet with network flow logs on refuses a node that does not send
+    /// Tailscale its client logs: Tailscale stops the node rather than run it
+    /// unlogged, and records that it should stay down. While `start()` waits,
+    /// it fails right away; a node already running when an admin turns flow
+    /// logs on stops. Either way it stays down until the node is built again:
+    /// with uploads allowed, or after the tailnet's flow logs are turned off.
+    /// Tell the user which.
+    LoggingRequired,
+    /// Tailnet Lock is on and this node's key is not signed, so the node is
+    /// locked out (sidecar protocol 11).
+    ///
+    /// Unlike [`NeedsApproval`](Self::NeedsApproval), a locked-out node does
+    /// come up — `start()` returns — but it reaches no peer, and no peer
+    /// reaches it, until a signing node signs its key (`tailscale lock sign`).
+    /// Raised before `start()` returns when the node starts unsigned, and
+    /// whenever it becomes unsigned later. [`Signed`](Self::Signed) follows
+    /// once it is signed.
+    NeedsSignature,
+    /// A node that [needed a signature](Self::NeedsSignature) is no longer
+    /// locked out: a signing node signed it, or Tailnet Lock was turned off
+    /// (sidecar protocol 11).
+    Signed,
+}
+
+/// A Tailscale backend state (Tailscale's `ipn.State`), as
+/// [`NetworkStatusEvent::BackendStateChanged`] reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BackendState {
+    /// The backend has not started.
+    NoState,
+    /// The node must log in: its key expired, or it was logged out or
+    /// removed in the admin console.
+    NeedsLogin,
+    /// The node waits for an admin to approve it (device approval).
+    NeedsMachineAuth,
+    /// The node is stopped. A node that opted out of client logging on a
+    /// tailnet that requires them is stopped (see
+    /// [`NetworkStatusEvent::LoggingRequired`]).
+    Stopped,
+    /// The node is connecting.
+    Starting,
+    /// The node is on the tailnet.
+    Running,
+    /// A state this version of truffle does not know, as Tailscale named it.
+    Other(String),
+}
+
+impl BackendState {
+    /// Read Tailscale's name for a state (`ipn.State.String()`).
+    pub fn from_wire(state: &str) -> BackendState {
+        match state {
+            "NoState" => BackendState::NoState,
+            "NeedsLogin" => BackendState::NeedsLogin,
+            "NeedsMachineAuth" => BackendState::NeedsMachineAuth,
+            "Stopped" => BackendState::Stopped,
+            "Starting" => BackendState::Starting,
+            "Running" => BackendState::Running,
+            other => BackendState::Other(other.to_string()),
+        }
+    }
+
+    /// Tailscale's name for the state.
+    pub fn as_str(&self) -> &str {
+        match self {
+            BackendState::NoState => "NoState",
+            BackendState::NeedsLogin => "NeedsLogin",
+            BackendState::NeedsMachineAuth => "NeedsMachineAuth",
+            BackendState::Stopped => "Stopped",
+            BackendState::Starting => "Starting",
+            BackendState::Running => "Running",
+            BackendState::Other(other) => other,
+        }
+    }
+}
+
+/// The Tailscale client a node's sidecar embeds (sidecar protocol 11).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct TailscaleVersion {
+    /// The Tailscale release, e.g. `1.104.1`: what to show a person, and
+    /// what to compare when Tailscale's admin console says a client is out
+    /// of date.
+    pub version: String,
+    /// The full version string the node reports to its control server, as
+    /// the admin console lists it, e.g. `1.104.1-dev20261020-g0123abcd`
+    /// (the suffix names the embedding build, not a Tailscale build).
+    pub long: String,
+}
+
+impl TailscaleVersion {
+    /// Read the sidecar's pair; `None` when it did not name a release.
+    pub(crate) fn from_wire(version: Option<&str>, long: Option<&str>) -> Option<TailscaleVersion> {
+        let version = version.map(str::trim).filter(|v| !v.is_empty())?;
+        Some(TailscaleVersion {
+            version: version.to_string(),
+            long: long.map(str::trim).unwrap_or_default().to_string(),
+        })
+    }
 }
 
 /// When a node's key expires.

@@ -581,6 +581,7 @@ fn gated_config(
         idle_timeout_secs: None,
         start_timeout: Some(truffle_core::network::tailscale::DEFAULT_START_TIMEOUT),
         login_allow,
+        client_log_upload: true,
     }
 }
 
@@ -763,4 +764,69 @@ async fn test_gated_pair_reports_only_matching_login() {
     let _ = blocked.stop().await;
     let _ = allowed.stop().await;
     let _ = beta.stop().await;
+}
+
+// ---------------------------------------------------------------------------
+// Protocol 11: logout signs the node out, and its peer sees it go
+// ---------------------------------------------------------------------------
+
+/// The live witness for logout: alpha signs out, and beta, still running,
+/// sees it go. The test nodes are ephemeral by default, and the control
+/// server removes an ephemeral node AT its logout, so beta must drop alpha
+/// altogether within a minute; a plain stop only takes it offline (Tailscale
+/// removes an offline ephemeral node much later). A non-ephemeral run
+/// (`TRUFFLE_TEST_EPHEMERAL=0`) can only see alpha offline, which a stop
+/// also does, so it is reported but not taken as proof. On the way, the
+/// real sidecar names its Tailscale client and reports no Tailnet Lock.
+#[tokio::test]
+async fn test_logout_signs_the_node_out_of_the_tailnet() {
+    let Some(authkey) = common::require_authkey("test_logout_signs_the_node_out_of_the_tailnet")
+    else {
+        return;
+    };
+    common::init_test_tracing();
+
+    let pair = common::make_pair_of_nodes(&authkey).await;
+
+    let version = pair
+        .alpha
+        .tailscale_version()
+        .expect("a protocol 11 sidecar names its Tailscale client");
+    assert_eq!(
+        version.version.split('.').count(),
+        3,
+        "a release number: {version:?}"
+    );
+    assert!(version.long.starts_with(&version.version), "{version:?}");
+    assert_eq!(
+        pair.alpha.needs_signature(),
+        Some(false),
+        "the test tailnet runs without Tailnet Lock"
+    );
+
+    timeout(Duration::from_secs(30), pair.alpha.logout())
+        .await
+        .expect("logout is bounded")
+        .expect("the control server takes the logout");
+    assert_eq!(pair.alpha.health().await.state, "stopped");
+
+    let alpha = pair.alpha_hostname.clone();
+    let ephemeral = common::test_ephemeral();
+    let gone = wait_until(Duration::from_secs(60), async || {
+        let peers = pair.beta.peers().await;
+        match peers.iter().find(|p| p.hostname == alpha) {
+            None => true,
+            Some(row) => !ephemeral && !row.online,
+        }
+    })
+    .await;
+    assert!(
+        gone,
+        "beta still lists alpha a minute after its logout (ephemeral: {ephemeral})"
+    );
+    if !ephemeral {
+        eprintln!("  [logout] non-ephemeral: alpha is offline; removal is not observable here");
+    }
+
+    pair.stop().await;
 }

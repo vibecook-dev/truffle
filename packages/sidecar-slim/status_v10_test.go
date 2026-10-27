@@ -190,7 +190,7 @@ func TestMonitorStateResendsRunningStatusWhenKeyExpiryMoves(t *testing.T) {
 	defer s.cancel()
 	s.writer = json.NewEncoder(events)
 	s.setControlURL(ipn.DefaultControlURL)
-	go s.monitorStateEvery(ctx, lc, "myhost", "2030-01-01T00:00:00Z", 10*time.Millisecond)
+	go s.monitorStateEvery(ctx, lc, "myhost", "2030-01-01T00:00:00Z", nil, 10*time.Millisecond)
 
 	var expiries []string
 	timeout := time.After(10 * time.Second)

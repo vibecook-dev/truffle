@@ -317,7 +317,7 @@ func TestMonitorStateExitsAcrossRestart(t *testing.T) {
 	// 60s tick would touch lc.
 	done := make(chan struct{})
 	go func() {
-		s.monitorState(ctx, nil, "", "")
+		s.monitorState(ctx, nil, "", "", nil)
 		close(done)
 	}()
 
@@ -466,12 +466,13 @@ func TestShouldWrapTLS(t *testing.T) {
 // event (protocol.rs StatusEventData.protocol_version, camelCase, integer).
 // The pin is deliberate: v5 = loginName; v6 = authenticated UDP; v7 = egress;
 // v8 = follow-up "running" status once the self login is known; v9 = capMap,
-// tags and userId on WhoIs identities + proxy acceptAppCaps.
+// tags and userId on WhoIs identities + proxy acceptAppCaps; v10 = controlUrl
+// and keyExpiry; v11 = logout, version, the client-log opt-out, lock status.
 // Update this test AND provider.rs capability gates when bumping the version.
 // Login gating still requires v5; authenticated UDP still requires v6.
 func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
-	if sidecarProtocolVersion != 10 {
-		t.Fatalf("sidecarProtocolVersion = %d, want 10 (controlUrl on statuses, keyExpiry on running ones)", sidecarProtocolVersion)
+	if sidecarProtocolVersion != 11 {
+		t.Fatalf("sidecarProtocolVersion = %d, want 11 (logout, version, the client-log opt-out, lock status)", sidecarProtocolVersion)
 	}
 
 	var buf bytes.Buffer
@@ -479,7 +480,7 @@ func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
 	s.sendStatus("running", "host", "host.tail.ts.net", "100.64.0.1", "", "")
 
 	// The core matches the camelCase key exactly, as a JSON integer.
-	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":10`)) {
+	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":11`)) {
 		t.Errorf("status payload missing protocolVersion on the wire: %s", strings.TrimSpace(buf.String()))
 	}
 

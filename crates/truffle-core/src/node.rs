@@ -1571,6 +1571,50 @@ impl Node<TailscaleProvider> {
     pub fn control_server(&self) -> Option<crate::network::ControlServer> {
         self.network.control_server()
     }
+
+    /// The Tailscale client the node's sidecar embeds: the release to show
+    /// a person ([`TailscaleVersion::version`], e.g. `1.104.1`) and the
+    /// string the admin console lists. `None` with a sidecar older than
+    /// protocol 11.
+    ///
+    /// [`TailscaleVersion::version`]: crate::network::TailscaleVersion::version
+    pub fn tailscale_version(&self) -> Option<crate::network::TailscaleVersion> {
+        self.network.tailscale_version()
+    }
+
+    /// Whether Tailnet Lock has this node locked out: it runs, but reaches no
+    /// peer until a signing node signs it. Changes also arrive as
+    /// [`NetworkStatusEvent::NeedsSignature`] and
+    /// [`NetworkStatusEvent::Signed`]. `None` with a sidecar older than
+    /// protocol 11.
+    pub fn needs_signature(&self) -> Option<bool> {
+        self.network.needs_signature()
+    }
+
+    /// Sign this device out of its tailnet, then stop the node.
+    ///
+    /// [`stop`](Self::stop) leaves the device signed in: its key stays valid
+    /// until it expires (180 days by default), and the admin console keeps
+    /// listing it. `logout` asks the control server to expire the key first,
+    /// so the device no longer counts as signed in (an ephemeral node is
+    /// removed), and then stops the node as `stop` does. The node's state
+    /// directory keeps nothing that logs it back in.
+    ///
+    /// Bounded: if the control server does not take the logout within
+    /// [`LOGOUT_TIMEOUT`](crate::network::tailscale::LOGOUT_TIMEOUT) (the
+    /// device is offline, say), the node is stopped anyway and the error says
+    /// the logout did not happen. Needs sidecar protocol 11; on an older
+    /// sidecar it returns [`NetworkError::Unsupported`](crate::network::NetworkError::Unsupported)
+    /// and leaves the node running, so the caller can decide.
+    pub async fn logout(&self) -> Result<(), NodeError> {
+        self.ensure_not_stopped()?;
+        let outcome = self.network.logout().await;
+        if matches!(outcome, Err(crate::network::NetworkError::Unsupported(_))) {
+            return outcome.map_err(NodeError::Network);
+        }
+        self.stop().await;
+        outcome.map_err(NodeError::Network)
+    }
 }
 
 impl<N: NetworkProvider + 'static> Drop for Node<N> {
@@ -1663,6 +1707,8 @@ pub struct NodeBuilder {
     /// RFC 025 §3.1: `loginName` globs of the tailnet users whose nodes may
     /// be peers. Empty = the whole tailnet.
     login_allow: Vec<String>,
+    /// Whether tsnet uploads its client logs to Tailscale (the default).
+    client_log_upload: bool,
     /// Receives the node's own network status changes from the start of
     /// `build()` (see [`NodeBuilder::on_network_status`]).
     on_network_status: Option<NetworkStatusHandler>,
@@ -1810,6 +1856,7 @@ impl Default for NodeBuilder {
             start_timeout: Some(crate::network::tailscale::DEFAULT_START_TIMEOUT),
             eager_identity: true,
             login_allow: Vec::new(),
+            client_log_upload: true,
             on_network_status: None,
         }
     }
@@ -1964,6 +2011,27 @@ impl NodeBuilder {
         self
     }
 
+    /// Whether the embedded Tailscale client uploads its client logs to
+    /// Tailscale (`log.tailscale.com`). Default: `true`, as Tailscale's own
+    /// clients do — Tailscale support reads them.
+    ///
+    /// `false` keeps them on the device: the sidecar stops tsnet's log
+    /// uploader before tsnet starts and tells the control server the node
+    /// runs without logs, as `tailscaled --no-logs-no-support` does. Two
+    /// consequences:
+    ///
+    /// - A tailnet with network flow logs on refuses such a node: `build()`
+    ///   fails, and [`NetworkStatusEvent::LoggingRequired`] says why (a node
+    ///   already running when an admin turns flow logs on stops, with the
+    ///   same event).
+    /// - It needs a sidecar speaking protocol 11, which an older one would
+    ///   silently ignore, so `build()` asks the sidecar's version first and
+    ///   refuses an older sidecar before anything starts.
+    pub fn client_log_upload(mut self, upload: bool) -> Self {
+        self.client_log_upload = upload;
+        self
+    }
+
     /// Call `handler` with this node's own network status changes
     /// ([`NetworkStatusEvent`]) from the moment `build()` starts the
     /// network until the node is dropped — including the conditions that
@@ -1986,6 +2054,14 @@ impl NodeBuilder {
     /// [`NetworkStatusEvent::KeyExpiryKnown`] when the node comes up and
     /// whenever its key expiry moves, and
     /// [`NetworkStatusEvent::SidecarExited`] if the node dies under you.
+    ///
+    /// Since protocol 11, [`NetworkStatusEvent::NeedsSignature`] arrives
+    /// before `build()` returns when Tailnet Lock has the node locked out
+    /// ([`NetworkStatusEvent::Signed`] once a signing node signs it),
+    /// [`NetworkStatusEvent::BackendStateChanged`] within about a second of
+    /// a sign-out (`NeedsLogin`), and [`NetworkStatusEvent::LoggingRequired`]
+    /// when a tailnet refuses a node built with
+    /// [`client_log_upload(false)`](Self::client_log_upload).
     ///
     /// The handler runs on a tokio task; keep it short and non-blocking.
     /// Works with both [`build`](Self::build) and
@@ -2127,6 +2203,7 @@ impl NodeBuilder {
             idle_timeout_secs: self.idle_timeout_secs,
             start_timeout: self.start_timeout,
             login_allow: self.login_allow.clone(),
+            client_log_upload: self.client_log_upload,
         })
     }
 
