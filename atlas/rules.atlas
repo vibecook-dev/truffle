@@ -144,7 +144,7 @@ rule hostname-from-identity "By default a node's hostname is truffle-{appId}-{sl
   require text "\"truffle-\"" in file:apple/Sources/Truffle/Identity/Slug.swift
   see "docs/rfcs/017-identity-and-namespacing.md#4-design-two-namespaces"
   see "docs/rfcs/024-truffle-swift.md#72-tailscale-hostname"
-  see "crates/truffle-core/src/node.rs#L2059-L2060"
+  see "crates/truffle-core/src/node.rs#L2135-L2136"
 }
 
 rule apps-isolated "Discovery admits only truffle-{appId}- hostnames, and the hello refuses another app's id" {
@@ -154,7 +154,7 @@ rule apps-isolated "Discovery admits only truffle-{appId}- hostnames, and the he
   require text "HelloValidationError.appMismatch(" in file:apple/Sources/Truffle/Wire/HelloEnvelope.swift
   see "docs/rfcs/017-identity-and-namespacing.md#4-design-two-namespaces"
   see "docs/rfcs/017-identity-and-namespacing.md#8-wire-protocol-peer-metadata-exchange"
-  see "crates/truffle-core/src/network/tailscale/provider.rs#L887-L890"
+  see "crates/truffle-core/src/network/tailscale/provider.rs#L1125-L1128"
 }
 
 rule device-id-honest "deviceId is a ULID or absent, never a Tailscale id in its place" {
@@ -253,7 +253,7 @@ rule shim-speaks-no-mesh-protocol "The Go shim embeds tsnet and knows none of tr
 
 rule no-fixed-sidecar-listener "The sidecar hardcodes neither the session port 9417 nor the v1 :443 listener" {
   forbid text "9417", "\":443\"" in $shim
-  see "packages/sidecar-slim/main.go#L1259-L1263"
+  see "packages/sidecar-slim/main.go#L1309-L1313"
   see "docs/rfcs/023-http-serving.md#43-the-port-443-fossil"
   see "docs/rfcs/023-http-serving.md#81-port-443-reclamation"
 }
