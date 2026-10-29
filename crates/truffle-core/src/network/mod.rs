@@ -32,6 +32,11 @@ pub enum NetworkTrust {
     UnverifiedLoopback,
 }
 
+// @atlas contract network-provider "Layer 3: the swappable network provider" {
+//   implemented-by crate:truffle-core
+//   note sym:truffle_core::network::tailscale::TailscaleProvider "The only production implementor; every MockNetworkProvider is test code."
+//   see "docs/rfcs/012-layered-architecture-redesign.md#35-layer-3-network"
+// }
 /// Provides network-level peer discovery and raw connectivity.
 ///
 /// The primary implementation is [`TailscaleProvider`](tailscale::TailscaleProvider)

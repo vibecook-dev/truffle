@@ -26,6 +26,11 @@ pub struct Slice<T> {
 // SyncMessage — wire protocol for store synchronization
 // ---------------------------------------------------------------------------
 
+// @atlas contract sync-wire "SyncedStore wire messages on namespace \"ss:{id}\"" {
+//   produced-by crate:truffle-core each-variant
+//   see "docs/rfcs/016-synced-store-and-request-reply.md#wire-protocol"
+//   see "docs/rfcs/025-login-scoped-nodes.md#35-sender-bound-slices-tf-2"
+// }
 /// Wire protocol messages sent on namespace `"ss:{store_id}"`.
 ///
 /// Uses `serde_json::Value` for the data field to keep this type non-generic.

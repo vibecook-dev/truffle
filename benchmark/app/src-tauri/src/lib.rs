@@ -11,6 +11,12 @@
 //!
 //! Closing the window hides it (macOS); the hub keeps answering peers until
 //! the app quits, and quitting cancels runs and stops the hub within 5 s.
+//!
+//! @atlas layer bench · domain bench
+//! @atlas rule bench-app-drives-the-engine "One engine: the desktop app is a shell that drives truffle-bench" {
+//!   require this -> crate:truffle-bench
+//!   see "docs/rfcs/027-benchmark-hub.md#2-goals"
+//! }
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -1,0 +1,321 @@
+// Cross-cutting rules. A rule whose scope is one unpublished crate lives in that crate's root
+// (`grep -rn '@atlas rule' crates benchmark`); the crates.io crates (truffle-core, truffle, truffle-sidecar) carry
+// no atlas text on docs.rs, and truffle-cli has no crate doc, so their rules live here with `crate:` scopes. Every
+// rule cites where truffle states it. Checks see production code only (no tests, cargo benches or cargo examples,
+// cfg(test) code or dev-dependencies; the example apps under examples/ are production).
+// Never weaken a rule to make it pass: fix the code. An `except <selector> "real reason"` or a wider `only` list
+// changes the design: that is the user's call.
+
+rule layers-point-down "Each layer builds only on the layers below it" {
+  layered
+  see "docs/rfcs/012-layered-architecture-redesign.md#2-architecture-overview"
+  see "CLAUDE.md#architecture"
+}
+
+rule core-depends-on-no-crate "truffle-core depends on no other workspace crate" {
+  only crate:truffle-core -> nothing on code, manifest
+  see "docs/rfcs/012-layered-architecture-redesign.md#2-architecture-overview"
+  see "crates/truffle/src/lib.rs#L38-L41"
+}
+
+rule peers-from-layer-3 "Layer 3 is the source of truth for peers: no announce protocol" {
+  forbid text "device-announce" in crate:truffle-core
+  see "CLAUDE.md#architecture"
+  see "docs/rfcs/012-layered-architecture-redesign.md#35-layer-3-network"
+}
+
+rule no-star-or-election "No primary election and no STAR routing through a hub: the mesh is peer to peer" {
+  forbid text "Election", "DeviceRole", "ViaPrimary" in crate:truffle-core
+  forbid text "\"election-", "\"route-message\"", "\"route-broadcast\"" in crate:truffle-core
+  see "docs/rfcs/010-p2p-and-cli-redesign.md#21-what-gets-deleted"
+  see "docs/rfcs/010-p2p-and-cli-redesign.md#11-rationale-why-not-keep-election-as-optional"
+}
+
+rule network-knows-no-upper-layer "Layer 3 knows no transport protocol, session, envelope or Node" {
+  deny layer:network -> layer:transport, layer:session, layer:envelope, layer:node-api
+  deny layer:network -> ext:tokio-tungstenite, ext:quinn
+  see "docs/rfcs/012-layered-architecture-redesign.md#35-layer-3-network"
+}
+
+rule transport-knows-no-session "Layer 4 knows no peers, sessions or envelopes, and dials through Layer 3" {
+  deny layer:transport -> layer:session, layer:envelope, layer:node-api
+  require layer:transport -> layer:network
+  see "docs/rfcs/012-layered-architecture-redesign.md#34-layer-4-transport"
+}
+
+rule transports-independent "Each transport implementation is independent" {
+  independent mod:truffle_core::transport::{websocket, tcp, udp, quic}
+  see "docs/rfcs/012-layered-architecture-redesign.md#34-layer-4-transport"
+}
+
+rule session-knows-no-payload "Layer 5 knows no namespaces or envelopes; it consumes Layer 3 and delegates to Layer 4" {
+  deny layer:session -> layer:envelope, layer:node-api
+  require layer:session -> layer:network
+  require layer:session -> layer:transport
+  see "docs/rfcs/012-layered-architecture-redesign.md#33-layer-5-session"
+}
+
+rule envelope-knows-no-transport "Layer 6 knows no transport and names no application namespace" {
+  deny layer:envelope -> layer:transport, layer:network
+  deny layer:envelope -> ext:tokio-tungstenite, ext:quinn
+  forbid text "\"mesh\"", "\"device-announce\"", "\"file-transfer\"" in layer:envelope
+  see "docs/rfcs/012-layered-architecture-redesign.md#32-layer-6-envelope"
+}
+
+rule bridge-is-private "Layers 1-2 are invisible outside TailscaleProvider" {
+  deny *, !mod:truffle_core::network::tailscale -> mod:truffle_core::network::tailscale::{bridge, header, protocol, sidecar}
+  except mod:truffle_core::node -> sym:truffle_core::network::tailscale::BridgeStats "Node::bridge_stats exposes the bridge's delivery and drop counters (protocol 10, #218), which the tailscale module documents as public"
+  see "docs/rfcs/012-layered-architecture-redesign.md#36-layers-1-2-bridge--sidecar-internal-to-tailscaleprovider"
+  see "docs/rfcs/012-layered-architecture-redesign.md#10-success-criteria"
+  see "crates/truffle-core/src/network/tailscale/mod.rs#L16-L17"
+}
+
+rule apps-use-node-api "Applications reach the mesh through the Node API only, never a lower layer" {
+  deny layer:apps -> layer:network, layer:transport, layer:session, layer:envelope
+  see "docs/rfcs/012-layered-architecture-redesign.md#31-layer-7-application"
+  see "docs/rfcs/012-layered-architecture-redesign.md#4-the-node-api"
+}
+
+rule bindings-wrap-core "The bindings wrap truffle-core's Node and no other workspace crate" {
+  only crate:truffle-napi, crate:truffle-tauri-plugin -> crate:truffle-core on code, manifest
+  see "docs/rfcs/015-binding-rewrite.md#3-current-node-api-what-bindings-must-wrap"
+}
+
+rule meta-crate-is-thin "truffle is a thin re-export of truffle-core plus the bundled sidecar" {
+  only crate:truffle -> crate:truffle-core, crate:truffle-sidecar on code, manifest
+  see "CLAUDE.md#crates"
+  see "crates/truffle/src/lib.rs#L5-L7"
+}
+
+// Manifests and Cargo.lock are config to Atlas, so these two rules check the release scripts that police them.
+rule release-lockstep "The release check holds the crates, the npm packages and both lockfiles to one version" {
+  require text "'packages/core/package.json'", "'packages/react/package.json'", "'crates/truffle-napi/package.json'" in file:scripts/check-release-versions.mjs
+  require text "'crates/truffle-napi/npm/", "'npm/truffle-sidecar-" in file:scripts/check-release-versions.mjs
+  require text "'crates/truffle/Cargo.toml'", "'crates/truffle-core/Cargo.toml'", "'crates/truffle-sidecar/Cargo.toml'" in file:scripts/check-release-versions.mjs
+  require text "'crates/truffle-cli/Cargo.toml'", "'crates/truffle-napi/Cargo.toml'" in file:scripts/check-release-versions.mjs
+  require text "read('Cargo.lock')", "'crates/truffle-napi/package-lock.json'" in file:scripts/check-release-versions.mjs
+  see "docs/RELEASING.md#release-contract"
+  see "docs/RELEASING.md#normal-release"
+}
+
+rule sidecar-fail-closed "The release gate pins a SHA-256 for every tsnet-sidecar asset, and the npm installer refuses any other" {
+  require text "validateReleaseChecksums(" in file:scripts/check-release-versions.mjs
+  require text "/^[0-9a-f]{64}$/", "sidecar checksum maps disagree" in file:scripts/release-checksums.mjs
+  require text "[checksums] missing asset" in file:scripts/update-sidecar-checksums.mjs
+  require text "expected = requireExpectedChecksum(", "assertChecksum(actual, expected, `" in file:packages/core/scripts/postinstall.cjs
+  require text "Refusing to download an unverified executable" in file:packages/core/scripts/postinstall.cjs
+  see "docs/RELEASING.md#release-contract"
+  see "packages/core/scripts/postinstall.cjs#L6-L14"
+  see "scripts/update-sidecar-checksums.mjs#L46-L47"
+}
+
+rule namespaces-owned "Each subsystem owns its namespace" {
+  forbid text "\"ft\"" in crate:truffle-core, !mod:truffle_core::file_transfer
+  forbid text "\"ss:" in crate:truffle-core, !mod:truffle_core::synced_store
+  forbid text "\"chat\"" in crate:truffle-core
+  forbid text "\"ft\"", "'ft'", "\"ss:", "'ss:", "`ss:" in layer:apps
+  see "CLAUDE.md#architecture"
+  see "CLAUDE.md#key-conventions"
+  see "docs/rfcs/012-layered-architecture-redesign.md#31-layer-7-application"
+}
+
+rule subsystems-send-typed "Subsystems send with send_typed and broadcast_typed, never another send method" {
+  forbid text "node.send(", "node.broadcast(", "allow(deprecated)" in $subsystems
+  forbid text ".send_json(", ".send_bytes(", ".broadcast_json(", ".broadcast_bytes(" in $subsystems
+  see "CLAUDE.md#architecture"
+}
+
+rule request-reply-over-node "Request/reply is a free function over Node, not a Node method" {
+  deny mod:truffle_core::node -> mod:truffle_core::request_reply
+  require mod:truffle_core::request_reply -> mod:truffle_core::node
+  see "docs/rfcs/016-synced-store-and-request-reply.md#31-requestreply-utility"
+}
+
+rule websocket-stays-internal "No native user-facing WebSocket: websocket.rs stays the internal envelope pipe" {
+  deny *, !crate:truffle-core -> mod:truffle_core::transport::websocket
+  see "docs/rfcs/021-raw-transport-js-api.md#12-decided-questions"
+}
+
+// Identity, peers and the login gate (RFC 017, 022, 025), in both engines. Text checks scoped to a `sym:` search
+// only that function: renaming it dangles the rule, so fix the selector with the rename.
+rule hostname-from-identity "By default a node's hostname is truffle-{appId}-{slug}, built by each engine's identity code" {
+  require mod:truffle_core::node -> sym:truffle_core::identity::tailscale_hostname
+  require text "\"truffle-\"" in mod:truffle_core::identity
+  require text "\"truffle-\"" in file:apple/Sources/Truffle/Identity/Slug.swift
+  see "docs/rfcs/017-identity-and-namespacing.md#4-design-two-namespaces"
+  see "docs/rfcs/024-truffle-swift.md#72-tailscale-hostname"
+  see "crates/truffle-core/src/node.rs#L2135-L2136"
+}
+
+rule apps-isolated "Discovery admits only truffle-{appId}- hostnames, and the hello refuses another app's id" {
+  require text "\"truffle-{app_id}-\"" in sym:truffle_core::network::tailscale::provider::is_app_peer
+  require text "TransportError::AppMismatch" in sym:truffle_core::transport::websocket::validate_hello
+  require text "guard Hostname.isAppPeer(" in file:apple/Sources/Truffle/Mesh/MeshNode.swift
+  require text "HelloValidationError.appMismatch(" in file:apple/Sources/Truffle/Wire/HelloEnvelope.swift
+  see "docs/rfcs/017-identity-and-namespacing.md#4-design-two-namespaces"
+  see "docs/rfcs/017-identity-and-namespacing.md#8-wire-protocol-peer-metadata-exchange"
+  see "crates/truffle-core/src/network/tailscale/provider.rs#L1125-L1128"
+}
+
+rule device-id-honest "deviceId is a ULID or absent, never a Tailscale id in its place" {
+  require text "pub device_id: Option<String>," in sym:truffle_core::Peer
+  require text "distinct from tailscale_id" in sym:truffle_core::transport::websocket::validate_hello
+  require text "get deviceId(): string | null" in file:packages/core/src/peer.ts
+  see "docs/rfcs/022-peer-handle-api.md#61-peer-handle"
+  see "docs/rfcs/022-peer-handle-api.md#73-projection-honesty"
+  see "crates/truffle-core/src/transport/websocket.rs#L259-L260"
+}
+
+rule from-is-the-connection "Inbound messages are attributed to the connection's WhoIs-verified Tailscale id, never the envelope's own from" {
+  require text "from: from_tailscale_id" in sym:truffle_core::session::spawn_connection_task
+  require text "from: msg.from" in sym:truffle_core::node::Node::spawn_envelope_router
+  forbid text "envelope.from" in crate:truffle-core
+  require text "getByTailscaleId(raw.from)" in file:packages/core/src/create-mesh-node.ts
+  see "docs/rfcs/022-peer-handle-api.md#75-message-path"
+  see "crates/truffle-core/src/session/mod.rs#L1914-L1915"
+}
+
+rule peer-handles-interned "The JS mesh node hands out Peer handles through PeerRegistry" {
+  require file:packages/core/src/create-mesh-node.ts -> sym:packages/core/src/peer.ts#PeerRegistry
+  see "docs/rfcs/022-peer-handle-api.md#76-same-instance-guarantee"
+  see "packages/core/src/peer.ts#L7-L9"
+}
+
+rule login-gate-at-admission-and-hello "The login allow-list gates Layer 3 admission and the inbound hello, in both engines" {
+  require mod:truffle_core::network::tailscale::provider -> sym:truffle_core::network::login_allow::login_allowed
+  require mod:truffle_core::transport::websocket -> sym:truffle_core::network::login_allow::login_allowed
+  require text "guard LoginGlob.allowed(" in file:apple/Sources/Truffle/Mesh/MeshNode.swift
+  require text "guard LoginGlob.allowed(" in file:apple/Sources/Truffle/Session/Handshake.swift
+  see "docs/rfcs/025-login-scoped-nodes.md#33-layer-3--the-login-is-a-peer-fact"
+  see "docs/rfcs/025-login-scoped-nodes.md#34-layer-45--the-hello-gate"
+  see "docs/rfcs/024-truffle-swift.md#812-login-gate-rfc-025-2026-09-16"
+}
+
+rule store-slices-bound-to-sender "A synced-store slice or Clear counts only under its sender's device id, which also keys a departed peer's slice" {
+  require text "sender_owns(", "\"slice\")", "\"clear\")" in sym:truffle_core::synced_store::sync::handle_incoming_message
+  require text "node.peer_device_id(from)" in sym:truffle_core::synced_store::sync::sender_owns
+  require text "published_device_id()" in mod:truffle_core::synced_store::sync
+  see "docs/rfcs/025-login-scoped-nodes.md#35-sender-bound-slices-tf-2"
+  see "crates/truffle-core/src/synced_store/sync.rs#L139-L143"
+}
+
+rule no-http-stack-on-data-path "No axum, no hyper for the data path" {
+  forbid text "axum", "hyper" in crate:truffle-core, path:crates/truffle-cli/src/daemon/
+  see "docs/rfcs/012-layered-architecture-redesign.md#94-why-raw-tcp-for-file-transfer-instead-of-http"
+  see "docs/rfcs/012-layered-architecture-redesign.md#10-success-criteria"
+  see "crates/truffle-cli/src/daemon/mod.rs#L7"
+}
+
+rule serve-engine-in-go "Directories and other processes are served by the Go engine; mesh.serve only configures it" {
+  require text "httputil.ReverseProxy", "http.ServeContent", "\"Tailscale-User-Login\"" in file:packages/sidecar-slim/main.go
+  deny file:packages/core/src/serve.ts -> file:packages/core/src/{net, http, ws}.ts
+  see "docs/rfcs/023-http-serving.md#5-design-overview"
+  see "docs/rfcs/023-http-serving.md#12-decisions"
+  see "packages/core/src/serve.ts#L5-L10"
+}
+
+rule proxy-discovery-inert "Serve discovery stays inert until RFC 023 Phase 5: nothing calls proxy::discovery" {
+  deny * -> mod:truffle_core::proxy::discovery
+  see "docs/rfcs/023-http-serving.md#12-decisions"
+  see "docs/rfcs/023-http-serving.md#11-implementation-plan"
+  see "crates/truffle-core/src/proxy/types.rs#L44-L47"
+}
+
+rule native-is-internal "@vibecook/truffle-native is an implementation detail behind @vibecook/truffle" {
+  deny *, !pkg:@vibecook/truffle -> pkg:@vibecook/truffle-native
+  see "docs/API-STABILITY.md#from-10"
+  see "crates/truffle-napi/README.md#vibecooktruffle-native"
+}
+
+rule tailscalekit-below-product "Only TruffleTailscale (RFC 024 Layers 0-1) imports TailscaleKit" {
+  forbid text "import TailscaleKit" in path:apple/Sources/Truffle/, path:apple/Sources/TruffleSwiftUI/, path:apple/Examples/
+  see "apple/Package.swift#L4-L6"
+  see "docs/rfcs/024-truffle-swift.md#51-layering-maps-to-rfc-012-apple-runtime"
+  see "docs/rfcs/024-truffle-swift.md#53-package-layout-proposed"
+  see "apple/README.md#package-layout"
+}
+
+rule egress-loopback-only "Every egress listener binds 127.0.0.1" {
+  forbid text "0.0.0.0", "\":0\"", "[::]" in file:packages/sidecar-slim/egress.go
+  require text "\"127.0.0.1:0\"" in file:packages/sidecar-slim/egress.go
+  see "docs/rfcs/026-egress.md#2-decision"
+}
+
+rule shim-speaks-no-mesh-protocol "The Go shim embeds tsnet and knows none of truffle's own protocol" {
+  require text "\"tailscale.com/tsnet\"" in $shim
+  forbid text "msg_type", "device_id", "\"/ws\"" in $shim
+  forbid text "\"ft\"", "\"ss:" in $shim
+  see "docs/rfcs/003-rust-rewrite.md#context"
+  see "docs/rfcs/003-rust-rewrite.md#6-what-stays-go"
+  see "docs/rfcs/012-layered-architecture-redesign.md#35-layer-3-network"
+  see "packages/sidecar-slim/main.go#L7"
+}
+
+rule no-fixed-sidecar-listener "The sidecar hardcodes neither the session port 9417 nor the v1 :443 listener" {
+  forbid text "9417", "\":443\"" in $shim
+  see "packages/sidecar-slim/main.go#L1309-L1313"
+  see "docs/rfcs/023-http-serving.md#43-the-port-443-fossil"
+  see "docs/rfcs/023-http-serving.md#81-port-443-reclamation"
+}
+
+rule bench-keys-from-env "Benchmark auth keys never come from argv, only from a key file, the environment or the app's sign-in form" {
+  require text "\"TRUFFLE_BENCH_AUTH_KEY\"", "\"TRUFFLE_TEST_AUTHKEY\"", "\"TS_AUTHKEY\"" in crate:truffle-bench
+  require text "env::var(\"TRUFFLE_TEST_AUTHKEY\")" in path:benchmark/engine/src/legacy/
+  require text "env::var(\"TRUFFLE_BENCH_AUTH_KEY\")" in crate:truffle-bench-app
+  require text "os.Getenv(\"TRUFFLE_TEST_AUTHKEY\")" in file:packages/sidecar-slim/cmd/tsnet-bench/main.go
+  // No argv parser takes the key: no clap field or flag for it, and no clap `env` binding, which accepts argv too.
+  forbid text "auth_key:", "\"auth-key\"", "\"authkey\"" in file:benchmark/engine/src/{cli.rs, legacy/transport.rs}
+  forbid text "env = \"TRUFFLE_BENCH_AUTH_KEY\"", "env = \"TRUFFLE_TEST_AUTHKEY\"", "env = \"TS_AUTHKEY\"" in file:benchmark/engine/src/{cli.rs, legacy/transport.rs}
+  forbid text "authkey:" in file:benchmark/engine/src/cli.rs
+  forbid text "\"--auth-key", "\"--authkey", "\"--key" in file:benchmark/app/src-tauri/src/state.rs
+  forbid text "authkey\"", "auth-key\"", "auth_key\"" in file:packages/sidecar-slim/cmd/tsnet-bench/main.go
+  see "CLAUDE.md#benchmarks"
+  see "benchmark/engine/src/cli.rs#L6-L7"
+  see "docs/rfcs/027-benchmark-hub.md#10-cli"
+  see "docs/tailscale-performance.md#measuring-the-tailscale-stack"
+  see "docs/rfcs/019-local-testing-and-benchmarking.md#5-environment-contract"
+}
+
+rule bench-ui-renders-text-only "The bench app renders peer and report strings as text only" {
+  forbid text "dangerouslySetInnerHTML" in pkg:@vibecook/truffle-bench-app
+  see "docs/rfcs/027-benchmark-hub.md#114-identity-rules"
+}
+
+rule windows-key-press "The TUI handles only KeyEventKind::Press (crossterm emits Press and Release on Windows)" {
+  // Key events are read in two files; each filters Press, and no other kind is handled anywhere.
+  require text "KeyEventKind::Press" in file:crates/truffle-cli/src/tui/event.rs
+  require text "KeyEventKind::Press" in file:crates/truffle-cli/src/tui/onboarding.rs
+  forbid text "KeyEventKind::Release", "KeyEventKind::Repeat" in crate:truffle-cli
+  forbid text "event::read()", "EventStream" in crate:truffle-cli, !file:crates/truffle-cli/src/tui/{event, onboarding}.rs
+  see "CLAUDE.md#key-conventions"
+  see "crates/truffle-cli/src/tui/event.rs#L73-L74"
+}
+
+rule daemon-ipc-is-local "CLI and daemon talk over a Unix socket (a named pipe on Windows), never a TCP port" {
+  require file:crates/truffle-cli/src/daemon/server.rs -> file:crates/truffle-cli/src/daemon/ipc.rs
+  require file:crates/truffle-cli/src/daemon/client.rs -> file:crates/truffle-cli/src/daemon/ipc.rs
+  require text "UnixListener", "UnixStream", "named_pipe" in file:crates/truffle-cli/src/daemon/ipc.rs
+  forbid text "TcpListener", "TcpStream" in file:crates/truffle-cli/src/daemon/{ipc, server, client}.rs
+  see "docs/rfcs/010-p2p-and-cli-redesign.md#16-appendix-b-decision-log"
+  see "docs/rfcs/010-p2p-and-cli-redesign.md#142-windows-deferred"
+  see "crates/truffle-cli/src/daemon/ipc.rs#L1-L4"
+}
+
+rule commands-are-daemon-clients "The daemon owns the Node; one-shot commands are its JSON-RPC clients" {
+  require file:crates/truffle-cli/src/daemon/server.rs -> mod:truffle_core::node
+  // up.rs is left out: `truffle up --foreground`, which `truffle up` re-execs, is the daemon.
+  deny path:crates/truffle-cli/src/commands/, file:crates/truffle-cli/src/daemon/client.rs,
+    !file:crates/truffle-cli/src/commands/up.rs -> crate:truffle-core, file:crates/truffle-cli/src/daemon/{server, handler}.rs
+  require path:crates/truffle-cli/src/commands/ -> file:crates/truffle-cli/src/daemon/client.rs
+  see "docs/rfcs/010-p2p-and-cli-redesign.md#32-daemon-architecture"
+  see "docs/rfcs/013-tui-redesign.md#2-vision"
+  see "crates/truffle-cli/src/daemon/mod.rs#L3-L4"
+}
+
+rule tui-hosts-the-daemon "The TUI starts DaemonServer in-process and reads the Node directly" {
+  require path:crates/truffle-cli/src/tui/ -> file:crates/truffle-cli/src/daemon/server.rs
+  require path:crates/truffle-cli/src/tui/ -> mod:truffle_core::node
+  see "docs/rfcs/013-tui-redesign.md#3-architecture-decision-tui--foreground-daemon"
+  see "docs/rfcs/013-tui-redesign.md#phase-a1-skeleton--terminal--daemon--static-layout"
+  see "crates/truffle-cli/src/tui/mod.rs#L3-L4"
+}

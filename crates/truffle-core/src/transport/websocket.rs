@@ -475,6 +475,7 @@ async fn server_hello_exchange(
 impl<N: NetworkProvider + 'static> StreamTransport for WebSocketTransport<N> {
     type Stream = WsFramedStream;
 
+    // @atlas step send.dial
     async fn connect(&self, addr: &PeerAddr) -> Result<Self::Stream, TransportError> {
         // Step 1: Dial TCP via Layer 3
         let dial_addr = resolve_dial_addr(addr);
@@ -537,6 +538,7 @@ impl<N: NetworkProvider + 'static> StreamTransport for WebSocketTransport<N> {
         ))
     }
 
+    // @atlas step send.accept
     async fn listen(&self) -> Result<StreamListener<Self::Stream>, TransportError> {
         let port = self.config.port;
         tracing::debug!(port, "ws: starting listener");
@@ -953,6 +955,7 @@ async fn heartbeat_loop(
 }
 
 impl FramedStream for WsFramedStream {
+    // @atlas step send.frame
     async fn send(&mut self, data: &[u8]) -> Result<(), TransportError> {
         if self.closed.load(Ordering::Acquire) {
             return Err(TransportError::ConnectionClosed(

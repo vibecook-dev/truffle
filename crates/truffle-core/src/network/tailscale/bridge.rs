@@ -283,6 +283,7 @@ impl Bridge {
         }
     }
 
+    // @atlas step send.handoff
     /// Handle a single incoming bridge connection.
     async fn handle_connection(
         mut stream: TcpStream,
