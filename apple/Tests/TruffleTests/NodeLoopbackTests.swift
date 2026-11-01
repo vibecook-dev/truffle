@@ -804,6 +804,36 @@ struct PongDroppingTransport: FrameTransport {
         await alice.stop()
     }
 
+    /// T8: a peer that announces this app's `Hostinfo.App` tag is admitted
+    /// whatever its name; a foreign tag under our prefix is not, and an
+    /// untagged row outside the prefix is not (the fallback).
+    @Test func aTaggedPeerIsAdmittedByItsTagNotItsName() async throws {
+        let network = LoopbackNetwork()
+        let (alice, dirA) = try await startNode(
+            network: network, tailscaleId: "ts-a", deviceName: "Alice")
+        defer { try? FileManager.default.removeItem(at: dirA) }
+
+        _ = await network.join(
+            tailscaleId: "ts-studio", hostname: "vibefield-studio", app: "truffle:demo")
+        _ = await network.join(
+            tailscaleId: "ts-foreign", hostname: "truffle-demo-mallory", app: "truffle:chat")
+        _ = await network.join(tailscaleId: "ts-untagged", hostname: "vibefield-old")
+        try await alice.refresh()
+
+        let studio = try await alice.peer("ts-studio", waitMs: 1_000)
+        #expect(studio != nil)
+        #expect(try await alice.peer("ts-foreign") == nil)
+        #expect(try await alice.peer("ts-untagged") == nil)
+
+        // The untagged row becomes ours once it announces the tag (an
+        // upgraded peer).
+        await network.setApp(tailscaleId: "ts-untagged", app: "truffle:demo")
+        try await alice.refresh()
+        #expect(try await alice.peer("ts-untagged", waitMs: 1_000) != nil)
+
+        await alice.stop()
+    }
+
     /// HIGH-1 (found on review): the gate must run on every row, not only at
     /// entry creation. A stable node ID survives a device transfer, so a
     /// re-signed node arrives as an UPDATE to the existing row — and before

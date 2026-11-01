@@ -94,6 +94,35 @@ public enum Hostname {
         return hostname.count > expected.count && hostname.hasPrefix(expected)
     }
 
+    // MARK: app membership (T8)
+
+    /// The prefix of the tag a truffle node announces in `Hostinfo.App`.
+    public static let appTagPrefix = "truffle:"
+
+    /// The tag a node of `appId` announces in `Hostinfo.App`: `truffle:{appId}`.
+    public static func appTag(appId: String) -> String {
+        "\(appTagPrefix)\(appId)"
+    }
+
+    /// Whether one Layer 3 row belongs to this app (T8). Mirrors
+    /// `provider.rs::is_app_row`.
+    ///
+    /// A row that carries a tag decides by it: `Hostinfo.App` must be exactly
+    /// `truffle:{appId}`, whatever the hostname, so a peer may carry an
+    /// app-chosen prefix and a node of another app under the same prefix
+    /// stays out. A row with no tag (a peer before sidecar protocol 12, or a
+    /// backend that could not read it) falls back to the `truffle-{appId}-`
+    /// prefix (`isAppPeer`). An empty tag is the same fact as none.
+    ///
+    /// The tag is the peer's own claim, exactly as its hostname is: it widens
+    /// nothing a same-tailnet node could not already claim by its name.
+    public static func isAppRow(hostname: String, app: String?, appId: String) -> Bool {
+        if let app, !app.isEmpty {
+            return app == appTag(appId: appId)
+        }
+        return isAppPeer(hostname: hostname, appId: appId)
+    }
+
     // MARK: helpers
 
     /// Transliterate to ASCII via CoreFoundation's Latin transform, then

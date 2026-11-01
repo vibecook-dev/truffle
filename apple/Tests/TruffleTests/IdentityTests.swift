@@ -262,3 +262,29 @@ import Testing
         }
     }
 }
+
+/// T8: app membership from the `Hostinfo.App` tag, the prefix as fallback.
+/// Mirrors `provider.rs::is_app_row`.
+@Suite struct HostnameAppRowTests {
+    @Test func aPresentTagDecidesWhateverTheHostname() {
+        #expect(Hostname.isAppRow(hostname: "vibefield-studio", app: "truffle:demo", appId: "demo"))
+        // A tag naming another app is not ours, even under our prefix.
+        #expect(!Hostname.isAppRow(hostname: "truffle-demo-alice", app: "truffle:chat", appId: "demo"))
+        // A tag that is not truffle's at all is not ours either.
+        #expect(!Hostname.isAppRow(hostname: "truffle-demo-alice", app: "golinks", appId: "demo"))
+        // A same-prefix node of a different app is NOT admitted.
+        #expect(!Hostname.isAppRow(hostname: "vibefield-bob", app: "truffle:chat", appId: "demo"))
+    }
+
+    @Test func noTagFallsBackToThePrefix() {
+        #expect(Hostname.isAppRow(hostname: "truffle-demo-alice", app: nil, appId: "demo"))
+        #expect(!Hostname.isAppRow(hostname: "vibefield-studio", app: nil, appId: "demo"))
+        // An empty tag is the same fact as none.
+        #expect(Hostname.isAppRow(hostname: "truffle-demo-alice", app: "", appId: "demo"))
+        #expect(!Hostname.isAppRow(hostname: "truffle-chat-alice", app: "", appId: "demo"))
+    }
+
+    @Test func theTagIsTruffleColonAppId() {
+        #expect(Hostname.appTag(appId: "demo") == "truffle:demo")
+    }
+}

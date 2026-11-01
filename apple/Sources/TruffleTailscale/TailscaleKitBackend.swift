@@ -21,6 +21,8 @@
         private var subscribers: [UUID: AsyncStream<BackendEvent>.Continuation] = [:]
         private var latest = BackendStatus()
         private var stopped = false
+        /// Each peer's `Hostinfo.App` (T8), read once per node ID and hostname.
+        private var peerApps = PeerAppCache()
 
         public init(configuration: MeshConfiguration) {
             self.config = configuration
@@ -178,16 +180,35 @@
                 displayName: decoded.displayName)
         }
 
-        /// The tailnet logins for the current netmap (RFC 025 §3.3), read
-        /// from the same status endpoint TailscaleKit reads — with a decoder
-        /// that keeps `UserID`, which its binding drops. See
+        /// The status rows for the current netmap, read from the same status
+        /// endpoint TailscaleKit reads — with a decoder that keeps what its
+        /// binding drops: `UserID`, for the tailnet logins (RFC 025 §3.3), and
+        /// `NodeID`, for the peers' app tags (T8). See
         /// `LocalAPIIdentity.swift` for why this cannot come from
         /// `IpnState.Status`.
-        private func statusLogins() async throws -> LoginOverlay {
+        private func statusRows() async throws -> LocalAPIStatusLogins {
             let data = try await localAPIGet(
                 path: "/localapi/v0/status", queryItems: nil, label: "status")
-            return LoginOverlay(
-                try JSONDecoder().decode(LocalAPIStatusLogins.self, from: data))
+            return try JSONDecoder().decode(LocalAPIStatusLogins.self, from: data)
+        }
+
+        /// T8: read the `Hostinfo.App` of every peer the cache has no answer
+        /// for (`GET /localapi/v0/peer-by-id`). A failed read records nothing
+        /// and is asked again at the next refresh; meanwhile the row has no
+        /// tag and its hostname prefix decides.
+        private func readPeerApps(_ rows: LocalAPIStatusLogins) async {
+            peerApps.prune(to: rows)
+            for lookup in peerApps.lookups(for: rows) {
+                guard !stopped else { return }
+                guard
+                    let data = try? await localAPIGet(
+                        path: "/localapi/v0/peer-by-id",
+                        queryItems: [URLQueryItem(name: "id", value: String(lookup.nodeID))],
+                        label: "peer-by-id"),
+                    let answer = try? JSONDecoder().decode(PeerNodeAppAnswer.self, from: data)
+                else { continue }
+                peerApps.record(lookup, app: answer.app)
+            }
         }
 
         /// One authenticated GET against this node's LocalAPI loopback.
@@ -326,9 +347,13 @@
             // The logins TailscaleKit's status binding drops (RFC 025 §3.3).
             // A failed read leaves them nil — absent, never fabricated; a
             // gated node then admits nobody, which is the fail-closed answer.
-            if let overlay = try? await statusLogins() {
-                mapped = overlay.applied(to: mapped)
+            if let rows = try? await statusRows() {
+                mapped = LoginOverlay(rows).applied(to: mapped)
+                await readPeerApps(rows)
             }
+            // T8: each peer's app tag, which decides app membership ahead of
+            // the hostname prefix (`Hostname.isAppRow`).
+            mapped = peerApps.applied(to: mapped)
             if emitChange, mapped != latest { emit(.status(mapped)) }
             if let authURL = mapped.authURL.flatMap(URL.init(string:)) {
                 emit(.authRequired(authURL))

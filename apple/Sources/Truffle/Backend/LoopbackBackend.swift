@@ -19,6 +19,9 @@ public actor LoopbackNetwork {
         /// backend that cannot report one — the gate's fail-closed row.
         var loginName: String?
         var displayName: String?
+        /// The node's announced `Hostinfo.App` (T8); `nil` models a node
+        /// (or a backend) that reports none.
+        var app: String?
         /// Hidden nodes can dial and are WhoIs-resolvable but never appear
         /// in snapshots or join announcements — simulates an inbound hello
         /// racing ahead of the netmap (RFC 024 §7.2).
@@ -52,19 +55,24 @@ public actor LoopbackNetwork {
         nodes[tailscaleId]?.loginName = loginName
     }
 
+    /// Change a registered node's announced `Hostinfo.App` after `join` (T8).
+    public func setApp(tailscaleId: String, app: String?) {
+        nodes[tailscaleId]?.app = app
+    }
+
     /// Register a node and return its backend. `hostname` should follow the
     /// `truffle-{appId}-{slug}` scheme for discovery (RFC 024 §7.2).
     /// `hidden` nodes stay out of snapshots/announcements (raced-netmap
     /// simulation) until `reveal(tailscaleId:)`.
     public func join(
         tailscaleId: String, hostname: String, hidden: Bool = false,
-        loginName: String? = nil, displayName: String? = nil
+        loginName: String? = nil, displayName: String? = nil, app: String? = nil
     ) -> LoopbackBackend {
         let ip = "100.64.0.\(nextIP)"
         nextIP += 1
         let node = Node(
             tailscaleId: tailscaleId, hostname: hostname, ip: ip, online: true,
-            loginName: loginName, displayName: displayName, hidden: hidden)
+            loginName: loginName, displayName: displayName, app: app, hidden: hidden)
         nodes[tailscaleId] = node
         let backend = LoopbackBackend(network: self, tailscaleId: tailscaleId, ip: ip)
         nodes[tailscaleId]?.backend = backend
@@ -109,7 +117,8 @@ public actor LoopbackNetwork {
             dnsName: "\(node.hostname).loopback.ts.net",
             tailnetIPs: [node.ip],
             online: node.online,
-            loginName: node.loginName)
+            loginName: node.loginName,
+            app: node.app)
     }
 
     func snapshot(for selfId: String) -> BackendStatus {
