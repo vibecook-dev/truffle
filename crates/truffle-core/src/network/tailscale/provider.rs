@@ -292,6 +292,18 @@ pub(crate) const KEY_EXPIRY_PROTOCOL_VERSION: u32 = 10;
 /// embedded Tailscale version.
 pub(crate) const LOGOUT_PROTOCOL_VERSION: u32 = 11;
 
+/// The sidecar protocol that sets `Hostinfo.App` from `tsnet:start`'s `app`
+/// and reports each peer's `Hostinfo.App` as `app` on its rows (T8).
+pub(crate) const APP_TAG_PROTOCOL_VERSION: u32 = 12;
+
+/// The prefix of the app tag a truffle node announces in `Hostinfo.App`.
+pub(crate) const APP_TAG_PREFIX: &str = "truffle:";
+
+/// The app tag a node of `app_id` announces in `Hostinfo.App`: `truffle:{app_id}`.
+pub(crate) fn app_tag(app_id: &str) -> String {
+    format!("{APP_TAG_PREFIX}{app_id}")
+}
+
 /// How long [`TailscaleProvider::logout`] waits for the control server to
 /// take the logout before it stops the node anyway (the sidecar's own bound
 /// is 10 s).
@@ -486,7 +498,7 @@ impl TailscaleProvider {
         app_id: &str,
         login_allow: &[String],
     ) -> RowVerdict {
-        if !is_app_peer(&peer.hostname, app_id) {
+        if !is_app_row(&peer.hostname, peer.app.as_deref(), app_id) {
             return RowVerdict::NotOurApp;
         }
         if login_allow.is_empty() {
@@ -1129,9 +1141,32 @@ impl TailscaleProvider {
 /// has no trailing slug is rejected — we require at least one character
 /// after the separator so that `truffle-playground-` (empty slug edge)
 /// cannot masquerade as a real peer.
+///
+/// T8: this is the fallback for a row with no `Hostinfo.App` tag; a tagged
+/// row is decided by [`is_app_row`].
 pub(crate) fn is_app_peer(hostname: &str, app_id: &str) -> bool {
     let prefix = format!("truffle-{app_id}-");
     hostname.len() > prefix.len() && hostname.starts_with(&prefix)
+}
+
+/// Whether one sidecar row belongs to this app (T8).
+///
+/// A row that carries a tag decides by it: `Hostinfo.App` must be exactly
+/// `truffle:{app_id}`, whatever the hostname, so an app may choose its own
+/// prefix and a node of another app under the same prefix stays out. A row
+/// with no tag (a sidecar below protocol 12, or a peer that announces no
+/// app) falls back to the `truffle-{app_id}-` hostname prefix
+/// ([`is_app_peer`]). An empty tag is the same fact as none.
+///
+/// The tag is the peer's own claim, exactly as its hostname is: it widens
+/// nothing a same-tailnet node could not already claim by its name.
+pub(crate) fn is_app_row(hostname: &str, app: Option<&str>, app_id: &str) -> bool {
+    match app.filter(|a| !a.is_empty()) {
+        Some(tag) => tag
+            .strip_prefix(APP_TAG_PREFIX)
+            .is_some_and(|id| id == app_id),
+        None => is_app_peer(hostname, app_id),
+    }
 }
 
 /// What one sidecar peer row means under the node's login gate (RFC 025 §3.3).
@@ -1225,6 +1260,9 @@ impl super::super::NetworkProvider for TailscaleProvider {
             tags: self.config.tags.clone(),
             idle_timeout_secs: self.config.idle_timeout_secs,
             client_log_upload: (!self.config.client_log_upload).then_some(false),
+            // T8: always announced. A sidecar below protocol 12 ignores it,
+            // and peers then know this node by its hostname alone.
+            app: Some(app_tag(&self.config.app_id)),
         };
 
         // Spawn the sidecar
@@ -1327,6 +1365,26 @@ impl super::super::NetworkProvider for TailscaleProvider {
                     tracing::error!("{e}");
                     let _ = self.stop().await;
                     return Err(e);
+                }
+
+                // T8: a name outside `truffle-{app_id}-` is recognised by the
+                // tag alone, and a sidecar below protocol 12 cannot announce
+                // it. Say so; the node itself runs (peers it can see are
+                // unaffected), as an explicit hostname always has.
+                let version = self
+                    .sidecar_protocol_version
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                if version < APP_TAG_PROTOCOL_VERSION
+                    && !is_app_peer(&self.config.hostname, &self.config.app_id)
+                {
+                    tracing::warn!(
+                        hostname = %self.config.hostname,
+                        protocol = version,
+                        "peers of this app will not recognise this node: its hostname \
+                         is outside truffle-{}- and its sidecar cannot announce \
+                         Hostinfo.App (protocol {APP_TAG_PROTOCOL_VERSION})",
+                        self.config.app_id
+                    );
                 }
 
                 // Fetch initial peer list
@@ -2617,6 +2675,7 @@ mod login_gate_tests {
             key_expiry: None,
             expired: false,
             login_name: login.map(Into::into),
+            app: None,
         }
     }
 
@@ -4194,6 +4253,31 @@ done"#,
         let sent = commands(&log);
         assert_eq!(sent[..2], ["tsnet:version", "tsnet:start"]);
         assert!(sent.iter().any(|c| c == "tsnet:logout"), "{sent:?}");
+    }
+
+    /// T8: every start announces the node's app tag, so a peer can admit it
+    /// by `Hostinfo.App` whatever its hostname. The tag is `truffle:{app_id}`.
+    #[tokio::test]
+    async fn the_start_carries_the_app_tag() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("commands.log");
+        let script = v11_script(dir.path(), &log, RUNNING_V11, "      :");
+        let mut provider = TailscaleProvider::new(config(script, dir.path()));
+        tokio::time::timeout(START_GUARD, provider.start())
+            .await
+            .expect("start must complete")
+            .expect("start");
+        let start_line = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .find(|l| l.contains(r#""tsnet:start""#))
+            .expect("a tsnet:start line")
+            .to_string();
+        let _ = provider.stop().await;
+        assert!(
+            start_line.contains(r#""app":"truffle:playground""#),
+            "the app tag rides tsnet:start: {start_line}"
+        );
     }
 
     /// An older sidecar would ignore the opt-out and upload anyway, so it is

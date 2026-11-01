@@ -42,6 +42,9 @@ pub(crate) struct SidecarConfig {
     /// `Some(false)` stops tsnet's client-log upload (protocol 11); `None`
     /// keeps Tailscale's default.
     pub client_log_upload: Option<bool>,
+    /// The app tag the sidecar sets as `Hostinfo.App` before it starts
+    /// (protocol 12), `truffle:{app_id}`.
+    pub app: Option<String>,
 }
 
 /// Manual `Debug`: `auth_key` (tailnet credential) and `session_token_hex`
@@ -59,6 +62,7 @@ impl std::fmt::Debug for SidecarConfig {
             .field("tags", &self.tags)
             .field("idle_timeout_secs", &self.idle_timeout_secs)
             .field("client_log_upload", &self.client_log_upload)
+            .field("app", &self.app)
             .finish()
     }
 }
@@ -864,6 +868,7 @@ impl GoSidecar {
             tags: config.tags.clone(),
             idle_timeout_secs: config.idle_timeout_secs,
             client_log_upload: config.client_log_upload,
+            app: config.app.clone(),
         };
         self.send_command(SidecarCommand {
             command: command_type::START,
@@ -1150,6 +1155,7 @@ mod config_debug_tests {
             tags: None,
             idle_timeout_secs: None,
             client_log_upload: None,
+            app: None,
         };
         let dbg = format!("{config:?}");
         assert!(!dbg.contains("SECRET123"));
@@ -1269,6 +1275,7 @@ mod pid_tests {
             tags: None,
             idle_timeout_secs: None,
             client_log_upload: None,
+            app: None,
         }
     }
 
