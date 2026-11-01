@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.25](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.24...truffle-v0.7.25) (2026-11-01)
+
+
+### Features
+
+* **apple:** read peers' Hostinfo.App and admit by the tag first (T8, the Swift read half) ([#245](https://github.com/vibecook-dev/truffle/issues/245)) ([6d57b60](https://github.com/vibecook-dev/truffle/commit/6d57b60c586ae43e61aa9148ae67c954896f13be))
+* **core:** an app-chosen hostname prefix, with app membership from Hostinfo.App (sidecar protocol 12) ([#243](https://github.com/vibecook-dev/truffle/issues/243)) ([3ae234e](https://github.com/vibecook-dev/truffle/commit/3ae234e9c9f1c8e86af97580108c24b2ab17eb27))
+
 ## [0.7.24](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.23...truffle-v0.7.24) (2026-10-27)
 
 

@@ -1,6 +1,6 @@
 {
   "name": "@vibecook/truffle-native-darwin-x64",
-  "version": "0.7.24",
+  "version": "0.7.25",
   "cpu": [
     "x64"
   ],
