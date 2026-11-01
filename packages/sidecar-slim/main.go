@@ -40,6 +40,7 @@ import (
 	"tailscale.com/client/local"
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/envknob"
+	"tailscale.com/hostinfo"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/logtail"
@@ -107,6 +108,11 @@ type startData struct {
 	// Tailscale (v11; see optOutOfClientLogs). nil or true keeps Tailscale's
 	// default, which is to upload them.
 	ClientLogUpload *bool `json:"clientLogUpload,omitempty"`
+	// App is the node's app tag (v12), "truffle:{app_id}", set as
+	// Hostinfo.App before the server starts so control relays it to every
+	// peer, which admits this node by it rather than by its hostname. Empty
+	// clears it.
+	App string `json:"app,omitempty"`
 }
 
 type dialData struct {
@@ -153,11 +159,15 @@ type dialResultData struct {
 // can lead to, every status carries tailscaleVersion and tailscaleVersionLong,
 // tsnet:lockStatus (Tailnet Lock) when the node first runs and on every change,
 // and backend state changes (tsnet:stateChange) are seen through the IPN bus
-// within a second rather than at the next minute's poll.
+// within a second rather than at the next minute's poll; v12 = tsnet:start's
+// app sets the node's Hostinfo.App ("truffle:{app_id}", T8), and every peer
+// row (tsnet:peers, tsnet:peerChanged) carries app, the peer's Hostinfo.App
+// as control relays it (absent when the peer announces none), so the core
+// admits peers by that tag rather than by the hostname prefix.
 // An absent value makes the core treat the sidecar as v1.
 // Bump on any addition to the command surface the core must not send blind,
 // or to an event the core relies on.
-const sidecarProtocolVersion = 11
+const sidecarProtocolVersion = 12
 
 type statusData struct {
 	State       string `json:"state"`
@@ -215,6 +225,9 @@ type peerInfo struct {
 	// Tailscale's "tagged-devices" pseudo-user; an unknown user id omits the
 	// field entirely rather than guessing.
 	LoginName string `json:"loginName,omitempty"`
+	// App is the peer's Hostinfo.App as control relayed it (v12): a truffle
+	// node announces "truffle:{app_id}". Omitted when the peer announces none.
+	App string `json:"app,omitempty"`
 }
 
 type peersData struct {
@@ -758,6 +771,7 @@ type shim struct {
 	bridgePort   uint16
 	idleTimeout  time.Duration // bridged-conn idle-reap deadline (RFC 021 §6.5)
 	controlURL   string        // coordination server of this lifecycle (v10)
+	apps         peerAppCache  // each peer's Hostinfo.App (v12); its own lock
 	ctx          context.Context
 	cancel       context.CancelFunc
 
@@ -1164,6 +1178,9 @@ func (s *shim) handleStart(data json.RawMessage) {
 	if d.ClientLogUpload != nil && !*d.ClientLogUpload {
 		optOutOfClientLogs()
 	}
+	// v12: the app tag, before srv.Start() sends the first Hostinfo.
+	applyApp(d.App)
+	s.apps.reset()
 
 	srv := &tsnet.Server{
 		Hostname:  d.Hostname,
@@ -1521,7 +1538,9 @@ func (s *shim) handleGetPeers() {
 
 		peers := make([]peerInfo, 0, len(status.Peer))
 		for _, peer := range status.Peer {
-			peers = append(peers, statusPeerToInfo(peer, status.User))
+			pi := statusPeerToInfo(peer, status.User)
+			pi.App = s.apps.appFor(ctx, peer.NodeID, lc.PeerByID)
+			peers = append(peers, pi)
 		}
 
 		s.sendEvent("tsnet:peers", peersData{Peers: peers})
@@ -1934,6 +1953,7 @@ func (s *shim) startPeerWatch(lc *local.Client) {
 			current := make(map[string]peerInfo, len(newStatus.Peer))
 			for _, peer := range newStatus.Peer {
 				pi := statusPeerToInfo(peer, newStatus.User)
+				pi.App = s.apps.appFor(ctx, peer.NodeID, lc.PeerByID)
 				current[pi.ID] = pi
 			}
 			if !seeded {
@@ -2016,6 +2036,9 @@ func (s *shim) startPeerWatch(lc *local.Client) {
 						len(n.PeersChanged) == 0 && len(n.PeersRemoved) == 0 && len(n.PeerChangedPatch) == 0 {
 						continue
 					}
+					// v12: full nodes carry Hostinfo; fold them in before the
+					// diff they trigger reads the cache.
+					s.apps.observe(&n)
 					select {
 					case notifyCh <- struct{}{}:
 					default:
@@ -2045,6 +2068,87 @@ func (s *shim) startPeerWatch(lc *local.Client) {
 			}
 		}
 	}()
+}
+
+// applyApp sets the process's Hostinfo.App (v12), which tsnet sends to
+// control with the rest of the Hostinfo and control relays to every peer
+// (measured on a real tailnet, T8: a peer's row keeps App, Hostname, OS and
+// Services; Package is stripped). hostinfo.SetApp is process-wide, which is
+// right here: one sidecar process carries one node. It must run before
+// srv.Start(); an empty app clears a previous start's.
+func applyApp(app string) {
+	hostinfo.SetApp(app)
+}
+
+// peerAppCache holds each peer's Hostinfo.App (v12). ipnstate.PeerStatus does
+// not carry it, so the first sight of a peer asks the LocalAPI for its full
+// node (PeerByID); after that the IPN bus keeps the entry current, because a
+// Hostinfo change arrives as a full node in Notify.PeersChanged.
+type peerAppCache struct {
+	mu sync.Mutex
+	m  map[tailcfg.NodeID]string
+}
+
+// observe folds one IPN bus notify into the cache: full nodes replace their
+// entry, removed peers are forgotten.
+func (c *peerAppCache) observe(n *ipn.Notify) {
+	if len(n.PeersChanged) == 0 && len(n.PeersRemoved) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.m == nil {
+		c.m = make(map[tailcfg.NodeID]string)
+	}
+	for _, node := range n.PeersChanged {
+		if node != nil {
+			c.m[node.ID] = nodeApp(node)
+		}
+	}
+	for _, id := range n.PeersRemoved {
+		delete(c.m, id)
+	}
+}
+
+// nodeApp reads a node's Hostinfo.App. A node control sent without Hostinfo
+// has an invalid view, whose accessors would dereference nil: it has no app.
+func nodeApp(node *tailcfg.Node) string {
+	if !node.Hostinfo.Valid() {
+		return ""
+	}
+	return node.Hostinfo.App()
+}
+
+// reset forgets every peer (a new start may join another tailnet).
+func (c *peerAppCache) reset() {
+	c.mu.Lock()
+	c.m = nil
+	c.mu.Unlock()
+}
+
+// appFor returns the peer's Hostinfo.App, asking fetch (LocalClient.PeerByID)
+// on a miss. A failed lookup yields "" and is not cached, so the next diff
+// asks again; the core then decides by the hostname for that row.
+func (c *peerAppCache) appFor(ctx context.Context, id tailcfg.NodeID, fetch func(context.Context, tailcfg.NodeID) (*tailcfg.Node, error)) string {
+	c.mu.Lock()
+	app, ok := c.m[id]
+	c.mu.Unlock()
+	if ok {
+		return app
+	}
+	node, err := fetch(ctx, id)
+	if err != nil || node == nil {
+		debugf("peer app lookup %v: %v", id, err)
+		return ""
+	}
+	app = nodeApp(node)
+	c.mu.Lock()
+	if c.m == nil {
+		c.m = make(map[tailcfg.NodeID]string)
+	}
+	c.m[id] = app
+	c.mu.Unlock()
+	return app
 }
 
 // loginNameForUser resolves a tailcfg.UserID through a status User map to the
@@ -2105,6 +2209,9 @@ func watchPeerChanged(old, new peerInfo) bool {
 		return true
 	}
 	if old.Hostname != new.Hostname {
+		return true
+	}
+	if old.App != new.App {
 		return true
 	}
 	if old.DNSName != new.DNSName {

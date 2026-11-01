@@ -190,6 +190,7 @@ fn command_start_serialization() {
         tags: Some(vec!["tag:truffle".to_string()]),
         idle_timeout_secs: None,
         client_log_upload: None,
+        app: None,
     };
     let cmd = SidecarCommand {
         command: command_type::START,
@@ -452,6 +453,7 @@ fn filter_app_peers_only() {
             key_expiry: None,
             expired: false,
             login_name: Some("alice@example.com".into()),
+            app: None,
         },
         // Different app — rejected.
         SidecarPeer {
@@ -469,6 +471,7 @@ fn filter_app_peers_only() {
             key_expiry: None,
             expired: false,
             login_name: Some("bob@example.com".into()),
+            app: None,
         },
         // Non-truffle host — rejected.
         SidecarPeer {
@@ -486,6 +489,7 @@ fn filter_app_peers_only() {
             key_expiry: None,
             expired: false,
             login_name: Some("carol@example.com".into()),
+            app: None,
         },
         // Empty-slug edge (`truffle-playground-` with nothing after the
         // hyphen) — rejected per `is_app_peer` requiring trailing content.
@@ -504,6 +508,7 @@ fn filter_app_peers_only() {
             key_expiry: None,
             expired: false,
             login_name: Some("alice@example.com".into()),
+            app: None,
         },
         // Another playground peer — kept.
         SidecarPeer {
@@ -521,6 +526,7 @@ fn filter_app_peers_only() {
             key_expiry: None,
             expired: false,
             login_name: Some("bob@example.com".into()),
+            app: None,
         },
     ];
 
@@ -562,6 +568,7 @@ fn peer_row(id: &str, hostname: &str, login: Option<&str>) -> SidecarPeer {
         key_expiry: None,
         expired: false,
         login_name: login.map(Into::into),
+        app: None,
     }
 }
 
@@ -1248,4 +1255,81 @@ fn udp_capability_matches_go_fixture_and_is_binding_specific() {
         token,
         super::provider::udp_relay_token(&[18; 32], "bind-123")
     );
+}
+
+// ── T8: app membership from the Hostinfo tag, the prefix as fallback ──
+
+#[test]
+fn a_present_tag_decides_membership_whatever_the_hostname() {
+    use super::provider::is_app_row;
+    // A protocol-12 peer of this app with an app-chosen prefix is ours.
+    assert!(is_app_row(
+        "vibefield-studio",
+        Some("truffle:playground"),
+        "playground"
+    ));
+    // A tag naming another app is not ours, even under our hostname prefix.
+    assert!(!is_app_row(
+        "truffle-playground-alice",
+        Some("truffle:chat"),
+        "playground"
+    ));
+    // A tag that is not truffle's at all is not ours either.
+    assert!(!is_app_row(
+        "truffle-playground-alice",
+        Some("golinks"),
+        "playground"
+    ));
+    // A same-prefix node of a different app is NOT admitted (the petition's
+    // third verification).
+    assert!(!is_app_row(
+        "vibefield-bob",
+        Some("truffle:chat"),
+        "playground"
+    ));
+}
+
+#[test]
+fn no_tag_falls_back_to_the_hostname_prefix() {
+    use super::provider::is_app_row;
+    // An older sidecar (below protocol 12) reports no tag: the prefix decides.
+    assert!(is_app_row("truffle-playground-alice", None, "playground"));
+    assert!(!is_app_row("vibefield-studio", None, "playground"));
+    // An empty tag is the same fact as none.
+    assert!(is_app_row(
+        "truffle-playground-alice",
+        Some(""),
+        "playground"
+    ));
+    assert!(!is_app_row("truffle-chat-alice", Some(""), "playground"));
+}
+
+#[test]
+fn classify_row_admits_a_tagged_peer_with_a_custom_prefix() {
+    let mut row = peer_row("node9", "vibefield-studio", Some("alice@example.com"));
+    assert_eq!(
+        TailscaleProvider::classify_row(&row, "playground", &[]),
+        super::provider::RowVerdict::NotOurApp,
+        "untagged, the custom prefix is a stranger"
+    );
+    row.app = Some("truffle:playground".into());
+    assert_eq!(
+        TailscaleProvider::classify_row(&row, "playground", &[]),
+        super::provider::RowVerdict::Allowed
+    );
+}
+
+#[test]
+fn a_peer_row_reads_app_from_the_wire() {
+    let row: SidecarPeer = serde_json::from_str(
+        r#"{"id":"n1","hostname":"vibefield-studio","dnsName":"vibefield-studio.tailnet.ts.net",
+            "tailscaleIPs":["100.64.0.2"],"online":true,"app":"truffle:playground"}"#,
+    )
+    .unwrap();
+    assert_eq!(row.app.as_deref(), Some("truffle:playground"));
+    let old: SidecarPeer = serde_json::from_str(
+        r#"{"id":"n1","hostname":"truffle-playground-a","dnsName":"x","tailscaleIPs":[],"online":true}"#,
+    )
+    .unwrap();
+    assert_eq!(old.app, None, "a protocol-11 row has no app");
 }

@@ -120,7 +120,7 @@ func TestStatusesCarryTheEmbeddedTailscaleVersion(t *testing.T) {
 	if !strings.HasPrefix(d.TailscaleVersionLong, want) {
 		t.Fatalf("tailscaleVersionLong = %q, want it to start with %q", d.TailscaleVersionLong, want)
 	}
-	if d.ProtocolVersion != 11 {
+	if d.ProtocolVersion != sidecarProtocolVersion {
 		t.Fatalf("protocolVersion = %d", d.ProtocolVersion)
 	}
 }

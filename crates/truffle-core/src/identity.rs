@@ -371,13 +371,21 @@ const DNS_LABEL_LIMIT: usize = 63;
 /// Budget computation for the slug lives here so every caller gets the same
 /// answer.
 pub fn tailscale_hostname(app_id: &AppId, device_name: &DeviceName) -> String {
-    // Budget = 63 - len("truffle-") - len(app_id) - 1 (for the separating hyphen).
-    let app_id_str = app_id.as_str();
-    let fixed_prefix_len = HOSTNAME_PREFIX.len() + app_id_str.len() + 1;
-    let budget = DNS_LABEL_LIMIT.saturating_sub(fixed_prefix_len);
+    prefixed_hostname(
+        &format!("{HOSTNAME_PREFIX}{}", app_id.as_str()),
+        device_name,
+    )
+}
 
+/// Compose `{prefix}-{slug}` (T8: an app-chosen prefix), the slug cut to what
+/// the 63-character DNS label leaves after the prefix and its hyphen.
+/// [`tailscale_hostname`] is this with the prefix `truffle-{app_id}`. The
+/// prefix is the caller's to validate (`NodeBuilder::hostname_prefix`).
+pub fn prefixed_hostname(prefix: &str, device_name: &DeviceName) -> String {
+    // Budget = 63 - len(prefix) - 1 (for the separating hyphen).
+    let budget = DNS_LABEL_LIMIT.saturating_sub(prefix.len() + 1);
     let slug_part = slug(device_name.as_str(), budget);
-    format!("{HOSTNAME_PREFIX}{app_id_str}-{slug_part}")
+    format!("{prefix}-{slug_part}")
 }
 
 // ---------------------------------------------------------------------------

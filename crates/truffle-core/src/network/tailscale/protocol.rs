@@ -56,6 +56,12 @@ pub(crate) struct StartCommandData {
     /// sidecar's version before sending it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_log_upload: Option<bool>,
+    /// The node's app tag for `Hostinfo.App` (protocol 12), `truffle:{app_id}`:
+    /// peers admit this node by it rather than by the hostname prefix. Omitted
+    /// when None; an older sidecar ignores the field, and the node is then
+    /// recognised by its hostname alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
     // NOTE: keep the manual Debug impl below in sync when adding fields.
 }
 
@@ -73,6 +79,7 @@ impl std::fmt::Debug for StartCommandData {
             .field("tags", &self.tags)
             .field("idle_timeout_secs", &self.idle_timeout_secs)
             .field("client_log_upload", &self.client_log_upload)
+            .field("app", &self.app)
             .finish()
     }
 }
@@ -485,6 +492,13 @@ pub(crate) struct SidecarPeer {
     /// admits no peer without one (`login_allowed` fails closed).
     #[serde(default)]
     pub login_name: Option<String>,
+    /// The peer's `Hostinfo.App` as control relays it (protocol 12). A truffle
+    /// node at protocol 12 announces `truffle:{app_id}`; `None` on an older
+    /// sidecar and for a peer that announces no app. When present it decides
+    /// app membership ([`super::provider::is_app_row`]); when absent the
+    /// hostname prefix does.
+    #[serde(default)]
+    pub app: Option<String>,
 }
 
 /// Data from `tsnet:peers` event.
@@ -746,6 +760,7 @@ mod tests {
             tags: None,
             idle_timeout_secs: None,
             client_log_upload: None,
+            app: None,
         };
         let cmd = SidecarCommand {
             command: command_type::START,
@@ -773,6 +788,7 @@ mod tests {
             tags: None,
             idle_timeout_secs: Some(300),
             client_log_upload: None,
+            app: None,
         };
         let json = serde_json::to_string(&data).unwrap();
         assert!(json.contains("\"idleTimeoutSecs\":300"));
@@ -790,6 +806,7 @@ mod tests {
             tags: None,
             idle_timeout_secs: None,
             client_log_upload: None,
+            app: None,
         };
         let dbg = format!("{data:?}");
         assert!(!dbg.contains("SECRET123"));

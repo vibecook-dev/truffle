@@ -348,6 +348,9 @@ pub struct Node<N: NetworkProvider + 'static> {
     stopped: std::sync::atomic::AtomicBool,
     /// Structured ownership of node-scoped background tasks.
     pub(crate) tasks: NodeTasks,
+    /// The app-chosen hostname prefix (T8), when the builder set one: a
+    /// hello-less peer named `{prefix}-{slug}` resolves by its slug.
+    hostname_prefix: Option<String>,
 }
 
 /// Structured ownership of the node's background tasks.
@@ -425,6 +428,7 @@ impl<N: NetworkProvider + 'static> Node<N> {
             proxy_state: Arc::new(crate::proxy::ProxyState::new()),
             stopped: std::sync::atomic::AtomicBool::new(false),
             tasks: NodeTasks::new(),
+            hostname_prefix: None,
         };
 
         // Spawn the envelope router task.
@@ -735,6 +739,13 @@ impl<N: NetworkProvider + 'static> Node<N> {
         self
     }
 
+    /// Record the app-chosen hostname prefix (called by the builder, T8), so
+    /// a hello-less peer named `{prefix}-{slug}` resolves by its slug.
+    pub(crate) fn with_hostname_prefix(mut self, prefix: Option<String>) -> Self {
+        self.hostname_prefix = prefix;
+        self
+    }
+
     /// Record the session WebSocket port (called by the builder) so the
     /// reserved-port guard tracks a customized `ws_port`.
     pub(crate) fn with_ws_port(mut self, port: u16) -> Self {
@@ -829,7 +840,7 @@ impl<N: NetworkProvider + 'static> Node<N> {
             .peers()
             .await
             .into_iter()
-            .map(|s| Self::project_peer(s, &app_id))
+            .map(|s| Self::project_peer(s, &app_id, self.hostname_prefix.as_deref()))
             .collect()
     }
 
@@ -850,14 +861,14 @@ impl<N: NetworkProvider + 'static> Node<N> {
     }
 
     /// Project a session [`PeerState`] to the public [`Peer`] view.
-    fn project_peer(s: PeerState, app_id: &str) -> Peer {
+    fn project_peer(s: PeerState, app_id: &str, prefix: Option<&str>) -> Peer {
         // RFC 022: `device_name` stays None until identity is known.
         // Prefer a stripped hostname slug for `display_name` when we
         // have no hello name yet (raw-transport / pre-identity peers).
         let bare = s
             .identity
             .is_none()
-            .then(|| hostname_slug(&s.name, app_id).map(str::to_string))
+            .then(|| hostname_slug(&s.name, app_id, prefix).map(str::to_string))
             .flatten();
         let mut peer = Peer::from(s);
         if let Some(bare) = bare {
@@ -897,7 +908,11 @@ impl<N: NetworkProvider + 'static> Node<N> {
         match self.resolve_peer(query).await {
             Ok(state) => {
                 let app_id = self.network.local_identity().app_id;
-                return Ok(Some(Self::project_peer(state, &app_id)));
+                return Ok(Some(Self::project_peer(
+                    state,
+                    &app_id,
+                    self.hostname_prefix.as_deref(),
+                )));
             }
             Err(NodeError::PeerNotFound(_)) => {}
             Err(e) => return Err(e),
@@ -916,7 +931,11 @@ impl<N: NetworkProvider + 'static> Node<N> {
         match self.resolve_peer(query).await {
             Ok(state) => {
                 let app_id = self.network.local_identity().app_id;
-                return Ok(Some(Self::project_peer(state, &app_id)));
+                return Ok(Some(Self::project_peer(
+                    state,
+                    &app_id,
+                    self.hostname_prefix.as_deref(),
+                )));
             }
             Err(NodeError::PeerNotFound(_)) => {}
             Err(e) => return Err(e),
@@ -932,7 +951,11 @@ impl<N: NetworkProvider + 'static> Node<N> {
                 Ok(Ok(_)) => match self.resolve_peer(query).await {
                     Ok(state) => {
                         let app_id = self.network.local_identity().app_id;
-                        return Ok(Some(Self::project_peer(state, &app_id)));
+                        return Ok(Some(Self::project_peer(
+                            state,
+                            &app_id,
+                            self.hostname_prefix.as_deref(),
+                        )));
                     }
                     Err(NodeError::PeerNotFound(_)) => continue,
                     Err(e) => return Err(e),
@@ -998,7 +1021,10 @@ impl<N: NetworkProvider + 'static> Node<N> {
         if !ref_slug.is_empty() {
             let slug_hits: Vec<&PeerState> = peers
                 .iter()
-                .filter(|p| hostname_slug(&p.name, &app_id) == Some(ref_slug.as_str()))
+                .filter(|p| {
+                    hostname_slug(&p.name, &app_id, self.hostname_prefix.as_deref())
+                        == Some(ref_slug.as_str())
+                })
                 .collect();
             if slug_hits.len() > 1 {
                 return Err(NodeError::AmbiguousPeer {
@@ -1633,11 +1659,21 @@ impl<N: NetworkProvider + 'static> Drop for Node<N> {
 
 /// The bare device-name slug from a Layer 3 hostname, when it follows this
 /// app's `truffle-{app_id}-{slug}` convention (RFC 017). `None` otherwise.
-fn hostname_slug<'a>(hostname: &'a str, app_id: &str) -> Option<&'a str> {
+///
+/// T8: under an app-chosen `prefix`, `{prefix}-{slug}` resolves too; the
+/// convention still does, for a peer on an older release.
+fn hostname_slug<'a>(hostname: &'a str, app_id: &str, prefix: Option<&str>) -> Option<&'a str> {
+    let under = |p: &str| {
+        hostname
+            .strip_prefix(p)?
+            .strip_prefix('-')
+            .filter(|slug| !slug.is_empty())
+    };
     hostname
-        .strip_prefix("truffle-")?
-        .strip_prefix(app_id)?
-        .strip_prefix('-')
+        .strip_prefix("truffle-")
+        .and_then(|rest| rest.strip_prefix(app_id))
+        .and_then(|rest| rest.strip_prefix('-'))
+        .or_else(|| prefix.and_then(under))
 }
 
 /// A valid single DNS label: 1–63 chars of `[a-z0-9-]`, lowercase, no
@@ -1699,6 +1735,8 @@ pub struct NodeBuilder {
     /// RFC 023 §6.4: explicit Tailscale hostname, bypassing the
     /// `truffle-{app_id}-{slug}` convention (pretty serving URLs).
     hostname: Option<String>,
+    /// T8: an app-chosen hostname prefix; the name is `{prefix}-{slug}`.
+    hostname_prefix: Option<String>,
     sidecar_path: Option<PathBuf>,
     state_dir: Option<String>,
     auth_key: Option<String>,
@@ -1748,6 +1786,7 @@ impl std::fmt::Debug for NodeBuilder {
             .field("device_name", &self.device_name)
             .field("device_id", &self.device_id)
             .field("hostname", &self.hostname)
+            .field("hostname_prefix", &self.hostname_prefix)
             .field("sidecar_path", &self.sidecar_path)
             .field("state_dir", &self.state_dir)
             .field("auth_key", &self.auth_key.as_ref().map(|_| "[REDACTED]"))
@@ -1855,6 +1894,7 @@ impl Default for NodeBuilder {
             state_dir: None,
             auth_key: None,
             hostname: None,
+            hostname_prefix: None,
             ephemeral: false,
             ws_port: 9417,
             idle_timeout_secs: None,
@@ -1899,13 +1939,49 @@ impl NodeBuilder {
     /// Tradeoff: hello-less peers with a custom hostname are not resolvable
     /// by bare device name (the hostname-slug convention no longer matches);
     /// full hostname, dnsName, IP, device-id, and post-hello identity
-    /// resolution are unaffected. Tailscale dedupes hostname collisions by
+    /// resolution are unaffected. App membership does not ride the name
+    /// (T8): peers admit this node by its `Hostinfo.App` tag (sidecar
+    /// protocol 12), though a peer on an older release reads the
+    /// `truffle-{app_id}-` prefix only and will not see it. For an app-chosen
+    /// name that keeps bare-name resolution, see
+    /// [`hostname_prefix`](Self::hostname_prefix). Tailscale dedupes hostname collisions by
     /// suffixing `-1`/`-2` — read the granted name from
     /// `local_info().dns_name` instead of string-building URLs.
     pub fn hostname(mut self, s: impl Into<String>) -> Result<Self, NodeError> {
         let raw: String = s.into();
         validate_hostname_label(&raw).map_err(NodeError::BuildError)?;
         self.hostname = Some(raw);
+        Ok(self)
+    }
+
+    /// Choose the hostname's prefix (T8): the node is named
+    /// `{prefix}-{slug(device_name)}` instead of `truffle-{app_id}-{slug}`, so
+    /// the name a person reads on Tailscale's own pages is the app's.
+    ///
+    /// App membership no longer rides the name: every node announces
+    /// `Hostinfo.App = "truffle:{app_id}"` (sidecar protocol 12), and peers
+    /// admit by that tag first, by the `truffle-{app_id}-` prefix only for a
+    /// row with no tag. A hello-less peer named `{prefix}-{slug}` still
+    /// resolves by its slug.
+    ///
+    /// **Rollout:** a peer on a release before this one reads the name only,
+    /// and will not see a node with a custom prefix. Turn the prefix on once
+    /// every shipped device reads the tag. Existing nodes take the new name at
+    /// their next start (tsnet re-sends the hostname each start).
+    ///
+    /// Validated as a single lowercase DNS label of 1–61 characters (room for
+    /// the hyphen and at least one slug character). Exclusive with
+    /// [`hostname`](Self::hostname): `build()` refuses both.
+    pub fn hostname_prefix(mut self, s: impl Into<String>) -> Result<Self, NodeError> {
+        let raw: String = s.into();
+        validate_hostname_label(&raw).map_err(NodeError::BuildError)?;
+        if raw.len() > 61 {
+            return Err(NodeError::BuildError(format!(
+                "invalid hostname_prefix {raw:?}: at most 61 chars, to leave room \
+                 for the hyphen and a slug within the 63-char label"
+            )));
+        }
+        self.hostname_prefix = Some(raw);
         Ok(self)
     }
 
@@ -2137,9 +2213,17 @@ impl NodeBuilder {
         //    An explicit builder hostname (RFC 023 §6.4) wins over the
         //    `truffle-{app_id}-{slug}` convention; see the setter for what
         //    that costs (bare-name resolution of hello-less peers).
-        let tailscale_host = match self.hostname.clone() {
-            Some(hostname) => hostname,
-            None => identity::tailscale_hostname(&app_id, &device_name),
+        //    T8: or an app-chosen prefix composes `{prefix}-{slug}`. The two
+        //    are one question with two answers, so both at once is refused.
+        let tailscale_host = match (self.hostname.clone(), self.hostname_prefix.as_deref()) {
+            (Some(_), Some(_)) => {
+                return Err(NodeError::BuildError(
+                    "hostname and hostname_prefix are exclusive: set one".into(),
+                ))
+            }
+            (Some(hostname), None) => hostname,
+            (None, Some(prefix)) => identity::prefixed_hostname(prefix, &device_name),
+            (None, None) => identity::tailscale_hostname(&app_id, &device_name),
         };
 
         // 5. Resolve state_dir. Default:
@@ -2225,6 +2309,7 @@ impl NodeBuilder {
     pub async fn build(self) -> Result<Node<TailscaleProvider>, NodeError> {
         let ws_port = self.ws_port;
         let eager_identity = self.eager_identity;
+        let hostname_prefix = self.hostname_prefix.clone();
         let config = self.prepare_config()?;
         let state_dir = PathBuf::from(&config.state_dir);
 
@@ -2271,7 +2356,8 @@ impl NodeBuilder {
         let codec: Arc<dyn EnvelopeCodec> = Arc::new(JsonCodec);
         let node = Node::from_parts(network, session, codec)
             .with_state_dir(state_dir)
-            .with_ws_port(ws_port);
+            .with_ws_port(ws_port)
+            .with_hostname_prefix(hostname_prefix);
 
         tracing::info!("node: started successfully");
         Ok(node)
@@ -2294,6 +2380,7 @@ impl NodeBuilder {
     ) -> Result<Node<TailscaleProvider>, NodeError> {
         let ws_port = self.ws_port;
         let eager_identity = self.eager_identity;
+        let hostname_prefix = self.hostname_prefix.clone();
         let config = self.prepare_config()?;
         let state_dir = PathBuf::from(&config.state_dir);
 
@@ -2364,7 +2451,8 @@ impl NodeBuilder {
         let codec: Arc<dyn EnvelopeCodec> = Arc::new(JsonCodec);
         let node = Node::from_parts(network, session, codec)
             .with_state_dir(state_dir)
-            .with_ws_port(ws_port);
+            .with_ws_port(ws_port)
+            .with_hostname_prefix(hostname_prefix);
 
         tracing::info!("node: started successfully (with auth handler)");
         Ok(node)
@@ -3627,6 +3715,103 @@ mod tests {
         }
         let too_long = "x".repeat(64);
         assert!(NodeBuilder::default().hostname(too_long).is_err());
+    }
+
+    /// T8: an app-chosen prefix composes `{prefix}-{slug(device_name)}`,
+    /// validated like a hostname, and never alongside a whole hostname.
+    #[test]
+    fn test_builder_hostname_prefix_composes_the_name() {
+        let base = || {
+            NodeBuilder::default()
+                .app_id("demo")
+                .unwrap()
+                .sidecar_path("/opt/sidecar")
+                .device_name("Alice's Studio")
+                .state_dir("/tmp/truffle-hostname-prefix-test")
+        };
+        let cfg = base()
+            .hostname_prefix("vibefield")
+            .unwrap()
+            .prepare_config()
+            .unwrap();
+        assert_eq!(cfg.hostname, "vibefield-alice-s-studio");
+        // The app is still the app: membership rides the tag, not the name.
+        assert_eq!(cfg.app_id, "demo");
+        // Unset, the convention stands.
+        assert_eq!(
+            base().prepare_config().unwrap().hostname,
+            "truffle-demo-alice-s-studio"
+        );
+        // A long device name is cut to the label's budget, never past 63.
+        let long = base()
+            .device_name("x".repeat(80))
+            .hostname_prefix("vibefield")
+            .unwrap()
+            .prepare_config()
+            .unwrap();
+        assert_eq!(long.hostname.len(), 63);
+        assert!(long.hostname.starts_with("vibefield-x"));
+
+        for bad in ["", "Vibe", "has.dot", "-lead", "trail-"] {
+            assert!(
+                NodeBuilder::default().hostname_prefix(bad).is_err(),
+                "expected prefix {bad:?} to be rejected"
+            );
+        }
+        // The prefix must leave room for its hyphen and a slug.
+        assert!(NodeBuilder::default()
+            .hostname_prefix("x".repeat(61))
+            .is_ok());
+        assert!(NodeBuilder::default()
+            .hostname_prefix("x".repeat(62))
+            .is_err());
+
+        // A whole hostname and a prefix are two answers to one question.
+        let both = base()
+            .hostname("dashboard")
+            .unwrap()
+            .hostname_prefix("vibefield")
+            .unwrap()
+            .prepare_config();
+        assert!(matches!(both, Err(NodeError::BuildError(m)) if m.contains("hostname_prefix")));
+    }
+
+    /// T8: a hello-less peer resolves by its slug under the node's own
+    /// prefix as well as under the `truffle-{app_id}-` convention.
+    #[test]
+    fn test_hostname_slug_learns_the_prefix() {
+        assert_eq!(
+            hostname_slug("vibefield-studio", "demo", Some("vibefield")),
+            Some("studio")
+        );
+        assert_eq!(
+            hostname_slug("truffle-demo-studio", "demo", Some("vibefield")),
+            Some("studio"),
+            "an older peer keeps the convention"
+        );
+        assert_eq!(hostname_slug("vibefield-studio", "demo", None), None);
+        assert_eq!(hostname_slug("vibefield-", "demo", Some("vibefield")), None);
+        assert_eq!(
+            hostname_slug("vibefieldx-a", "demo", Some("vibefield")),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn test_peers_device_name_strips_the_app_prefix_before_hello() {
+        let ws_port = random_port().await;
+        let (node, event_tx, _net) = make_test_node("node-1", ws_port).await;
+        let node = node.with_hostname_prefix(Some("vibefield".into()));
+
+        let mut peer = make_loopback_peer("nodeid-9");
+        peer.hostname = "vibefield-ec2-smoke".to_string();
+        let _ = event_tx.send(NetworkPeerEvent::Joined(peer));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let peers = node.peers().await;
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].display_name, "ec2-smoke");
+        assert_eq!(node.resolve_peer("ec2-smoke").await.unwrap().id, "nodeid-9");
     }
 
     /// RFC 025 §3.1: the builder's allow-list must reach the provider config
