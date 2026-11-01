@@ -58,6 +58,12 @@ struct LocalAPIStatusLogins: Decodable, Equatable {
     struct NodeRow: Decodable, Equatable {
         let ID: String?
         let UserID: Int64?
+        /// The numeric node ID LocalAPI's `peer-by-id` takes (T8). Absent on
+        /// a row that names none.
+        var NodeID: Int64? = nil
+        /// The row's hostname, which keys the app-tag cache with the node ID
+        /// (a renamed peer is re-read).
+        var HostName: String? = nil
     }
 
     struct Profile: Decodable, Equatable {

@@ -613,7 +613,7 @@ public actor MeshNode {
         if !config.loginAllow.isEmpty, !warnedAboutMissingLogins,
             status.peers.contains(where: {
                 $0.loginName == nil
-                    && Hostname.isAppPeer(hostname: $0.hostname, appId: appId.value)
+                    && Hostname.isAppRow(hostname: $0.hostname, app: $0.app, appId: appId.value)
             })
         {
             warnedAboutMissingLogins = true
@@ -674,7 +674,7 @@ public actor MeshNode {
             emit(.peerUpsert(makePeer(from: existing)))
             return false
         }
-        guard Hostname.isAppPeer(hostname: peer.hostname, appId: appId.value) else {
+        guard Hostname.isAppRow(hostname: peer.hostname, app: peer.app, appId: appId.value) else {
             return false
         }
         guard LoginGlob.allowed(config.loginAllow, login: peer.loginName) else {

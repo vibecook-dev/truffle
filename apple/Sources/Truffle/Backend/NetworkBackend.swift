@@ -69,10 +69,17 @@ public struct BackendPeer: Sendable, Equatable {
     /// a netmap fact, `nil` when the backend cannot report one. A gated node
     /// treats a row without a login as NOT a peer (fail closed).
     public var loginName: String?
+    /// The peer's `Hostinfo.App` as control relays it (T8). A truffle node
+    /// at sidecar protocol 12 announces `truffle:{appId}`; `nil` when the
+    /// backend cannot read it or the peer announces none. When present it
+    /// decides app membership (`Hostname.isAppRow`); when absent the
+    /// `truffle-{appId}-` hostname prefix does.
+    public var app: String?
 
     public init(
         tailscaleId: String, hostname: String, dnsName: String? = nil,
-        tailnetIPs: [String] = [], online: Bool = true, loginName: String? = nil
+        tailnetIPs: [String] = [], online: Bool = true, loginName: String? = nil,
+        app: String? = nil
     ) {
         self.tailscaleId = tailscaleId
         self.hostname = hostname
@@ -80,6 +87,7 @@ public struct BackendPeer: Sendable, Equatable {
         self.tailnetIPs = tailnetIPs
         self.online = online
         self.loginName = loginName
+        self.app = app
     }
 }
 

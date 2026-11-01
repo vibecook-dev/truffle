@@ -80,7 +80,11 @@ verbatim — hello v2 (`kind`/`version: 2`/`identity`, snake_case, desktop
 field bounds, `device_id ≠ tailscale_id`), the JSON message envelope (no `v`,
 no `from_device_id`, receiver-stamped attribution), close codes 4001/4002/4003,
 fail-closed inbound WhoIs policy, and the `truffle-{appId}-{slug}` hostname
-scheme with `is_app_peer` candidate filtering.
+scheme with `is_app_row` candidate filtering: a peer's `Hostinfo.App` tag
+(`truffle:{appId}`, sidecar protocol 12), read over LocalAPI `peer-by-id`,
+decides first, and the `truffle-{appId}-` prefix decides an untagged row. The
+Swift node itself announces no tag yet (that needs a TailscaleKit export), so
+it keeps the `truffle-{appId}-` name, which every release admits.
 
 Cross-runtime semantic fixtures live in `Tests/TruffleTests/Fixtures/` and are
 decoded by BOTH this suite (`WireTests.swift`) and the Rust suite
