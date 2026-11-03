@@ -49,6 +49,16 @@ Pin an exact commit instead when your release process demands it:
 > `truffle-vX.Y.Z` scheme used before then, and the stray `v0.2.x` tags predate
 > this package entirely. Use `from: "0.7.7"` or newer, or pin a revision.
 
+## Peer network names
+
+`Peer.hostname` is the backend's raw host name. `Peer.dnsName` is its optional
+canonical DNS name, carried unchanged from Layer 3 through local snapshots,
+peer discovery and metadata updates. Tailscale can append a collision suffix to
+the DNS name without changing the host name, so consumers dialing by DNS should
+prefer a supplied `dnsName` over reconstructing an address from `hostname`.
+An absent DNS name remains `nil`; it is never synthesized. Updating or clearing
+it changes the peer snapshot's equality while preserving its `PeerRef` identity.
+
 ## Build & test (working on Truffle itself)
 
 From the repository root, exactly as a consumer resolves it:

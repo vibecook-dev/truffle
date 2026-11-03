@@ -146,6 +146,48 @@ struct PongDroppingTransport: FrameTransport {
         await bob.stop()
     }
 
+    @Test func canonicalDNSNameSurvivesDiscoveryAndMetadataUpdates() async throws {
+        let network = LoopbackNetwork()
+        let (bob, dirB) = try await startNode(
+            network: network, tailscaleId: "ts-b", appId: "demo", deviceName: "Bob")
+        let backend = await network.join(tailscaleId: "ts-a", hostname: "truffle-demo-alice")
+        let dirA = tempDir()
+        let alice = try await MeshNode.start(
+            MeshConfiguration(appId: "demo", deviceName: "Alice", stateDirectory: dirA),
+            backend: backend, frameTransport: LengthPrefixFrameTransport())
+        defer {
+            try? FileManager.default.removeItem(at: dirA)
+            try? FileManager.default.removeItem(at: dirB)
+        }
+
+        let initial = try #require(try await alice.peer("ts-b", waitMs: 2_000))
+        #expect(initial.hostname == "truffle-demo-bob")
+        #expect(initial.dnsName == "truffle-demo-bob.loopback.ts.net")
+        let localPeer = await alice.localPeer
+        let localDNSName = await alice.dnsName
+        #expect(localPeer.dnsName == localDNSName)
+
+        // A second installation keeps HostName but receives a distinct DNSName.
+        // Its public snapshot must change without replacing the peer identity.
+        for dnsName in ["truffle-demo-bob-1.loopback.ts.net.", nil] as [String?] {
+            backend.push(.peerUpsert(BackendPeer(
+                tailscaleId: "ts-b", hostname: initial.hostname, dnsName: dnsName,
+                tailnetIPs: initial.tailnetIPs)))
+            var updated: Peer?
+            for _ in 0..<40 {
+                updated = try await alice.peer("ts-b")
+                if updated?.dnsName == dnsName { break }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            #expect(updated?.ref == initial.ref)
+            #expect(updated?.hostname == initial.hostname)
+            #expect(updated?.dnsName == dnsName)
+            #expect(updated != initial)
+        }
+        await alice.stop()
+        await bob.stop()
+    }
+
     @Test func exchangesJSONBothDirectionsWithAttribution() async throws {
         let network = LoopbackNetwork()
         let (alice, dirA) = try await startNode(
@@ -502,6 +544,7 @@ struct PongDroppingTransport: FrameTransport {
         }
         #expect(provisional.deviceId != nil)
         #expect(provisional.hostname.isEmpty)
+        #expect(provisional.dnsName == nil)
 
         // A full snapshot WITHOUT Bob must NOT reap the provisional entry
         // (RFC 024 §7.2).
@@ -520,6 +563,7 @@ struct PongDroppingTransport: FrameTransport {
             try await Task.sleep(for: .milliseconds(50))
         }
         #expect(merged?.hostname.isEmpty == false)
+        #expect(merged?.dnsName == "truffle-demo-bob.loopback.ts.net")
         #expect(merged?.generation == provisional.generation)
 
         await alice.stop()

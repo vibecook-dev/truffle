@@ -51,6 +51,10 @@ public struct Peer: Identifiable, Hashable, Sendable {
 
     public let displayName: String
     public let hostname: String
+    /// The canonical DNS name reported by Layer 3. It can differ from
+    /// `hostname` when Tailscale disambiguates two machines with the same name.
+    /// Absent until the backend supplies it; never synthesized from the hostname.
+    public let dnsName: String?
     public let tailnetIPs: [String]
     public let online: Bool
     public let appId: String?
@@ -59,7 +63,7 @@ public struct Peer: Identifiable, Hashable, Sendable {
     init(
         ref: PeerRef, deviceId: String?, tailscaleId: String, generation: UInt64,
         displayName: String, hostname: String, tailnetIPs: [String], online: Bool,
-        appId: String?, isLocal: Bool, loginName: String? = nil
+        appId: String?, isLocal: Bool, loginName: String? = nil, dnsName: String? = nil
     ) {
         self.ref = ref
         self.deviceId = deviceId
@@ -68,6 +72,7 @@ public struct Peer: Identifiable, Hashable, Sendable {
         self.loginName = loginName
         self.displayName = displayName
         self.hostname = hostname
+        self.dnsName = dnsName
         self.tailnetIPs = tailnetIPs
         self.online = online
         self.appId = appId
@@ -84,6 +89,7 @@ public struct Peer: Identifiable, Hashable, Sendable {
             && lhs.deviceId == rhs.deviceId
             && lhs.displayName == rhs.displayName
             && lhs.hostname == rhs.hostname
+            && lhs.dnsName == rhs.dnsName
             && lhs.tailnetIPs == rhs.tailnetIPs
             && lhs.online == rhs.online
             && lhs.appId == rhs.appId

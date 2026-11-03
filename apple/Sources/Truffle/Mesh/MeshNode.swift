@@ -33,6 +33,7 @@ public actor MeshNode {
         var tailscaleId: String
         var generation: UInt64
         var hostname: String
+        var dnsName: String? = nil
         var tailnetIPs: [String]
         var online: Bool
         /// The owner's tailnet login as Layer 3 reported it (RFC 025 §3.3);
@@ -297,7 +298,8 @@ public actor MeshNode {
             online: phaseValue == .running,
             appId: appId.value,
             isLocal: true,
-            loginName: localLoginName)
+            loginName: localLoginName,
+            dnsName: localDnsName)
     }
 
     /// Each access mints a NEW independently-buffered stream (RFC 024 §6.2):
@@ -430,7 +432,8 @@ public actor MeshNode {
             online: entry.online,
             appId: entry.identity != nil ? appId.value : nil,
             isLocal: false,
-            loginName: entry.loginName)
+            loginName: entry.loginName,
+            dnsName: entry.dnsName)
     }
 
     /// Generation-checked live lookup for peer-taking calls (RFC 024 §6.3).
@@ -666,6 +669,7 @@ public actor MeshNode {
                 return true
             }
             existing.hostname = peer.hostname
+            existing.dnsName = peer.dnsName
             existing.tailnetIPs = peer.tailnetIPs
             existing.online = peer.online
             existing.loginName = peer.loginName
@@ -685,6 +689,7 @@ public actor MeshNode {
             tailscaleId: peer.tailscaleId,
             generation: generationCounter,
             hostname: peer.hostname,
+            dnsName: peer.dnsName,
             tailnetIPs: peer.tailnetIPs,
             online: peer.online,
             loginName: peer.loginName,
