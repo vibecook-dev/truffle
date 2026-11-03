@@ -1,6 +1,6 @@
 {
   "name": "@vibecook/truffle-native-win32-x64-msvc",
-  "version": "0.7.25",
+  "version": "0.7.26",
   "cpu": [
     "x64"
   ],

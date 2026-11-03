@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.26](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.25...truffle-v0.7.26) (2026-11-03)
+
+
+### Bug Fixes
+
+* **apple:** preserve canonical DNS names in peer snapshots ([#247](https://github.com/vibecook-dev/truffle/issues/247)) ([11f97d3](https://github.com/vibecook-dev/truffle/commit/11f97d3f168de36c9d5f1c4613edd653fb781cfd))
+
 ## [0.7.25](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.24...truffle-v0.7.25) (2026-11-01)
 
 
