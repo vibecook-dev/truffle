@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/http/httptrace"
 	"net/textproto"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -196,9 +197,10 @@ func TestApplyResponseHeadersReplacesAndCopies(t *testing.T) {
 
 // TestResponseHeadersOnEveryResponse drives the real handler through a
 // loopback listener: the serve's headers ride static files (200, SPA fallback,
-// HEAD, 304, 404, 405), proxied responses (replacing the backend's values,
-// also after a relayed 103), the engine's 502 on both proxy paths, the gate's
-// 403 and the no-route 404; a route's headers ride that route alone.
+// HEAD, 304, 404, 405, 416), proxied responses (replacing the backend's values,
+// also after a relayed 103, and on a 101 that ReverseProxy relays itself), the
+// engine's 502 on both proxy paths, the gate's 403 and the no-route 404; a
+// route's headers ride that route alone.
 func TestResponseHeadersOnEveryResponse(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<h1>app</h1>"), 0o644); err != nil {
@@ -212,6 +214,21 @@ func TestResponseHeadersOnEveryResponse(t *testing.T) {
 	}
 	defer listener.Close()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/upgrade" {
+			// An upgrade that is not a WebSocket: the sidecar hands it to
+			// ReverseProxy, which relays this 101 itself.
+			conn, brw, err := http.NewResponseController(w).Hijack()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			defer conn.Close()
+			_, _ = brw.WriteString("HTTP/1.1 101 Switching Protocols\r\n" +
+				"Connection: Upgrade\r\nUpgrade: foo\r\n" +
+				"Content-Security-Policy: default-src *\r\nX-Backend: yes\r\n\r\n")
+			_ = brw.Flush()
+			return
+		}
 		if r.URL.Path == "/api/early" {
 			w.Header().Set("Link", "</app/style.css>; rel=preload")
 			w.WriteHeader(http.StatusEarlyHints)
@@ -308,6 +325,7 @@ func TestResponseHeadersOnEveryResponse(t *testing.T) {
 		{"not modified", http.MethodGet, "/app/index.html", http.Header{"If-Modified-Since": {future}}, http.StatusNotModified, serve, nil},
 		{"dotfile 404", http.MethodGet, "/app/.env", nil, http.StatusNotFound, serve, nil},
 		{"static 405", http.MethodPost, "/app/", nil, http.StatusMethodNotAllowed, serve, nil},
+		{"static 416", http.MethodGet, "/app/index.html", http.Header{"Range": {"bytes=999999-"}}, http.StatusRequestedRangeNotSatisfiable, serve, nil},
 		{"proxied", http.MethodGet, "/api/x", nil, http.StatusOK, proxied, nil},
 		{"dead backend 502", http.MethodGet, "/dead/", nil, http.StatusBadGateway, serve, []string{"X-Frame-Options"}},
 		{"websocket dial 502", http.MethodGet, "/dead/socket", upgrade, http.StatusBadGateway, serve, nil},
@@ -360,6 +378,143 @@ func TestResponseHeadersOnEveryResponse(t *testing.T) {
 			}
 		}
 	})
+
+	// An upgrade that is not a WebSocket is not hijacked by the sidecar:
+	// ReverseProxy relays the backend's 101 itself, after ModifyResponse, so
+	// the policy rides it. (A WebSocket upgrade's 101 is the backend's own.)
+	t.Run("proxied 101", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+listener.Addr().String()+"/api/upgrade", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", "foo")
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The body is the switched connection: close it unread.
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusSwitchingProtocols {
+			t.Fatalf("status = %d, want 101", res.StatusCode)
+		}
+		for name, want := range proxied {
+			if got := res.Header.Values(name); !slices.Equal(got, want) {
+				t.Errorf("%s = %q, want %q", name, got, want)
+			}
+		}
+	})
+}
+
+// TestResponseHeadersOnASingleTargetServe: a v1 serve (no routes) is its own
+// branch of bindProxyRoutes, with its own merge and wrap. Its list replaces the
+// backend's value on a proxied 200, leaves the names it does not set to the
+// backend, and rides the engine's 502 for a dead target.
+func TestResponseHeadersOnASingleTargetServe(t *testing.T) {
+	// The proxies' own listeners first, so the dead backend's freed port below
+	// can never be handed to either.
+	liveListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer liveListener.Close()
+	deadListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deadListener.Close()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src *")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		_, _ = io.WriteString(w, "backend")
+	}))
+	defer backend.Close()
+	dead := httptest.NewServer(http.NotFoundHandler())
+	deadURL := dead.URL
+	dead.Close()
+
+	s := newTestShim()
+	defer s.cancel()
+	defer s.handleStop()
+	s.setDNSName("test.tail-example.ts.net")
+	tlsOff := false
+	singleTarget := func(id, rawURL string, listener net.Listener) proxyAddData {
+		t.Helper()
+		target, err := url.Parse(rawURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		port, err := strconv.ParseUint(target.Port(), 10, 16)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return proxyAddData{
+			ID: id, Name: id, Tls: &tlsOff,
+			ListenPort:   uint16(listener.Addr().(*net.TCPAddr).Port),
+			TargetHost:   target.Hostname(),
+			TargetPort:   uint16(port),
+			TargetScheme: target.Scheme,
+			Headers: []proxyHeaderData{
+				{Name: "Content-Security-Policy", Value: "default-src 'self'"},
+				{Name: "Referrer-Policy", Value: "no-referrer"},
+			},
+		}
+	}
+	live := singleTarget("live", backend.URL, liveListener)
+	s.startProxyAdd(nil, nil, live, func(bool, string) (net.Listener, error) { return liveListener, nil })
+	waitForProxyEntry(t, s, live.ID)
+	gone := singleTarget("gone", deadURL, deadListener)
+	s.startProxyAdd(nil, nil, gone, func(bool, string) (net.Listener, error) { return deadListener, nil })
+	waitForProxyEntry(t, s, gone.ID)
+
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+			if err == nil {
+				// Supply the verified identity at the WhoIs cache seam.
+				s.storeCachedIdentity(conn.LocalAddr().String(), peerIdentityData{LoginName: "alice@example.com"}, time.Now())
+			}
+			return conn, err
+		},
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport}
+
+	for _, tc := range []struct {
+		name     string
+		listener net.Listener
+		status   int
+		want     http.Header
+	}{
+		{"proxied 200", liveListener, http.StatusOK, http.Header{
+			"Content-Security-Policy": {"default-src 'self'"},
+			"Referrer-Policy":         {"no-referrer"},
+			"X-Frame-Options":         {"SAMEORIGIN"},
+		}},
+		{"dead target 502", deadListener, http.StatusBadGateway, http.Header{
+			"Content-Security-Policy": {"default-src 'self'"},
+			"Referrer-Policy":         {"no-referrer"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := client.Get("http://" + tc.listener.Addr().String() + "/")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, res.Body)
+			_ = res.Body.Close()
+			if res.StatusCode != tc.status {
+				t.Fatalf("status = %d, want %d", res.StatusCode, tc.status)
+			}
+			for name, want := range tc.want {
+				if got := res.Header.Values(name); !slices.Equal(got, want) {
+					t.Errorf("%s = %q, want %q", name, got, want)
+				}
+			}
+		})
+	}
 }
 
 // TestResponseHeadersRefusedAtAdd: the sidecar re-checks the headers off the

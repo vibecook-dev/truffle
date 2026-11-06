@@ -272,12 +272,17 @@ the field.
   - `response_headers_v13_test.go`: the vector table and its bounds and refused names; the wire
     shape; the merge and replace rules.
   - An end-to-end run through `startProxyAdd` on a loopback listener:
-    - static 200, SPA fallback, HEAD, 304, dotfile 404 and 405;
+    - static 200, SPA fallback, HEAD, 304, dotfile 404, 405 and 416;
     - a proxied 200 with exactly one CSP and the route's `X-Frame-Options` replacing the backend's;
-    - the same after a relayed 103;
+    - the same after a relayed 103, and on a 101 that `ReverseProxy` relays itself (an upgrade
+      that is not a WebSocket);
     - the dead-backend 502 and the WebSocket-dial 502;
     - the gate 403;
     - the no-route 404 with the serve's list only.
+  - A v1 (single-target) serve, its own branch: the serve's list replaces the backend's CSP on a
+    proxied 200 and leaves the names it does not set alone, and rides the dead target's 502.
+  - Not driven: the WebSocket path's 500 (a writer that cannot hijack). A plain HTTP/1 listener
+    always can; the 500 takes the same `applyResponseHeaders` call as the tested dial 502.
   - Add-time refusals that never open the static root and never install a placeholder.
   - `main_test.go` pins protocol 13.
 - **TypeScript** (`packages/core/test/serve.test.cjs`): the records map to the NAPI lists for every
