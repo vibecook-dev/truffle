@@ -14,7 +14,8 @@ use truffle_core::{FileTransferEvent, Node};
 
 use crate::subscription::NapiSubscription;
 use crate::types::{
-    NapiFileOffer, NapiFileTransferEvent, NapiTransferProgress, NapiTransferResult,
+    NapiFileOffer, NapiFileTransferEvent, NapiNamedPullRoot, NapiTransferProgress,
+    NapiTransferResult,
 };
 
 /// Responder for accepting or rejecting a file offer from JS.
@@ -110,6 +111,34 @@ impl NapiFileTransfer {
         let ft = self.node.file_transfer();
         let result = ft
             .pull_file(&peer_id, &remote_path, &local_path)
+            .await
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(NapiTransferResult {
+            bytes_transferred: result.bytes_transferred as f64,
+            sha256: result.sha256,
+            elapsed_secs: result.elapsed_secs,
+        })
+    }
+
+    /// Pull (download) a file below one of a peer's named pull roots (RFC 032).
+    ///
+    /// `root` is the name the peer registered with `addNamedPullRoot`; `path`
+    /// is relative to it (`/`-separated, no empty, `.` or `..` segment, no
+    /// NUL, `\` or `:`). The peer never reveals its own directory layout.
+    /// Rejects with "Unsupported by peer: ..." when the peer predates named
+    /// roots (it served nothing), and with "Transfer rejected: named pull
+    /// denied by peer" when the peer refuses the pull.
+    #[napi]
+    pub async fn pull_named_file(
+        &self,
+        peer_id: String,
+        root: String,
+        path: String,
+        local_path: String,
+    ) -> Result<NapiTransferResult> {
+        let ft = self.node.file_transfer();
+        let result = ft
+            .pull_named_file(&peer_id, &root, &path, &local_path)
             .await
             .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(NapiTransferResult {
@@ -264,7 +293,7 @@ impl NapiFileTransfer {
             .collect()
     }
 
-    /// Clear all registered pull roots.
+    /// Clear all registered pull roots, named roots included.
     ///
     /// Pull-serving is deny-by-default: with no roots registered, no files are
     /// served to peers.
@@ -272,6 +301,40 @@ impl NapiFileTransfer {
     pub fn clear_pull_roots(&self) {
         let ft = self.node.file_transfer();
         ft.clear_pull_roots();
+    }
+
+    /// Register `root` under `name`, so peers can pull the files below it with
+    /// `pullNamedFile(peer, name, relativePath, localPath)` (RFC 032).
+    ///
+    /// `name` must match `[a-z0-9][a-z0-9._-]{0,63}`, and `root` must be an
+    /// existing directory; it is canonicalized here. A named root answers
+    /// named pulls only, never an absolute-path `pullFile`. Registering a name
+    /// again replaces its directory.
+    #[napi]
+    pub fn add_named_pull_root(&self, name: String, root: String) -> Result<()> {
+        let ft = self.node.file_transfer();
+        ft.add_named_pull_root(&name, &root)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// List the registered named pull roots, sorted by name.
+    #[napi]
+    pub fn named_pull_roots(&self) -> Vec<NapiNamedPullRoot> {
+        let ft = self.node.file_transfer();
+        ft.named_pull_roots()
+            .into_iter()
+            .map(|root| NapiNamedPullRoot {
+                name: root.name,
+                path: root.path.to_string_lossy().into_owned(),
+            })
+            .collect()
+    }
+
+    /// Unregister a named pull root. Returns whether it was registered.
+    #[napi]
+    pub fn remove_named_pull_root(&self, name: String) -> bool {
+        let ft = self.node.file_transfer();
+        ft.remove_named_pull_root(&name)
     }
 }
 

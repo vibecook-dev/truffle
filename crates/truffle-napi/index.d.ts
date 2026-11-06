@@ -31,6 +31,17 @@ export declare class NapiFileTransfer {
    * Resolves with transfer result on success.
    */
   pullFile(peerId: string, remotePath: string, localPath: string): Promise<NapiTransferResult>
+  /**
+   * Pull (download) a file below one of a peer's named pull roots (RFC 032).
+   *
+   * `root` is the name the peer registered with `addNamedPullRoot`; `path`
+   * is relative to it (`/`-separated, no empty, `.` or `..` segment, no
+   * NUL, `\` or `:`). The peer never reveals its own directory layout.
+   * Rejects with "Unsupported by peer: ..." when the peer predates named
+   * roots (it served nothing), and with "Transfer rejected: named pull
+   * denied by peer" when the peer refuses the pull.
+   */
+  pullNamedFile(peerId: string, root: string, path: string, localPath: string): Promise<NapiTransferResult>
   /** Auto-accept all incoming file offers, saving files to `output_dir`. */
   autoAccept(outputDir: string): Promise<void>
   /** Auto-reject all incoming file offers. */
@@ -74,12 +85,26 @@ export declare class NapiFileTransfer {
    */
   pullRoots(): Array<string>
   /**
-   * Clear all registered pull roots.
+   * Clear all registered pull roots, named roots included.
    *
    * Pull-serving is deny-by-default: with no roots registered, no files are
    * served to peers.
    */
   clearPullRoots(): void
+  /**
+   * Register `root` under `name`, so peers can pull the files below it with
+   * `pullNamedFile(peer, name, relativePath, localPath)` (RFC 032).
+   *
+   * `name` must match `[a-z0-9][a-z0-9._-]{0,63}`, and `root` must be an
+   * existing directory; it is canonicalized here. A named root answers
+   * named pulls only, never an absolute-path `pullFile`. Registering a name
+   * again replaces its directory.
+   */
+  addNamedPullRoot(name: string, root: string): void
+  /** List the registered named pull roots, sorted by name. */
+  namedPullRoots(): Array<NapiNamedPullRoot>
+  /** Unregister a named pull root. Returns whether it was registered. */
+  removeNamedPullRoot(name: string): boolean
 }
 
 /**
@@ -800,6 +825,14 @@ export interface NapiLoopbackConfig {
    * `loopbackWithLocalApi()` (that LocalAPI is read-write).
    */
   localApiCredential?: string
+}
+
+/** A named pull root (RFC 032): the name peers pull by and the directory it serves. */
+export interface NapiNamedPullRoot {
+  /** The root's name, as peers name it in `pullNamedFile`. */
+  name: string
+  /** The directory the name serves, canonicalized at registration. */
+  path: string
 }
 
 /** A message received on a specific namespace. */

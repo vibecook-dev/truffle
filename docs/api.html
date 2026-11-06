@@ -1516,6 +1516,15 @@ if (peer) {
                 <td>Pull a file from a peer into a local path.</td>
               </tr>
               <tr>
+                <td><code>pullNamedFile(to, root, path, localPath)</code></td>
+                <td>
+                  Pull a file below one of the peer's named pull roots (RFC 032): <code>root</code> is
+                  the name the peer registered, <code>path</code> is relative to it. The peer's own
+                  directory layout never leaves the peer. A peer that predates named roots refuses
+                  with an <code>Unsupported by peer</code> error and serves nothing.
+                </td>
+              </tr>
+              <tr>
                 <td><code>autoAccept(outputDir)</code></td>
                 <td>Accept every incoming offer into a directory.</td>
               </tr>
@@ -1541,7 +1550,22 @@ if (peer) {
               </tr>
               <tr>
                 <td><code>pullRoots()</code>, <code>clearPullRoots()</code></td>
-                <td>Inspect or clear the pull-serving allowlist.</td>
+                <td>
+                  Inspect the absolute-path pull roots, or clear every pull root, named roots
+                  included.
+                </td>
+              </tr>
+              <tr>
+                <td><code>addNamedPullRoot(name, root)</code></td>
+                <td>
+                  Share a directory under a name (<code>[a-z0-9][a-z0-9._-]{0,63}</code>), so peers
+                  pull from it by name and relative path; a pulled path that leaves it, symlinks
+                  included, is refused.
+                </td>
+              </tr>
+              <tr>
+                <td><code>namedPullRoots()</code>, <code>removeNamedPullRoot(name)</code></td>
+                <td>Inspect the named pull roots, or unregister one.</td>
               </tr>
             </tbody>
           </table>

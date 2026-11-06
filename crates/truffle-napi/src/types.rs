@@ -312,6 +312,15 @@ pub struct NapiTransferResult {
     pub elapsed_secs: f64,
 }
 
+/// A named pull root (RFC 032): the name peers pull by and the directory it serves.
+#[napi(object)]
+pub struct NapiNamedPullRoot {
+    /// The root's name, as peers name it in `pullNamedFile`.
+    pub name: String,
+    /// The directory the name serves, canonicalized at registration.
+    pub path: String,
+}
+
 /// Progress update for an in-flight file transfer.
 #[napi(object)]
 pub struct NapiTransferProgress {

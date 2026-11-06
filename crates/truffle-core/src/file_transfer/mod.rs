@@ -6,8 +6,13 @@
 //! - **Sending**: Push a local file to a remote peer.
 //! - **Receiving**: Accept/reject incoming file offers via an offer channel.
 //! - **Pulling**: Request a file from a remote peer. On the serving side, pulls
-//!   are served only from roots registered via [`FileTransfer::add_pull_root`];
-//!   with no roots configured all incoming PULL_REQUESTs are rejected.
+//!   are served only from registered roots; with none configured all incoming
+//!   PULL_REQUESTs are rejected. A pull names its file either by the holder's
+//!   absolute path, served from the roots of [`FileTransfer::add_pull_root`],
+//!   or (RFC 032) by a root name and a path relative to it
+//!   ([`FileTransfer::pull_named_file`]), served from the roots of
+//!   [`FileTransfer::add_named_pull_root`], so the holder's own layout never
+//!   leaves the holder.
 //! - **Events**: Subscribe to transfer lifecycle events (progress, completed, failed).
 //!
 //! # Architecture
@@ -35,12 +40,18 @@
 //! }
 //! ```
 
+mod named;
 pub mod receiver;
 pub mod sender;
 pub mod types;
 
+#[cfg(test)]
+mod pull_tests;
+
 pub use types::*;
 
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -49,7 +60,7 @@ use tokio::task::JoinHandle;
 use tracing::info;
 
 use crate::network::NetworkProvider;
-use crate::node::Node;
+use crate::node::{NamespacedMessage, Node};
 
 /// Default maximum transfer size: 1 GB.
 const DEFAULT_MAX_TRANSFER_SIZE: u64 = 1_073_741_824;
@@ -80,8 +91,12 @@ pub(crate) struct FileTransferState {
     pub(crate) offer_tx: Mutex<Option<mpsc::Sender<(FileOffer, OfferResponder)>>>,
     /// Maximum allowed transfer size in bytes.
     pub(crate) max_transfer_size: AtomicU64,
-    /// Canonicalized roots that PULL_REQUESTs may be served from. Empty = deny all pulls.
+    /// Canonicalized roots that absolute-path PULL_REQUESTs may be served
+    /// from. Empty = deny all absolute-path pulls.
     pub(crate) pull_roots: std::sync::RwLock<Vec<std::path::PathBuf>>,
+    /// Named roots (RFC 032): name → canonicalized directory. Only named
+    /// pulls reach them, and they never answer an absolute-path pull.
+    pub(crate) named_pull_roots: std::sync::RwLock<BTreeMap<String, PathBuf>>,
     /// Handle to the background receiver task (lazy-started).
     pub(crate) receiver_handle: Mutex<Option<JoinHandle<()>>>,
     /// What to do when a received file's destination already exists.
@@ -102,6 +117,7 @@ impl FileTransferState {
             offer_tx: Mutex::new(None),
             max_transfer_size: AtomicU64::new(DEFAULT_MAX_TRANSFER_SIZE),
             pull_roots: std::sync::RwLock::new(Vec::new()),
+            named_pull_roots: std::sync::RwLock::new(BTreeMap::new()),
             receiver_handle: Mutex::new(None),
             overwrite_policy: std::sync::RwLock::new(OverwritePolicy::default()),
             incoming_ops: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_INCOMING)),
@@ -174,7 +190,8 @@ impl<'a, N: NetworkProvider + 'static> FileTransfer<'a, N> {
         self.state().overwrite_policy()
     }
 
-    /// Register a directory that incoming PULL_REQUESTs may be served from.
+    /// Register a directory that incoming absolute-path PULL_REQUESTs may be
+    /// served from.
     ///
     /// Pull serving is **deny-by-default**: with no roots registered every
     /// incoming PULL_REQUEST is rejected. The `root` is canonicalized at
@@ -182,23 +199,101 @@ impl<'a, N: NetworkProvider + 'static> FileTransfer<'a, N> {
     /// compare correctly against canonicalized request paths); a requested
     /// file is only served if its canonical path lives inside one of these
     /// roots.
+    ///
+    /// A requester must know this holder's absolute paths to pull from such a
+    /// root. To share a directory without that, register it by name instead
+    /// ([`add_named_pull_root`](Self::add_named_pull_root)).
     pub fn add_pull_root(&self, root: &str) -> std::io::Result<()> {
         let canon = std::fs::canonicalize(root)?;
         self.state().pull_roots.write().unwrap().push(canon);
         Ok(())
     }
 
-    /// Return the currently registered (canonicalized) pull roots.
+    /// Return the currently registered (canonicalized) absolute-path pull
+    /// roots.
     ///
-    /// An empty list means pull serving is disabled (deny-by-default).
+    /// An empty list means absolute-path pulls are refused (deny-by-default).
+    /// Named roots are listed by [`named_pull_roots`](Self::named_pull_roots).
     pub fn pull_roots(&self) -> Vec<std::path::PathBuf> {
         self.state().pull_roots.read().unwrap().clone()
     }
 
-    /// Remove all registered pull roots, disabling pull serving entirely
-    /// (returns to the deny-by-default state).
+    /// Remove all registered pull roots, absolute-path and named alike,
+    /// disabling pull serving entirely (returns to the deny-by-default state).
     pub fn clear_pull_roots(&self) {
         self.state().pull_roots.write().unwrap().clear();
+        self.state().named_pull_roots.write().unwrap().clear();
+    }
+
+    /// Register `root` under `name`, so peers can pull the files below it by
+    /// name and relative path ([`pull_named_file`](Self::pull_named_file),
+    /// RFC 032).
+    ///
+    /// A named pull never carries this holder's absolute path, and a named
+    /// root is reachable by its name alone: an absolute-path pull never
+    /// reaches it, and a named pull never reaches the roots of
+    /// [`add_pull_root`](Self::add_pull_root).
+    ///
+    /// - `name` must match `[a-z0-9][a-z0-9._-]{0,63}`. Names are lowercase,
+    ///   so a lookup never folds case.
+    /// - `root` must be an existing directory. It is canonicalized here, and
+    ///   a pulled path is canonicalized under it (resolving every symlink)
+    ///   and served only if it is still inside it and a regular file.
+    ///
+    /// Registering a name again replaces its directory. As with absolute-path
+    /// roots, pulls are answered only while this node's file-transfer
+    /// receiver runs ([`offer_channel`](Self::offer_channel),
+    /// [`auto_accept`](Self::auto_accept) or
+    /// [`auto_reject`](Self::auto_reject) starts it).
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` for a name outside the grammar or a root that is not a
+    /// directory; the canonicalization's own error (such as `NotFound`)
+    /// otherwise.
+    pub fn add_named_pull_root(&self, name: &str, root: &str) -> std::io::Result<()> {
+        named::check_root_name(name)
+            .map_err(|reason| named::invalid_input("pull root name", name, reason))?;
+        let canon = std::fs::canonicalize(root)?;
+        if !std::fs::metadata(&canon)?.is_dir() {
+            return Err(named::invalid_input(
+                "pull root",
+                root,
+                "it is not a directory",
+            ));
+        }
+        self.state()
+            .named_pull_roots
+            .write()
+            .unwrap()
+            .insert(name.to_string(), canon);
+        Ok(())
+    }
+
+    /// Return the registered named pull roots, sorted by name, each with its
+    /// canonicalized directory.
+    pub fn named_pull_roots(&self) -> Vec<NamedPullRoot> {
+        self.state()
+            .named_pull_roots
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(name, path)| NamedPullRoot {
+                name: name.clone(),
+                path: path.clone(),
+            })
+            .collect()
+    }
+
+    /// Unregister the named pull root `name`. Returns whether it was
+    /// registered.
+    pub fn remove_named_pull_root(&self, name: &str) -> bool {
+        self.state()
+            .named_pull_roots
+            .write()
+            .unwrap()
+            .remove(name)
+            .is_some()
     }
 
     /// Get a channel for receiving incoming file offers.
@@ -321,7 +416,9 @@ impl<'a, N: NetworkProvider + 'static> FileTransfer<'a, N> {
     /// Pull a file from a remote peer.
     ///
     /// Sends a PULL_REQUEST, waits for the peer's OFFER, accepts it, then
-    /// receives the file over TCP.
+    /// receives the file over TCP. `remote_path` is the file's absolute path
+    /// on the peer, inside one of the peer's
+    /// [`add_pull_root`](Self::add_pull_root) roots.
     ///
     /// # Errors
     ///
@@ -336,7 +433,56 @@ impl<'a, N: NetworkProvider + 'static> FileTransfer<'a, N> {
         pull_file(
             self.node,
             peer_id,
-            remote_path,
+            PullSource::Path(remote_path),
+            local_path,
+            &self.state().event_tx,
+        )
+        .await
+    }
+
+    /// Pull a file below one of a remote peer's named pull roots (RFC 032).
+    ///
+    /// `root` is the name the peer registered with
+    /// [`add_named_pull_root`](Self::add_named_pull_root), and `path` is the
+    /// file's path relative to that root: `/`-separated, with no empty, `.`
+    /// or `..` segment, and no NUL, `\` or `:`. The peer resolves it under its
+    /// root and serves it only if it stays inside it (symlinks resolved) and is
+    /// a regular file, so this node never needs, or learns, the peer's own
+    /// directory layout.
+    ///
+    /// # Errors
+    ///
+    /// - `TransferError::Io` with `InvalidInput` when `root` or `path` breaks
+    ///   its grammar; nothing is sent.
+    /// - `TransferError::Rejected` with [`NAMED_PULL_DENIED_REASON`] when the
+    ///   peer refuses: the root is unknown, or the path is missing, outside
+    ///   the root, not a regular file or too large. One reason for all, so the
+    ///   peer reveals nothing about what it holds.
+    /// - [`TransferError::Unsupported`] when the peer predates named roots. It
+    ///   refused without reading any file; pull from a peer that supports
+    ///   them, or by absolute path ([`pull_file`](Self::pull_file)).
+    /// - As [`pull_file`](Self::pull_file) otherwise (I/O, timeout, integrity).
+    pub async fn pull_named_file(
+        &self,
+        peer_id: &str,
+        root: &str,
+        path: &str,
+        local_path: &str,
+    ) -> Result<TransferResult, TransferError> {
+        named::check_root_name(root).map_err(|reason| {
+            TransferError::Io(named::invalid_input("pull root name", root, reason))
+        })?;
+        named::check_relative_path(path).map_err(|reason| {
+            TransferError::Io(named::invalid_input("relative path", path, reason))
+        })?;
+        let target = NamedPath {
+            root: root.to_string(),
+            path: path.to_string(),
+        };
+        pull_file(
+            self.node,
+            peer_id,
+            PullSource::Named(target),
             local_path,
             &self.state().event_tx,
         )
@@ -366,6 +512,67 @@ impl<'a, N: NetworkProvider + 'static> FileTransfer<'a, N> {
 // Pull file — download from a remote peer
 // ---------------------------------------------------------------------------
 
+/// What a pull asks the holder for.
+enum PullSource<'a> {
+    /// An absolute path on the holder, inside one of its absolute-path roots.
+    Path(&'a str),
+    /// A path below one of the holder's named roots (RFC 032).
+    Named(NamedPath),
+}
+
+/// The holder's OFFER in answer to a pull.
+#[derive(Debug)]
+struct PullOffer {
+    sha256: String,
+    size: u64,
+    token: String,
+    file_name: String,
+}
+
+/// What a pull's waiter makes of one `ft` message: the holder's answer to
+/// this pull, or `None` for any other message.
+///
+/// Every waiter on a node sees every `ft` message, so with several pulls in
+/// flight to one holder an answer must name its pull. A REJECT does: a holder
+/// that refuses a pull echoes the PULL_REQUEST's `token` in it, as every
+/// version since 0.4.8 does. A named pull's OFFER does too, because the
+/// holder reuses that token for it (RFC 032 §3.5), and no holder that predates
+/// named roots ever offers a file for a named pull. An absolute-path pull's
+/// OFFER carries a fresh token the requester cannot know, so it is taken from
+/// the peer alone, as before.
+fn pull_answer(
+    msg: &NamespacedMessage,
+    peer_id: &str,
+    token: &str,
+    is_named: bool,
+) -> Option<Result<PullOffer, TransferError>> {
+    if msg.from != peer_id {
+        return None;
+    }
+    let ft_msg: FtMessage = serde_json::from_value(msg.payload.clone()).ok()?;
+    match ft_msg {
+        FtMessage::Offer {
+            file_name,
+            sha256,
+            size,
+            token: offer_token,
+            ..
+        } if !is_named || offer_token == token => {
+            tracing::info!(size = size, "Received OFFER from peer");
+            Some(Ok(PullOffer {
+                sha256,
+                size,
+                token: offer_token,
+                file_name,
+            }))
+        }
+        FtMessage::Reject { token: t, reason } if t == token => {
+            Some(Err(named::pull_rejection(is_named, reason)))
+        }
+        _ => None,
+    }
+}
+
 /// Pull (download) a file from a remote peer.
 ///
 /// 1. Send PULL_REQUEST via WS
@@ -378,7 +585,7 @@ impl<'a, N: NetworkProvider + 'static> FileTransfer<'a, N> {
 async fn pull_file<N: NetworkProvider + 'static>(
     node: &Node<N>,
     peer_id: &str,
-    remote_path: &str,
+    source: PullSource<'_>,
     local_path: &str,
     event_tx: &broadcast::Sender<FileTransferEvent>,
 ) -> Result<TransferResult, TransferError> {
@@ -415,50 +622,47 @@ async fn pull_file<N: NetworkProvider + 'static>(
         .id;
     let peer_id = peer_id.as_str();
 
-    // 1. Send PULL_REQUEST and wait for OFFER from peer
+    // 1. Send PULL_REQUEST and wait for OFFER from peer. A named pull sends an
+    // empty `path`, which a holder that predates named roots cannot resolve:
+    // it refuses with its legacy reason, read below as Unsupported (RFC 032).
+    let (path, target) = match source {
+        PullSource::Path(remote_path) => (remote_path.to_string(), None),
+        PullSource::Named(target) => (String::new(), Some(target)),
+    };
+    let is_named = target.is_some();
+    let label = match &target {
+        Some(t) => format!("{}:{}", t.root, t.path),
+        None => path.clone(),
+    };
     let pull_req = FtMessage::PullRequest {
-        path: remote_path.to_string(),
+        path,
         requester_id,
         token: token.clone(),
+        named: target,
     };
 
     let pull_payload = serde_json::to_value(&pull_req)
         .map_err(|e| TransferError::Protocol(format!("Failed to serialize pull request: {e}")))?;
 
-    tracing::info!(peer = peer_id, path = remote_path, "Sending PULL_REQUEST");
+    tracing::info!(
+        peer = peer_id,
+        path = label.as_str(),
+        "Sending PULL_REQUEST"
+    );
 
     // Negotiation: PULL_REQUEST sent → the serving peer's TCP connection
     // accepted (includes that peer hashing the file before its OFFER, and our
     // own sidecar's per-connection accept handoff, which a push counts in
     // `transfer_secs` instead; see `TransferTimings`).
     let negotiate_start = Instant::now();
-    let (offer_sha256, offer_size, offer_token, file_name) = crate::request_reply::send_and_wait(
+    let offer = crate::request_reply::send_and_wait(
         node,
         peer_id,
         "ft",
         "pull_request",
         &pull_payload,
         std::time::Duration::from_secs(30),
-        |msg| {
-            if msg.from != peer_id {
-                return None;
-            }
-            let ft_msg: FtMessage = serde_json::from_value(msg.payload.clone()).ok()?;
-            match ft_msg {
-                FtMessage::Offer {
-                    file_name,
-                    sha256,
-                    size,
-                    token: offer_token,
-                    ..
-                } => {
-                    tracing::info!(size = size, "Received OFFER from peer");
-                    Some(Ok((sha256, size, offer_token, file_name)))
-                }
-                FtMessage::Reject { reason, .. } => Some(Err(TransferError::Rejected(reason))),
-                _ => None,
-            }
-        },
+        |msg| pull_answer(msg, peer_id, &token, is_named),
     )
     .await
     .map_err(|e| match e {
@@ -468,6 +672,12 @@ async fn pull_file<N: NetworkProvider + 'static>(
             TransferError::Protocol("Channel closed".into())
         }
     })??;
+    let PullOffer {
+        sha256: offer_sha256,
+        size: offer_size,
+        token: offer_token,
+        file_name,
+    } = offer;
 
     // M1: reject an over-size OFFER before accepting the pull.
     let max_size = node

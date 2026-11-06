@@ -138,9 +138,19 @@ export type MeshNode = Omit<
 };
 
 /** Native file-transfer handle with PeerLike parameters (RFC 022 §6.3). */
-export type MeshFileTransfer = Omit<NapiFileTransfer, 'sendFile' | 'pullFile'> & {
+export type MeshFileTransfer = Omit<NapiFileTransfer, 'sendFile' | 'pullFile' | 'pullNamedFile'> & {
   sendFile(to: PeerLike, localPath: string, remotePath: string): Promise<NapiTransferResult>;
   pullFile(to: PeerLike, remotePath: string, localPath: string): Promise<NapiTransferResult>;
+  /**
+   * Pull a file below one of the peer's named pull roots (RFC 032): `root` is
+   * the name the peer registered, `path` is relative to it.
+   */
+  pullNamedFile(
+    to: PeerLike,
+    root: string,
+    path: string,
+    localPath: string,
+  ): Promise<NapiTransferResult>;
 };
 
 /** Peer event with interned handle (RFC 022). */
@@ -247,6 +257,26 @@ export function toMeshPeerEvent(reg: PeerRegistry, raw: NapiPeerEvent): MeshPeer
     }
   }
   return { type, peerId, peer, authUrl: raw.authUrl };
+}
+
+/**
+ * Give a native file-transfer handle PeerLike parameters (RFC 022 §6.3).
+ * @internal — exported for unit tests only.
+ */
+export function wrapFileTransfer(ft: NapiFileTransfer): MeshFileTransfer {
+  // Same shadowing rule as the node itself: bind the native method before
+  // the own-property assignment or the wrapper calls itself.
+  const nativeSendFile = ft.sendFile.bind(ft);
+  const nativePullFile = ft.pullFile.bind(ft);
+  const nativePullNamedFile = ft.pullNamedFile.bind(ft);
+  const wrapped = ft as unknown as MeshFileTransfer;
+  wrapped.sendFile = (to: PeerLike, localPath: string, remotePath: string) =>
+    nativeSendFile(peerLikeToQuery(to), localPath, remotePath);
+  wrapped.pullFile = (to: PeerLike, remotePath: string, localPath: string) =>
+    nativePullFile(peerLikeToQuery(to), remotePath, localPath);
+  wrapped.pullNamedFile = (to: PeerLike, root: string, path: string, localPath: string) =>
+    nativePullNamedFile(peerLikeToQuery(to), root, path, localPath);
+  return wrapped;
 }
 
 /**
@@ -391,19 +421,7 @@ export async function createMeshNode(options: CreateMeshNodeOptions): Promise<Me
   mesh.connectQuic = (to: PeerLike, port: number) => nativeConnectQuic(peerLikeToQuery(to), port);
 
   const nativeFileTransfer = node.fileTransfer.bind(node);
-  mesh.fileTransfer = () => {
-    const ft = nativeFileTransfer();
-    // Same shadowing rule as the node itself: bind the native method before
-    // the own-property assignment or the wrapper calls itself.
-    const nativeSendFile = ft.sendFile.bind(ft);
-    const nativePullFile = ft.pullFile.bind(ft);
-    const wrapped = ft as unknown as MeshFileTransfer;
-    wrapped.sendFile = (to: PeerLike, localPath: string, remotePath: string) =>
-      nativeSendFile(peerLikeToQuery(to), localPath, remotePath);
-    wrapped.pullFile = (to: PeerLike, remotePath: string, localPath: string) =>
-      nativePullFile(peerLikeToQuery(to), remotePath, localPath);
-    return wrapped;
-  };
+  mesh.fileTransfer = () => wrapFileTransfer(nativeFileTransfer());
 
   // One unconditional native subscription maintains the registry — intern on
   // every snapshot-bearing event, retire on `left` — so `msg.from` resolves
