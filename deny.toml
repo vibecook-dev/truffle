@@ -12,7 +12,13 @@ exclude = ["truffle-tauri-plugin", "truffle-napi", "truffle-bench-app"]
 # Advisories — all advisories are denied by default in modern cargo-deny.
 # Use `ignore` to suppress specific advisories with justification.
 [advisories]
-ignore = []
+ignore = [
+  # RUSTSEC-2026-0441 (2026-11): pin-utils 0.1.0 is UNMAINTAINED (its repository was archived on 2026-10-01), with no
+  # vulnerability reported. It reaches truffle only through hyper 1.8.1 (Cargo.lock), and hyper 1.10.1 and later no
+  # longer depend on it (the crates.io index, read 2026-11-06). Remove this entry when Cargo.lock's hyper moves to
+  # >= 1.10.1: that bump touches the serve proxy's HTTP stack, so it is its own change, not this chore's.
+  { id = "RUSTSEC-2026-0441", reason = "pin-utils is unmaintained, not vulnerable; only via hyper 1.8.1, and hyper >= 1.10.1 drops it" },
+]
 
 # Licenses — only explicitly allowed licenses pass; everything else is denied.
 [licenses]
