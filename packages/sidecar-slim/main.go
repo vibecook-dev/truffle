@@ -28,6 +28,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -163,11 +164,14 @@ type dialResultData struct {
 // app sets the node's Hostinfo.App ("truffle:{app_id}", T8), and every peer
 // row (tsnet:peers, tsnet:peerChanged) carries app, the peer's Hostinfo.App
 // as control relays it (absent when the peer announces none), so the core
-// admits peers by that tag rather than by the hostname prefix.
+// admits peers by that tag rather than by the hostname prefix; v13 =
+// proxy:add's headers, on the serve and on each route (RFC 030), are set on
+// every response the serve writes: static files, proxied responses (replacing
+// the backend's value) and the engine's own 404, 403 and 502.
 // An absent value makes the core treat the sidecar as v1.
 // Bump on any addition to the command surface the core must not send blind,
 // or to an event the core relies on.
-const sidecarProtocolVersion = 12
+const sidecarProtocolVersion = 13
 
 type statusData struct {
 	State       string `json:"state"`
@@ -465,21 +469,33 @@ type proxyAddData struct {
 	// Tailscale-App-Capabilities header — the allow-list `tailscale serve
 	// --accept-app-caps` takes. Empty = header never sent (protocol v9).
 	AcceptAppCaps []string `json:"acceptAppCaps,omitempty"`
+	// Headers are the serve's response headers (protocol v13, RFC 030), set
+	// on every response it writes. A route's own headers replace these by
+	// name; validateResponseHeaders re-checks both off the wire.
+	Headers []proxyHeaderData `json:"headers,omitempty"`
 
 	// RequestID is an optional correlation id echoed on proxy:added/proxy:error.
 	RequestID string `json:"requestId,omitempty"`
+}
+
+// proxyHeaderData is one response header of a serve or a route (protocol
+// v13, RFC 030): {"name": ..., "value": ...}.
+type proxyHeaderData struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // proxyRouteData is one path-prefix route of a v2 proxy (RFC 023 §7).
 // Exactly one of targetUrl/dir is set. The Rust core validates shapes, but
 // the sidecar re-checks — it must not trust the wire.
 type proxyRouteData struct {
-	Prefix      string   `json:"prefix"`
-	TargetURL   string   `json:"targetUrl,omitempty"`
-	Dir         string   `json:"dir,omitempty"`
-	Fallback    string   `json:"fallback,omitempty"`
-	StripPrefix bool     `json:"stripPrefix,omitempty"`
-	Allow       []string `json:"allow,omitempty"`
+	Prefix      string            `json:"prefix"`
+	TargetURL   string            `json:"targetUrl,omitempty"`
+	Dir         string            `json:"dir,omitempty"`
+	Fallback    string            `json:"fallback,omitempty"`
+	StripPrefix bool              `json:"stripPrefix,omitempty"`
+	Allow       []string          `json:"allow,omitempty"`
+	Headers     []proxyHeaderData `json:"headers,omitempty"`
 }
 
 // proxyRemoveData is the payload for proxy:remove commands.
@@ -669,6 +685,11 @@ type boundRoute struct {
 	target  *url.URL // nil for dir routes (no WebSocket dispatch)
 	// Hijacked upgrades must apply the same target path/query rewrite as HTTP.
 	rewriteRequest func(*http.Request)
+	// headers is the route's effective response-header list (RFC 030): the
+	// serve's, each replaced by the route's own of the same name. handler
+	// already sets it; the request handler sets it on the engine's own 403
+	// and on the WebSocket path's errors.
+	headers http.Header
 }
 
 type proxyAddFailure struct {
@@ -2521,6 +2542,233 @@ func validateAcceptAppCaps(names []string) *proxyAddFailure {
 	return nil
 }
 
+// Response-header bounds (protocol v13, RFC 030). The core holds the same
+// numbers (truffle-core proxy/mod.rs), and both sides are tested against
+// crates/truffle-core/src/proxy/response_headers_vectors.json.
+const (
+	maxResponseHeaders          = 32
+	maxResponseHeaderNameBytes  = 64
+	maxResponseHeaderValueBytes = 8192
+	maxResponseHeadersBytes     = 16 * 1024
+)
+
+// refusedResponseHeaders are the names a serve may never set, lowercase,
+// besides any "proxy-" name. The hop-by-hop names (RFC 7230 §6.1) describe
+// one connection, not the response; the engine owns Content-Length (it frames
+// each body) and Host; and Set-Cookie would give every caller of the serve the
+// same session. The core holds the same list.
+var refusedResponseHeaders = []string{
+	"connection", "keep-alive", "te", "trailer", "transfer-encoding", "upgrade",
+	"set-cookie", "content-length", "host",
+}
+
+// refusedResponseHeaderPrefix: every Proxy-* name is hop-by-hop or belongs to
+// a proxy's own exchange (Proxy-Authenticate, Proxy-Connection).
+const refusedResponseHeaderPrefix = "proxy-"
+
+// validateResponseHeaders re-checks the response headers off the wire
+// (protocol v13, RFC 030): each list on its own, then every list a response
+// can carry — the serve's own (a v1 serve, and the engine's 404 for an
+// unmatched path) and each route's merged over it. The same rules, in the same
+// order, as the core's validate_response_headers, so a fault reads the same on
+// both sides.
+func validateResponseHeaders(data proxyAddData) *proxyAddFailure {
+	fail := func(message string) *proxyAddFailure {
+		return &proxyAddFailure{code: "INVALID_HEADER", message: message}
+	}
+	if msg := validateResponseHeaderList("serve headers", data.Headers); msg != "" {
+		return fail(msg)
+	}
+	if msg := validateEffectiveResponseHeaders("serve headers", data.Headers, nil); msg != "" {
+		return fail(msg)
+	}
+	for _, rt := range data.Routes {
+		if len(rt.Headers) == 0 {
+			continue
+		}
+		scope := fmt.Sprintf("route %q headers", rt.Prefix)
+		if msg := validateResponseHeaderList(scope, rt.Headers); msg != "" {
+			return fail(msg)
+		}
+		if msg := validateEffectiveResponseHeaders(scope, data.Headers, rt.Headers); msg != "" {
+			return fail(msg)
+		}
+	}
+	return nil
+}
+
+// validateResponseHeaderList checks one list (a serve's or a route's) on its
+// own: the count, each header, and no name twice (case-insensitive). It
+// returns the fault, or "" for none.
+func validateResponseHeaderList(scope string, hs []proxyHeaderData) string {
+	if len(hs) > maxResponseHeaders {
+		return fmt.Sprintf("%s: more than %d response headers", scope, maxResponseHeaders)
+	}
+	seen := make(map[string]bool, len(hs))
+	for _, h := range hs {
+		if msg := validateResponseHeader(scope, h); msg != "" {
+			return msg
+		}
+		lower := strings.ToLower(h.Name)
+		if seen[lower] {
+			return fmt.Sprintf("%s: header %q appears twice (names are case-insensitive)", scope, h.Name)
+		}
+		seen[lower] = true
+	}
+	return ""
+}
+
+// validateResponseHeader checks one header: the name's length, its token
+// grammar and the refused names, then the value's emptiness, length, bytes and
+// edges. A fault names the header but never echoes a value, nor a name past
+// the length bound.
+func validateResponseHeader(scope string, h proxyHeaderData) string {
+	if len(h.Name) > maxResponseHeaderNameBytes {
+		return fmt.Sprintf("%s: a header name is longer than %d bytes", scope, maxResponseHeaderNameBytes)
+	}
+	if h.Name == "" || !isHeaderToken(h.Name) {
+		return fmt.Sprintf("%s: header name %q is not an RFC 7230 token", scope, h.Name)
+	}
+	lower := strings.ToLower(h.Name)
+	if strings.HasPrefix(lower, refusedResponseHeaderPrefix) || slices.Contains(refusedResponseHeaders, lower) {
+		return fmt.Sprintf("%s: header %q is hop-by-hop or set by the engine and cannot be configured", scope, h.Name)
+	}
+	v := h.Value
+	if v == "" {
+		return fmt.Sprintf("%s: header %q has an empty value", scope, h.Name)
+	}
+	if len(v) > maxResponseHeaderValueBytes {
+		return fmt.Sprintf("%s: header %q value is longer than %d bytes", scope, h.Name, maxResponseHeaderValueBytes)
+	}
+	for i := 0; i < len(v); i++ {
+		if !isHeaderValueByte(v[i]) {
+			return fmt.Sprintf("%s: header %q value has a byte other than VCHAR, SP or HTAB", scope, h.Name)
+		}
+	}
+	if isHeaderWhitespace(v[0]) || isHeaderWhitespace(v[len(v)-1]) {
+		return fmt.Sprintf("%s: header %q value has leading or trailing whitespace", scope, h.Name)
+	}
+	return ""
+}
+
+// validateEffectiveResponseHeaders checks the list a response actually carries
+// against the bounds: route merged over serve (mergeResponseHeaders). With
+// route empty it is the serve's own.
+func validateEffectiveResponseHeaders(scope string, serve, route []proxyHeaderData) string {
+	h := mergeResponseHeaders(serve, route)
+	if len(h) > maxResponseHeaders {
+		return fmt.Sprintf("%s: more than %d response headers", scope, maxResponseHeaders)
+	}
+	total := 0
+	for name, values := range h {
+		total += len(name)
+		for _, v := range values {
+			total += len(v)
+		}
+	}
+	if total > maxResponseHeadersBytes {
+		return fmt.Sprintf("%s: response headers exceed %d bytes", scope, maxResponseHeadersBytes)
+	}
+	return ""
+}
+
+// isHeaderToken reports whether every byte of s is an RFC 7230 tchar.
+func isHeaderToken(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		alnum := ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9')
+		if !alnum && strings.IndexByte("!#$%&'*+-.^_`|~", c) < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// isHeaderValueByte reports whether b may appear in a header value: visible
+// ASCII (VCHAR), space or horizontal tab. No control byte, no DEL, no obs-text.
+func isHeaderValueByte(b byte) bool {
+	return b == '\t' || (' ' <= b && b <= '~')
+}
+
+func isHeaderWhitespace(b byte) bool {
+	return b == ' ' || b == '\t'
+}
+
+// mergeResponseHeaders is the header list one route's responses carry: the
+// serve's headers, each replaced by the route's of the same name (names
+// compared case-insensitively; keys canonical). nil when both are empty.
+func mergeResponseHeaders(serve, route []proxyHeaderData) http.Header {
+	if len(serve) == 0 && len(route) == 0 {
+		return nil
+	}
+	h := make(http.Header, len(serve)+len(route))
+	for _, e := range serve {
+		h.Set(e.Name, e.Value)
+	}
+	for _, e := range route {
+		h.Set(e.Name, e.Value)
+	}
+	return h
+}
+
+// applyResponseHeaders sets every header of src on dst, replacing what dst
+// holds for that name: the serve's policy wins over a backend's or a
+// handler's value (RFC 030). Each value slice is copied, so nothing written to
+// dst later can reach the shared policy.
+func applyResponseHeaders(dst, src http.Header) {
+	for name, values := range src {
+		dst[name] = append([]string(nil), values...)
+	}
+}
+
+// withResponseHeaders makes rp set h on every response it writes (RFC 030).
+// The headers go on through ModifyResponse, on the backend's response before
+// ReverseProxy copies it out: a header set on the writer beforehand would be
+// duplicated by that copy (it adds the backend's values) and cleared after a
+// relayed 1xx. The error handler sets them on the engine's own 502. A relayed
+// 1xx itself carries none. A no-op for an empty h.
+func withResponseHeaders(rp *httputil.ReverseProxy, h http.Header) {
+	if len(h) == 0 {
+		return
+	}
+	modify := rp.ModifyResponse
+	rp.ModifyResponse = func(res *http.Response) error {
+		if modify != nil {
+			if err := modify(res); err != nil {
+				return err
+			}
+		}
+		if res.Header == nil {
+			res.Header = make(http.Header, len(h))
+		}
+		applyResponseHeaders(res.Header, h)
+		return nil
+	}
+	handleError := rp.ErrorHandler
+	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		applyResponseHeaders(w.Header(), h)
+		if handleError != nil {
+			handleError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusBadGateway)
+	}
+}
+
+// withStaticResponseHeaders sets h on the writer before next runs: right for a
+// handler that writes its own responses (the static server's files, 304s,
+// 404s, 405s and 416s), where nothing adds to the header map afterwards. A
+// no-op for an empty h.
+func withStaticResponseHeaders(next http.Handler, h http.Header) http.Handler {
+	if len(h) == 0 {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		applyResponseHeaders(w.Header(), h)
+		next.ServeHTTP(w, r)
+	})
+}
+
 // bindProxyRoutes validates every route and opens all static roots before any
 // proxy state or listener is installed. On any failure, including a panic, it
 // closes roots accumulated from earlier routes.
@@ -2542,11 +2790,14 @@ func (s *shim) bindProxyRoutes(data proxyAddData) (routes []boundRoute, resource
 			}
 		}
 		proxy := s.buildReverseProxy(data.ID, targetURL, "")
+		headers := mergeResponseHeaders(data.Headers, nil)
+		withResponseHeaders(proxy, headers)
 		routes = append(routes, boundRoute{
 			prefix:         "/",
 			handler:        proxy,
 			target:         targetURL,
 			rewriteRequest: proxy.Director,
+			headers:        headers,
 		})
 	} else {
 		for _, rt := range data.Routes {
@@ -2572,12 +2823,15 @@ func (s *shim) bindProxyRoutes(data proxyAddData) (routes []boundRoute, resource
 					strip = rt.Prefix
 				}
 				proxy := s.buildReverseProxy(data.ID, u, strip)
+				headers := mergeResponseHeaders(data.Headers, rt.Headers)
+				withResponseHeaders(proxy, headers)
 				routes = append(routes, boundRoute{
 					prefix:         rt.Prefix,
 					allow:          rt.Allow,
 					handler:        proxy,
 					target:         u,
 					rewriteRequest: proxy.Director,
+					headers:        headers,
 				})
 			case rt.Dir != "":
 				if !filepath.IsAbs(rt.Dir) {
@@ -2600,10 +2854,12 @@ func (s *shim) bindProxyRoutes(data proxyAddData) (routes []boundRoute, resource
 					}
 				}
 				resources.addRoot(root)
+				headers := mergeResponseHeaders(data.Headers, rt.Headers)
 				routes = append(routes, boundRoute{
 					prefix:  rt.Prefix,
 					allow:   rt.Allow,
-					handler: newSPAFileServer(root, rt.Fallback),
+					handler: withStaticResponseHeaders(newSPAFileServer(root, rt.Fallback), headers),
+					headers: headers,
 				})
 			default:
 				return nil, resources, &proxyAddFailure{code: "INVALID_ROUTE", message: fmt.Sprintf("route %q needs a targetUrl or a dir", rt.Prefix)}
@@ -2671,6 +2927,10 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 		fail(failure.code, failure.message)
 		return
 	}
+	if failure := validateResponseHeaders(data); failure != nil {
+		fail(failure.code, failure.message)
+		return
+	}
 	routes, resources, bindFailure := s.bindProxyRoutes(data)
 	if bindFailure != nil {
 		fail(bindFailure.code, bindFailure.message)
@@ -2731,6 +2991,9 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 	if len(data.Routes) == 0 {
 		entryTargetURL = routes[0].target
 	}
+	// The serve's own response headers (RFC 030) ride the engine's 404 for a
+	// path no route matches; a matched route's handler sets its own list.
+	serveHeaders := mergeResponseHeaders(data.Headers, nil)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Identity first (§9.2): resolve who is calling from the WireGuard
@@ -2747,12 +3010,14 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 			}
 		}
 		if route == nil {
+			applyResponseHeaders(w.Header(), serveHeaders)
 			http.NotFound(w, r)
 			return
 		}
 
 		if !allowedLogin(effectiveAllow(route.allow, data.Allow), identity.LoginName) {
 			// Bare 403 (§9.7): no detail about the gate to non-matching callers.
+			applyResponseHeaders(w.Header(), route.headers)
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
@@ -2768,6 +3033,9 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 			s.proxyMu.Lock()
 			entry := s.proxies[data.ID]
 			s.proxyMu.Unlock()
+			// The route's headers ride this path's own 502 and 500; a hijacked
+			// upgrade is a byte relay, and its 101 is the backend's own.
+			applyResponseHeaders(w.Header(), route.headers)
 			s.handleProxyWebSocket(w, r, entry, route.target.Hostname(), urlPort(route.target), route.target.Scheme)
 			return
 		}
