@@ -63,6 +63,8 @@ pub enum FtMessage {
         /// The holder's absolute path (absolute-path pull), or empty (named pull).
         path: String,
         requester_id: String,
+        /// Names this pull: the holder echoes it in the REJECT that refuses
+        /// it and, for a named pull, in the OFFER that answers it (RFC 032).
         token: String,
         /// The named root and relative path (named pull, RFC 032). Absent from
         /// an absolute-path pull, so its JSON is unchanged.
@@ -189,7 +191,11 @@ pub struct TransferTimings {
 // ---------------------------------------------------------------------------
 
 /// Errors during file transfer.
+///
+/// `#[non_exhaustive]`: a `match` outside truffle-core needs a wildcard arm,
+/// so a later variant does not break it.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum TransferError {
     /// File I/O error.
     Io(std::io::Error),

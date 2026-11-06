@@ -45,6 +45,9 @@ pub mod receiver;
 pub mod sender;
 pub mod types;
 
+#[cfg(test)]
+mod pull_tests;
+
 pub use types::*;
 
 use std::collections::BTreeMap;
@@ -57,7 +60,7 @@ use tokio::task::JoinHandle;
 use tracing::info;
 
 use crate::network::NetworkProvider;
-use crate::node::Node;
+use crate::node::{NamespacedMessage, Node};
 
 /// Default maximum transfer size: 1 GB.
 const DEFAULT_MAX_TRANSFER_SIZE: u64 = 1_073_741_824;
@@ -517,6 +520,59 @@ enum PullSource<'a> {
     Named(NamedPath),
 }
 
+/// The holder's OFFER in answer to a pull.
+#[derive(Debug)]
+struct PullOffer {
+    sha256: String,
+    size: u64,
+    token: String,
+    file_name: String,
+}
+
+/// What a pull's waiter makes of one `ft` message: the holder's answer to
+/// this pull, or `None` for any other message.
+///
+/// Every waiter on a node sees every `ft` message, so with several pulls in
+/// flight to one holder an answer must name its pull. A REJECT does: a holder
+/// that refuses a pull echoes the PULL_REQUEST's `token` in it, as every
+/// version since 0.4.8 does. A named pull's OFFER does too, because the
+/// holder reuses that token for it (RFC 032 §3.5), and no holder that predates
+/// named roots ever offers a file for a named pull. An absolute-path pull's
+/// OFFER carries a fresh token the requester cannot know, so it is taken from
+/// the peer alone, as before.
+fn pull_answer(
+    msg: &NamespacedMessage,
+    peer_id: &str,
+    token: &str,
+    is_named: bool,
+) -> Option<Result<PullOffer, TransferError>> {
+    if msg.from != peer_id {
+        return None;
+    }
+    let ft_msg: FtMessage = serde_json::from_value(msg.payload.clone()).ok()?;
+    match ft_msg {
+        FtMessage::Offer {
+            file_name,
+            sha256,
+            size,
+            token: offer_token,
+            ..
+        } if !is_named || offer_token == token => {
+            tracing::info!(size = size, "Received OFFER from peer");
+            Some(Ok(PullOffer {
+                sha256,
+                size,
+                token: offer_token,
+                file_name,
+            }))
+        }
+        FtMessage::Reject { token: t, reason } if t == token => {
+            Some(Err(named::pull_rejection(is_named, reason)))
+        }
+        _ => None,
+    }
+}
+
 /// Pull (download) a file from a remote peer.
 ///
 /// 1. Send PULL_REQUEST via WS
@@ -599,35 +655,14 @@ async fn pull_file<N: NetworkProvider + 'static>(
     // own sidecar's per-connection accept handoff, which a push counts in
     // `transfer_secs` instead; see `TransferTimings`).
     let negotiate_start = Instant::now();
-    let (offer_sha256, offer_size, offer_token, file_name) = crate::request_reply::send_and_wait(
+    let offer = crate::request_reply::send_and_wait(
         node,
         peer_id,
         "ft",
         "pull_request",
         &pull_payload,
         std::time::Duration::from_secs(30),
-        |msg| {
-            if msg.from != peer_id {
-                return None;
-            }
-            let ft_msg: FtMessage = serde_json::from_value(msg.payload.clone()).ok()?;
-            match ft_msg {
-                FtMessage::Offer {
-                    file_name,
-                    sha256,
-                    size,
-                    token: offer_token,
-                    ..
-                } => {
-                    tracing::info!(size = size, "Received OFFER from peer");
-                    Some(Ok((sha256, size, offer_token, file_name)))
-                }
-                FtMessage::Reject { reason, .. } => {
-                    Some(Err(named::pull_rejection(is_named, reason)))
-                }
-                _ => None,
-            }
-        },
+        |msg| pull_answer(msg, peer_id, &token, is_named),
     )
     .await
     .map_err(|e| match e {
@@ -637,6 +672,12 @@ async fn pull_file<N: NetworkProvider + 'static>(
             TransferError::Protocol("Channel closed".into())
         }
     })??;
+    let PullOffer {
+        sha256: offer_sha256,
+        size: offer_size,
+        token: offer_token,
+        file_name,
+    } = offer;
 
     // M1: reject an over-size OFFER before accepting the pull.
     let max_size = node

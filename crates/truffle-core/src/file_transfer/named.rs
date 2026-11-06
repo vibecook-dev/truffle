@@ -240,6 +240,18 @@ mod tests {
     }
 
     #[test]
+    fn a_relative_path_is_a_wire_string_not_an_os_path() {
+        // A content-addressed object, `<first 2 hex>/<64 hex>`, is named with
+        // '/' on every platform. Built as a Windows path it is joined with
+        // '\' instead, and refused before anything is sent.
+        let hex = "ab".repeat(32);
+        let wire = format!("{}/{hex}", &hex[..2]);
+        assert_eq!(check_relative_path(&wire), Ok(()));
+        let windows = format!("{}\\{hex}", &hex[..2]);
+        assert!(check_relative_path(&windows).is_err());
+    }
+
+    #[test]
     fn invalid_input_names_the_value_and_the_reason() {
         let e = invalid_input("pull root name", "Objects", "lowercase only");
         assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
@@ -320,21 +332,29 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_sibling_sharing_the_roots_prefix_is_refused() {
         // "shared-evil" shares a string prefix with the root's directory but
-        // is not inside it, and no relative path can reach it.
+        // is not inside it. A symlink in the root leads there, so its
+        // canonical path reaches the containment check, which only a
+        // component-wise comparison refuses: as a string it starts with the
+        // root.
         let base = tempfile::tempdir().unwrap();
         let shared = base.path().join("shared");
         let evil = base.path().join("shared-evil");
         std::fs::create_dir(&shared).unwrap();
         std::fs::create_dir(&evil).unwrap();
         std::fs::write(evil.join("f.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink(evil.join("f.txt"), shared.join("evil")).unwrap();
         let root = std::fs::canonicalize(&shared).unwrap();
+        let escape = std::fs::canonicalize(evil.join("f.txt")).unwrap();
+        let root_str = root.to_str().unwrap();
+        assert!(escape.to_str().unwrap().starts_with(root_str));
         let mut roots = BTreeMap::new();
         roots.insert("shared".to_string(), root);
 
-        let err = authorize(&roots, "shared", "../shared-evil/f.txt").unwrap_err();
+        let err = authorize(&roots, "shared", "evil").unwrap_err();
         assert!(matches!(err, TransferError::Rejected(_)), "{err}");
     }
 

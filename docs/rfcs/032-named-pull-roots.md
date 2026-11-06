@@ -64,6 +64,9 @@ A named pull's `path` is `/`-separated and normalized. It is refused when it:
 `\` and `:` are refused so a path names the same file on every holder platform: on Windows `\` separates and
 `:` starts a drive (`C:x`) or an alternate data stream (`f.txt:s`).
 
+So `path` is a wire string, never an OS path: a requester joins its segments with `/` on every platform. A
+relative path built as a Windows `PathBuf` (`ab\ab01…`) is refused on the requester before anything is sent.
+
 The requester checks both grammars before it sends anything (`TransferError::Io` with `InvalidInput`). The
 holder checks again and never trusts the requester's check.
 
@@ -93,9 +96,20 @@ answers `receiver busy`.
 
 ### 3.5 Serving
 
-Unchanged from an absolute-path pull: OFFER, ACCEPT, raw TCP, SHA-256. The OFFER's `file_name` is the last
-segment of the relative path. As with absolute-path roots, a holder answers pulls only while its file-transfer
+As for an absolute-path pull: OFFER, ACCEPT, raw TCP, SHA-256. The OFFER's `file_name` is the last segment
+of the relative path. As with absolute-path roots, a holder answers pulls only while its file-transfer
 receiver runs (`offer_channel`, `auto_accept` or `auto_reject` starts it).
+
+One thing differs: **the OFFER that answers a named pull carries the PULL_REQUEST's own `token`**, where an
+absolute-path pull's OFFER carries a fresh one. Every pull waiting on a node sees every `ft` message, so with
+several pulls in flight to one holder each must know which answer is its own. The requester takes:
+
+- a REJECT only when it carries the pull's `token`, on every pull. Every holder that refuses a pull (0.4.8 on)
+  echoes the token, so this costs no compatibility;
+- on a named pull, an OFFER only when it carries the pull's `token`. No holder that predates this RFC offers a
+  file for a named pull (§5), so this costs no compatibility either;
+- on an absolute-path pull, the peer's OFFER whatever its token, as before. Its JSON and every earlier holder's
+  OFFER are unchanged, so two absolute-path pulls in flight to one holder can still take each other's OFFER.
 
 ## 4. Wire
 
@@ -108,6 +122,9 @@ receiver runs (`offer_channel`, `auto_accept` or `auto_reject` starts it).
 
 `named` is `#[serde(default, skip_serializing_if = "Option::is_none")]`, so an absolute-path pull's JSON is
 byte-identical to before, and a current holder reads an earlier requester's pull exactly as before.
+
+The holder answers a named pull with an OFFER whose `token` is the PULL_REQUEST's `token` (§3.5); the OFFER's
+shape is unchanged.
 
 ## 5. Mixed versions
 
@@ -124,11 +141,14 @@ directory.
 | current → a holder whose receiver is not running | no answer; `Timeout`, as for any pull |
 | earlier → current | absolute-path pulls only, served exactly as before |
 
-**A named pull never yields a wrong file**: an earlier holder can only refuse it or stay silent.
+**A named pull never yields a wrong file**: an earlier holder can only refuse it or stay silent, and a current
+holder's OFFER names the pull it answers (§3.5), so a named pull never takes another pull's OFFER.
 
-The requester tells an earlier holder from a refusal by the reason alone: on a named pull, `pull denied by
-peer` can only come from a holder that ignored `named`, because a current holder refuses a named pull only with
-`named pull denied by peer` or `receiver busy`. No hello or capability exchange is needed, and none was added.
+The requester tells an earlier holder from a refusal by the reason alone, on the REJECT that carries this
+pull's `token` (§3.5): on a named pull, `pull denied by peer` can only come from a holder that ignored `named`,
+because a current holder refuses a named pull only with `named pull denied by peer` or `receiver busy`. Another
+pull's REJECT, whatever its reason, is not this pull's answer. No hello or capability exchange is needed, and
+none was added.
 
 ## 6. Security
 
@@ -145,8 +165,9 @@ peer` can only come from a holder that ignored `named`, because a current holder
 
 - `FtMessage::PullRequest` gains a field. Code outside the crate that builds the variant with a struct
   literal adds `named: None`; patterns add `..` or bind it.
-- `TransferError` gains `Unsupported`. An exhaustive `match` outside the crate needs a wildcard arm, as for
-  `NetworkError::EgressError` (RFC 026).
+- `TransferError` gains `Unsupported`, and becomes `#[non_exhaustive]` in the same change. A `match` outside
+  the crate adds a wildcard arm once, as for `NetworkError::EgressError` (RFC 026), and a later variant no
+  longer breaks it.
 
 ## 8. Not in scope
 
@@ -160,10 +181,17 @@ peer` can only come from a holder that ignored `named`, because a current holder
 
 ## 9. Tests
 
-- `file_transfer/named.rs`: both grammars (accepted and refused sets, case), authorization (unknown root, exact
-  names, `..` and absolute paths re-checked, a prefix sibling, missing, directory, oversize, a symlinked file
+- `file_transfer/named.rs`: both grammars (accepted and refused sets, case, the wire form against a Windows
+  path), authorization (unknown root, exact names, `..` and absolute paths re-checked, a prefix sibling reached
+  through a symlink so only the component-wise check refuses it, missing, directory, oversize, a symlinked file
   and a symlinked directory that leave the root, a symlink that stays inside), and the requester's reading of a
   REJECT (`Unsupported` only for the legacy reason on a named pull).
+- `file_transfer/pull_tests.rs`, an in-process pair (two nodes over loopback, no tailnet): a named pull lands
+  byte for byte; an unknown root, a missing file and a symlink out of the root each get the named reason; the
+  named file's absolute path gets the absolute-path reason; two concurrent named pulls each land their own
+  file; a refusal answers only the pull it names. Unit rows feed the requester single messages: a REJECT or a
+  named pull's OFFER with another pull's token is not this pull's answer, an absolute-path pull takes its
+  peer's OFFER whatever its token, and nothing from another peer answers.
 - `file_transfer/types.rs`: the absolute-path JSON is unchanged; an earlier requester's JSON parses with no
   `named`; a named pull round-trips; the 0.4.8–0.7.26 parser sees only the empty path.
 - `file_transfer/receiver.rs`: the legacy authorization refuses the empty path even with the working directory

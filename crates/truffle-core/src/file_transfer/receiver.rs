@@ -779,7 +779,15 @@ async fn handle_pull_request<N: NetworkProvider + 'static>(
         .unwrap_or("file")
         .to_string();
 
-    let offer_token = uuid::Uuid::new_v4().to_string();
+    // A named pull's OFFER carries the PULL_REQUEST's own token, so a
+    // requester with several pulls in flight to this node takes the OFFER
+    // that answers each one (RFC 032 §3.5). An absolute-path pull's OFFER
+    // keeps a fresh token, as every earlier holder sends it.
+    let offer_token = if named.is_some() {
+        token.to_string()
+    } else {
+        uuid::Uuid::new_v4().to_string()
+    };
 
     // Send OFFER and wait for ACCEPT
     let offer = FtMessage::Offer {
