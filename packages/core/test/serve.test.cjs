@@ -136,6 +136,100 @@ test('routes object: stripPrefix and per-route allow pass through', async () => 
   ]);
 });
 
+// ─── response headers (RFC 030) ─────────────────────────────────────────────
+
+test('headers: a serve-level record becomes NapiProxyConfig.headers, in order', async () => {
+  const { normalizeServeConfig } = await load();
+  const headers = {
+    'Content-Security-Policy': "default-src 'self'",
+    'Referrer-Policy': 'no-referrer',
+  };
+  const want = [
+    { name: 'Content-Security-Policy', value: "default-src 'self'" },
+    { name: 'Referrer-Policy', value: 'no-referrer' },
+  ];
+  const target = normalizeServeConfig({ port: 443, target: 'http://localhost:3000', headers });
+  assert.deepEqual(target.headers, want);
+  const dir = normalizeServeConfig({ port: 443, dir: '/abs/pub', headers });
+  assert.deepEqual(dir.headers, want);
+  // The dir shape's one route carries none of its own: it inherits the serve's.
+  assert.deepEqual(dir.routes, [{ prefix: '/', dir: '/abs/pub' }]);
+  const routes = normalizeServeConfig({
+    port: 443,
+    headers,
+    routes: { '/api': 'http://localhost:8000' },
+  });
+  assert.deepEqual(routes.headers, want);
+});
+
+test('headers: a route object carries NapiProxyRoute.headers; a string route none', async () => {
+  const { normalizeServeConfig } = await load();
+  const napi = normalizeServeConfig({
+    port: 443,
+    routes: {
+      '/api': 'http://localhost:8000',
+      '/': { dir: '/abs/pub', headers: { 'X-Frame-Options': 'DENY' } },
+    },
+  });
+  const byPrefix = Object.fromEntries(napi.routes.map((r) => [r.prefix, r]));
+  assert.deepEqual(byPrefix['/'], {
+    prefix: '/',
+    dir: '/abs/pub',
+    headers: [{ name: 'X-Frame-Options', value: 'DENY' }],
+  });
+  assert.equal('headers' in byPrefix['/api'], false);
+  // No serve-level headers: the field is absent, not an empty list.
+  assert.equal('headers' in napi, false);
+});
+
+test('headers: absent headers leave the NAPI fields absent', async () => {
+  const { normalizeServeConfig } = await load();
+  const napi = normalizeServeConfig({
+    port: 443,
+    routes: { '/': { target: 'http://localhost:8000' } },
+  });
+  assert.equal('headers' in napi, false);
+  assert.equal('headers' in napi.routes[0], false);
+});
+
+test('headers: a non-object record or a non-string value is a TypeError', async () => {
+  const { normalizeServeConfig } = await load();
+  assert.throws(
+    () => normalizeServeConfig({ port: 443, target: 'http://localhost:3000', headers: ['x'] }),
+    { name: 'TypeError', message: /serve headers must be an object/ },
+  );
+  assert.throws(
+    () =>
+      normalizeServeConfig({
+        port: 443,
+        routes: { '/': { dir: '/abs/pub', headers: { 'X-Frame-Options': 1 } } },
+      }),
+    { name: 'TypeError', message: /route "\/" header "X-Frame-Options" must be a string/ },
+  );
+});
+
+test('headers: serve() hands them to add(); handle.config replays them', async () => {
+  const { createServeNamespace, normalizeServeConfig } = await load();
+  const { proxy, state } = mockProxy();
+  const serve = createServeNamespace(() => proxy);
+
+  const h = await serve({
+    port: 443,
+    headers: { 'Content-Security-Policy': "default-src 'self'" },
+    routes: {
+      '/': { dir: './public', fallback: '/index.html', headers: { 'X-Frame-Options': 'DENY' } },
+    },
+  });
+  const first = state.added[0];
+  assert.deepEqual(first.headers, [
+    { name: 'Content-Security-Policy', value: "default-src 'self'" },
+  ]);
+  assert.deepEqual(first.routes[0].headers, [{ name: 'X-Frame-Options', value: 'DENY' }]);
+  // The frozen config keeps the records, and replays to the same NAPI config.
+  assert.ok(Object.isFrozen(h.config.headers));
+  assert.deepEqual(normalizeServeConfig(h.config), first);
+});
+
 test('tls defaults to true and honors an explicit false', async () => {
   const { normalizeServeConfig } = await load();
   assert.equal(normalizeServeConfig({ port: 443, target: 'http://localhost:3000' }).tls, true);

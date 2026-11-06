@@ -23,6 +23,7 @@ import type {
   NapiProxy,
   NapiProxyConfig,
   NapiProxyEvent,
+  NapiProxyHeader,
   NapiProxyRoute,
   NapiSubscription,
 } from '@vibecook/truffle-native';
@@ -56,6 +57,17 @@ export interface ServeOptions {
    * this node into a pivot into its network, so it is opt-in (RFC 023 §9.3).
    */
   allowNonLoopback?: boolean;
+  /**
+   * Response headers set on every response of this serve (RFC 030): static
+   * files, proxied responses and the engine's own errors alike, e.g.
+   * `{ 'Content-Security-Policy': "default-src 'self'" }`. Each replaces the
+   * value a proxied backend sent for the same name; a route's own `headers`
+   * replace these by name (case-insensitive). Hop-by-hop names, `Set-Cookie`,
+   * `Content-Length` and `Host` are refused. Needs sidecar protocol 13
+   * (truffle ≥ 0.7.27); an older sidecar refuses the serve rather than
+   * serving without them.
+   */
+  headers?: Record<string, string>;
 }
 
 /** Forward a whole tailnet port to one local backend. */
@@ -88,6 +100,12 @@ export interface ServeRouteValue {
   stripPrefix?: boolean;
   /** Per-route loginName globs; overrides the config-level {@link ServeOptions.allow}. */
   allow?: string[];
+  /**
+   * Response headers for this route (RFC 030). Each replaces the config-level
+   * {@link ServeOptions.headers} entry of the same name; config-level names
+   * this route does not set still apply.
+   */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -339,6 +357,7 @@ function canonicalServeConfig(config: ServeConfig): ServeConfig {
   };
   if (c.allow !== undefined) common.allow = [...c.allow];
   if (c.allowNonLoopback !== undefined) common.allowNonLoopback = c.allowNonLoopback;
+  if (c.headers !== undefined) common.headers = canonicalHeaders(c.headers, 'serve');
 
   if (c.target !== undefined) {
     return { ...common, target: c.target };
@@ -354,13 +373,16 @@ function canonicalServeConfig(config: ServeConfig): ServeConfig {
   }
   const routes: Record<string, string | ServeRouteValue> = {};
   for (const [prefix, value] of Object.entries(routesIn)) {
-    routes[prefix] = canonicalRouteValue(value);
+    routes[prefix] = canonicalRouteValue(prefix, value);
   }
   return { ...common, routes };
 }
 
 /** Canonicalize one route value: string stays a URL; object resolves its dir. */
-function canonicalRouteValue(value: string | ServeRouteValue): string | ServeRouteValue {
+function canonicalRouteValue(
+  prefix: string,
+  value: string | ServeRouteValue,
+): string | ServeRouteValue {
   if (typeof value === 'string') return value;
   if (!value || typeof value !== 'object') {
     throw new TypeError('serve: a route value must be a URL string or a route object');
@@ -379,7 +401,34 @@ function canonicalRouteValue(value: string | ServeRouteValue): string | ServeRou
     if (value.fallback !== undefined) out.fallback = value.fallback;
   }
   if (value.allow !== undefined) out.allow = [...value.allow];
+  if (value.headers !== undefined) {
+    out.headers = canonicalHeaders(value.headers, `route ${JSON.stringify(prefix)}`);
+  }
   return out;
+}
+
+/**
+ * Copy a name → value headers record, checking only its shape. truffle-core
+ * owns the rules (names, values, refused names, bounds; RFC 030) and refuses
+ * the serve with its own message.
+ */
+function canonicalHeaders(headers: Record<string, string>, where: string): Record<string, string> {
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers)) {
+    throw new TypeError(`serve: ${where} headers must be an object of name → value strings`);
+  }
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (typeof value !== 'string') {
+      throw new TypeError(`serve: ${where} header ${JSON.stringify(name)} must be a string`);
+    }
+    out[name] = value;
+  }
+  return out;
+}
+
+/** A headers record as the NAPI list, in insertion order. */
+function headersToNapi(headers: Record<string, string>): NapiProxyHeader[] {
+  return Object.entries(headers).map(([name, value]) => ({ name, value }));
 }
 
 /** Convert a canonical config (defaults filled, dirs absolute) to NAPI shape. */
@@ -395,6 +444,7 @@ function canonicalToNapi(config: ServeConfig): NapiProxyConfig {
   };
   if (c.allow !== undefined) napi.allow = [...c.allow];
   if (c.allowNonLoopback !== undefined) napi.allowNonLoopback = c.allowNonLoopback;
+  if (c.headers !== undefined) napi.headers = headersToNapi(c.headers);
 
   if (c.target !== undefined) {
     const { host, port, scheme } = parseTargetUrl(c.target);
@@ -435,6 +485,7 @@ function routeValueToNapi(prefix: string, value: string | ServeRouteValue): Napi
     if (value.fallback !== undefined) route.fallback = value.fallback;
   }
   if (value.allow !== undefined) route.allow = [...value.allow];
+  if (value.headers !== undefined) route.headers = headersToNapi(value.headers);
   return route;
 }
 
