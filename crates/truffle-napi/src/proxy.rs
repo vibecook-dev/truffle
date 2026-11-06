@@ -46,6 +46,29 @@ pub struct NapiProxyConfig {
     /// Path-prefix routes (RFC 023 §7). When non-empty they replace the
     /// single `targetHost`/`targetPort`/`targetScheme` target.
     pub routes: Option<Vec<NapiProxyRoute>>,
+    /// Response headers set on every response of the serve (RFC 030), e.g.
+    /// `Content-Security-Policy`. A route's own `headers` replace these by
+    /// name. Needs sidecar protocol 13 (default: none).
+    pub headers: Option<Vec<NapiProxyHeader>>,
+}
+
+/// One response header of a serve or a route (RFC 030). Validation lives in
+/// core `validate_config`, not here.
+#[napi(object)]
+pub struct NapiProxyHeader {
+    /// Header name, an RFC 7230 token (compared case-insensitively).
+    pub name: String,
+    /// Header value: visible ASCII, spaces and tabs.
+    pub value: String,
+}
+
+impl From<NapiProxyHeader> for truffle_core::network::ProxyHeader {
+    fn from(h: NapiProxyHeader) -> Self {
+        Self {
+            name: h.name,
+            value: h.value,
+        }
+    }
 }
 
 /// One path-prefix route of a v2 proxy (RFC 023 §7). Exactly one of
@@ -70,6 +93,9 @@ pub struct NapiProxyRoute {
     /// Per-route loginName globs; overrides the config-level `allow`
     /// (default: none = inherit).
     pub allow: Option<Vec<String>>,
+    /// Response headers for this route (RFC 030); each replaces the
+    /// config-level header of the same name (default: none = inherit).
+    pub headers: Option<Vec<NapiProxyHeader>>,
 }
 
 impl From<NapiProxyRoute> for truffle_core::network::ProxyRoute {
@@ -81,6 +107,12 @@ impl From<NapiProxyRoute> for truffle_core::network::ProxyRoute {
             fallback: r.fallback,
             strip_prefix: r.strip_prefix.unwrap_or(false),
             allow: r.allow.unwrap_or_default(),
+            headers: r
+                .headers
+                .unwrap_or_default()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
         }
     }
 }
@@ -230,6 +262,12 @@ impl NapiProxy {
                 .collect(),
             // Not exposed to JS yet (protocol 9 capability forwarding).
             accept_app_capabilities: Vec::new(),
+            headers: config
+                .headers
+                .unwrap_or_default()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
         };
         let info = proxy
             .add(core_config)

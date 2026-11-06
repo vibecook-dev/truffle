@@ -3,9 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Re-exported from the network layer: the wire-shaped path route
-/// (RFC 023 §7). Defined there because the provider command payloads embed
-/// it verbatim.
-pub use crate::network::ProxyRoute;
+/// (RFC 023 §7) and response header (RFC 030). Defined there because the
+/// provider command payloads embed them verbatim.
+pub use crate::network::{ProxyHeader, ProxyRoute};
 
 /// Target backend for the reverse proxy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +76,24 @@ pub struct ProxyConfig {
     /// silently forwarding nothing.
     #[serde(default)]
     pub accept_app_capabilities: Vec<String>,
+    /// Response headers set on every response of this serve (RFC 030), e.g.
+    /// `Content-Security-Policy` or `Referrer-Policy`: static files, proxied
+    /// responses and the engine's own errors alike. Each replaces the value a
+    /// proxied backend sent for the same name. A route's own `headers`
+    /// replace these by name (ASCII case-insensitive); names the route does
+    /// not set still apply to it. Hop-by-hop names, `Set-Cookie`, `Host` and
+    /// the names that describe one body (`Content-Length`, `Content-Type`,
+    /// `Content-Encoding`, `Content-Range`, `ETag`, `Last-Modified`) are
+    /// refused, as are malformed names and values and lists past the bounds
+    /// (see [`MAX_RESPONSE_HEADERS`]).
+    /// Empty (the default) sets nothing. Needs sidecar protocol 13; `add`
+    /// fails with [`NetworkError::Unsupported`] on an older sidecar rather
+    /// than serving without the policy.
+    ///
+    /// [`MAX_RESPONSE_HEADERS`]: super::MAX_RESPONSE_HEADERS
+    /// [`NetworkError::Unsupported`]: crate::network::NetworkError::Unsupported
+    #[serde(default)]
+    pub headers: Vec<ProxyHeader>,
 }
 
 fn default_true() -> bool {

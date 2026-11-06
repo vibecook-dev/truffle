@@ -337,6 +337,46 @@ A `dir` route always maps its mount prefix to the directory root — a `/assets`
 mount serves `<dir>/logo.png` for `/assets/logo.png`. That's why `stripPrefix`
 is a `target`-only option: directories always strip.
 
+### Response headers
+
+`headers` sets response headers on everything a serve answers. That covers static
+files, proxied responses, and the engine's own errors (404, 403, 502). Use it for
+browser policy: a Content-Security-Policy, framing rules, a referrer policy.
+
+```ts
+await mesh.serve({
+  port: 443,
+  headers: {
+    'Content-Security-Policy': "default-src 'self'; frame-ancestors 'none'",
+    'Referrer-Policy': 'no-referrer',
+  },
+  routes: {
+    '/':    { dir: './public', fallback: '/index.html' },
+    '/api': { target: 'http://localhost:8000', headers: { 'X-Frame-Options': 'DENY' } },
+  },
+});
+```
+
+- A route object's `headers` replace the serve's headers of the same name. Names
+  are case-insensitive. The serve's other headers still apply to that route.
+- A configured header **replaces** whatever a proxied backend sent for that
+  name. Your policy wins over the backend's.
+- Names must be plain header tokens. Values must be printable ASCII: no line
+  breaks, and no leading or trailing spaces.
+- These names are refused: the hop-by-hop ones (`Connection`, `Keep-Alive`,
+  `Proxy-*`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`), `Set-Cookie`,
+  `Host`, and the ones that describe a single body (`Content-Length`,
+  `Content-Type`, `Content-Encoding`, `Content-Range`, `ETag`,
+  `Last-Modified`). One serve-wide `Content-Type` or `ETag` would give every
+  file the same type or the same cache validator.
+- Limits: at most 32 headers, 8 KiB per value, and 16 KiB in all on any route.
+- Two kinds of response carry none: a relayed `103 Early Hints`, and a WebSocket
+  tunnel once it is upgraded.
+- Headers need the sidecar from the release after 0.7.26 (protocol 13). An older
+  sidecar refuses the serve. It never serves without the headers you asked for.
+
+RFC 030 has the full rules.
+
 ### Replaying a serve after restart
 
 The sidecar dies with your process, so there's nothing to "resume" — re-serving
@@ -409,6 +449,7 @@ other peers to browse is also future work: there's no `announce` option on
 | `createServer` reaping | No inactivity timer; `close()` sweeps idle sockets, `closeAllConnections()` is the hard stop |
 | `serve` path | Bytes stay in Go — its own connections (no 256-conn bridge cap), 120 s idle timeout, HTTP/2 to browsers for free |
 | `serve` targets | Loopback-only unless `allowNonLoopback`; a `target` must be a full `http(s)://` URL |
+| `serve` headers | At most 32, 8 KiB per value, 16 KiB per route in all; no hop-by-hop names, `Set-Cookie`, `Host` or body-describing names (`Content-Length`, `Content-Type`, `Content-Encoding`, `Content-Range`, `ETag`, `Last-Modified`); need sidecar protocol 13 |
 | Exposure | Reachable by the entire tailnet, gated by Tailscale ACLs (and `serve`'s `allow`) — not scoped to `appId` |
 | TLS | Default off for `createServer`, on for `serve`; needs MagicDNS + HTTPS certs enabled; cert matches the full `.ts.net` FQDN; current sidecar |
 | Ports | One listener per port per node; `9417` (the mesh's session port) is reserved; `443` needs an RFC 023 sidecar |

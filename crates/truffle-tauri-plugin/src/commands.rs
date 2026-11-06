@@ -401,33 +401,9 @@ pub async fn proxy_add(
 ) -> Result<ProxyInfoJs, String> {
     let node = get_node(&state).await?;
     let proxy = node.proxy();
-    let core_config = truffle_core::proxy::ProxyConfig {
-        id: config.id,
-        name: config.name,
-        listen_port: config.listen_port,
-        target: truffle_core::proxy::ProxyTarget {
-            host: config
-                .target_host
-                .unwrap_or_else(|| "localhost".to_string()),
-            port: config.target_port,
-            scheme: config.target_scheme.unwrap_or_else(|| "http".to_string()),
-        },
-        announce: config.announce.unwrap_or(true),
-        // RFC 023 v2 fields. Core `validate_config` (called in
-        // `Proxy::add`) owns the shape rules — this only maps.
-        tls: config.tls.unwrap_or(true),
-        allow_non_loopback: config.allow_non_loopback.unwrap_or(false),
-        allow: config.allow.unwrap_or_default(),
-        routes: config
-            .routes
-            .unwrap_or_default()
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-        // Not exposed to the frontend yet (protocol 9 capability forwarding).
-        accept_app_capabilities: Vec::new(),
-    };
-    let info = proxy.add(core_config).await.map_err(|e| e.to_string())?;
+    // `From<ProxyConfigJs>` maps every field, response headers included
+    // (RFC 030); core `validate_config` owns the rules.
+    let info = proxy.add(config.into()).await.map_err(|e| e.to_string())?;
     Ok(info.into())
 }
 

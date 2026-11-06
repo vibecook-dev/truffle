@@ -1158,6 +1158,22 @@ pub struct ProxyAddParams {
     /// Application-capability names forwarded to the backend in the
     /// `Tailscale-App-Capabilities` header (sidecar protocol 9).
     pub accept_app_capabilities: Vec<String>,
+    /// Response headers set on every response of the serve (sidecar
+    /// protocol 13, RFC 030). A route's own `headers` replace these by name.
+    pub headers: Vec<ProxyHeader>,
+}
+
+/// One response header a serve or a route sets on every response it writes
+/// (RFC 030). Wire-shaped: `{"name": …, "value": …}`. The name is an RFC 7230
+/// token; the value is visible ASCII, spaces and tabs, with no leading or
+/// trailing whitespace. `Proxy::add` checks both before anything is sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProxyHeader {
+    /// Header name, e.g. `Content-Security-Policy`. Compared ASCII
+    /// case-insensitively.
+    pub name: String,
+    /// Header value, e.g. `default-src 'self'`.
+    pub value: String,
 }
 
 /// One path-prefix route of a v2 proxy (RFC 023 §7). Wire-shaped: exactly
@@ -1184,6 +1200,12 @@ pub struct ProxyRoute {
     /// Per-route loginName globs; overrides the config-level `allow`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow: Vec<String>,
+    /// Response headers for this route (sidecar protocol 13, RFC 030). Each
+    /// replaces the serve-level header of the same name (ASCII
+    /// case-insensitive); serve-level names the route does not set still
+    /// apply.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<ProxyHeader>,
 }
 
 /// A runtime error from the provider's proxy engine after a successful add
