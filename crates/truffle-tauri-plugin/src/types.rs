@@ -477,6 +477,8 @@ impl From<ProxyRouteJs> for truffle_core::network::ProxyRoute {
             fallback: r.fallback,
             strip_prefix: r.strip_prefix.unwrap_or(false),
             allow: r.allow.unwrap_or_default(),
+            // Not exposed to the frontend yet (protocol 13 response headers).
+            headers: Vec::new(),
         }
     }
 }
@@ -673,6 +675,7 @@ mod proxy_route_mapping_tests {
                 fallback: Some("/index.html".to_string()),
                 strip_prefix: false,
                 allow: vec![],
+                headers: vec![],
             }
         );
     }
@@ -698,6 +701,7 @@ mod proxy_route_mapping_tests {
                 fallback: None,
                 strip_prefix: true,
                 allow: vec!["ops@corp.com".to_string()],
+                headers: vec![],
             }
         );
     }

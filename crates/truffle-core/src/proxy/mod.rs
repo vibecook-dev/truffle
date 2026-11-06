@@ -8,7 +8,7 @@
 pub mod discovery;
 pub mod types;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use tokio::sync::broadcast;
 
@@ -113,6 +113,7 @@ impl<'a, N: NetworkProvider + 'static> Proxy<'a, N> {
             allow: config.allow.clone(),
             routes: config.routes.clone(),
             accept_app_capabilities: config.accept_app_capabilities.clone(),
+            headers: config.headers.clone(),
         };
 
         let result = self.node.network.proxy_add(params).await?;
@@ -228,7 +229,7 @@ fn validate_config(config: &ProxyConfig) -> Result<(), String> {
             "accept_app_capabilities entry {bad:?} is not a capability name ({{domain}}/{{path}})"
         ));
     }
-    Ok(())
+    validate_response_headers(config)
 }
 
 /// Tailscale application-capability names are `{domain}/{path}` (KB 1537).
@@ -240,6 +241,168 @@ fn is_app_capability_name(name: &str) -> bool {
         && name.len() <= 256
         && name.contains('/')
         && !name.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// Most response headers one effective list may carry (RFC 030): a serve's
+/// own list, or a route's list merged over it.
+pub const MAX_RESPONSE_HEADERS: usize = 32;
+
+/// Longest response header name, in bytes (RFC 030).
+pub const MAX_RESPONSE_HEADER_NAME_BYTES: usize = 64;
+
+/// Longest response header value, in bytes (RFC 030).
+pub const MAX_RESPONSE_HEADER_VALUE_BYTES: usize = 8192;
+
+/// Most bytes, each name plus its value, one effective list may carry
+/// (RFC 030).
+pub const MAX_RESPONSE_HEADERS_BYTES: usize = 16 * 1024;
+
+/// Response header names a serve may never set, lowercase, besides any
+/// `proxy-*` name ([`REFUSED_RESPONSE_HEADER_PREFIX`]). The hop-by-hop names
+/// (RFC 7230 §6.1) describe one connection, not the response; the engine owns
+/// `Content-Length` (it frames each body) and `Host`; and `Set-Cookie` would
+/// give every caller of the serve the same session. The sidecar holds the same
+/// list (`refusedResponseHeaders`), and `response_headers_vectors.json` pins
+/// both.
+const REFUSED_RESPONSE_HEADERS: [&str; 9] = [
+    "connection",
+    "keep-alive",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "set-cookie",
+    "content-length",
+    "host",
+];
+
+/// Every `Proxy-*` name is hop-by-hop or belongs to a proxy's own exchange
+/// (`Proxy-Authenticate`, `Proxy-Connection`), so a serve sets none of them.
+const REFUSED_RESPONSE_HEADER_PREFIX: &str = "proxy-";
+
+/// Response headers (RFC 030): each list on its own, then every list a
+/// response can carry — the serve's own (a v1 serve, and the engine's 404 for
+/// an unmatched path) and each route's merged over it. The sidecar's
+/// `validateResponseHeaders` checks the same rules in the same order; both are
+/// tested against `response_headers_vectors.json`.
+fn validate_response_headers(config: &ProxyConfig) -> Result<(), String> {
+    validate_header_list("serve headers", &config.headers)?;
+    validate_effective_headers("serve headers", &config.headers, &[])?;
+    for route in &config.routes {
+        if route.headers.is_empty() {
+            continue;
+        }
+        let scope = format!("route {:?} headers", route.prefix);
+        validate_header_list(&scope, &route.headers)?;
+        validate_effective_headers(&scope, &config.headers, &route.headers)?;
+    }
+    Ok(())
+}
+
+/// One list (a serve's or a route's) on its own: the count, each header, and
+/// no name twice (ASCII case-insensitive).
+fn validate_header_list(scope: &str, headers: &[ProxyHeader]) -> Result<(), String> {
+    if headers.len() > MAX_RESPONSE_HEADERS {
+        return Err(format!(
+            "{scope}: more than {MAX_RESPONSE_HEADERS} response headers"
+        ));
+    }
+    let mut seen = HashSet::with_capacity(headers.len());
+    for header in headers {
+        validate_header(scope, header)?;
+        if !seen.insert(header.name.to_ascii_lowercase()) {
+            return Err(format!(
+                "{scope}: header {:?} appears twice (names are case-insensitive)",
+                header.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// One header: the name's length, its token grammar and the refused names,
+/// then the value's emptiness, length, bytes and edges. An error names the
+/// header but never echoes a value, nor a name past the length bound.
+fn validate_header(scope: &str, header: &ProxyHeader) -> Result<(), String> {
+    let name = header.name.as_str();
+    if name.len() > MAX_RESPONSE_HEADER_NAME_BYTES {
+        return Err(format!(
+            "{scope}: a header name is longer than {MAX_RESPONSE_HEADER_NAME_BYTES} bytes"
+        ));
+    }
+    if name.is_empty() || !name.bytes().all(is_header_token_byte) {
+        return Err(format!(
+            "{scope}: header name {name:?} is not an RFC 7230 token"
+        ));
+    }
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with(REFUSED_RESPONSE_HEADER_PREFIX)
+        || REFUSED_RESPONSE_HEADERS.contains(&lower.as_str())
+    {
+        return Err(format!(
+            "{scope}: header {name:?} is hop-by-hop or set by the engine and cannot be configured"
+        ));
+    }
+    let value = header.value.as_bytes();
+    if value.is_empty() {
+        return Err(format!("{scope}: header {name:?} has an empty value"));
+    }
+    if value.len() > MAX_RESPONSE_HEADER_VALUE_BYTES {
+        return Err(format!(
+            "{scope}: header {name:?} value is longer than {MAX_RESPONSE_HEADER_VALUE_BYTES} bytes"
+        ));
+    }
+    if !value.iter().copied().all(is_header_value_byte) {
+        return Err(format!(
+            "{scope}: header {name:?} value has a byte other than VCHAR, SP or HTAB"
+        ));
+    }
+    let whitespace = |b: Option<&u8>| matches!(b, Some(b' ' | b'\t'));
+    if whitespace(value.first()) || whitespace(value.last()) {
+        return Err(format!(
+            "{scope}: header {name:?} value has leading or trailing whitespace"
+        ));
+    }
+    Ok(())
+}
+
+/// The list a response actually carries, checked against the bounds: `route`
+/// merged over `serve`, a route header replacing the serve header of the same
+/// name (ASCII case-insensitive). With `route` empty it is the serve's own.
+fn validate_effective_headers(
+    scope: &str,
+    serve: &[ProxyHeader],
+    route: &[ProxyHeader],
+) -> Result<(), String> {
+    let mut effective: HashMap<String, usize> = HashMap::new();
+    for header in serve.iter().chain(route) {
+        effective.insert(
+            header.name.to_ascii_lowercase(),
+            header.name.len() + header.value.len(),
+        );
+    }
+    if effective.len() > MAX_RESPONSE_HEADERS {
+        return Err(format!(
+            "{scope}: more than {MAX_RESPONSE_HEADERS} response headers"
+        ));
+    }
+    if effective.values().sum::<usize>() > MAX_RESPONSE_HEADERS_BYTES {
+        return Err(format!(
+            "{scope}: response headers exceed {MAX_RESPONSE_HEADERS_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
+/// An RFC 7230 `tchar`: the bytes a header name (a `token`) is made of.
+fn is_header_token_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)
+}
+
+/// A byte a header value may hold: visible ASCII (`VCHAR`), space or
+/// horizontal tab. No control byte, no DEL, no `obs-text`.
+fn is_header_value_byte(b: u8) -> bool {
+    b == b'\t' || (b' '..=b'~').contains(&b)
 }
 
 #[cfg(test)]
@@ -258,6 +421,7 @@ mod tests {
             allow: vec![],
             routes,
             accept_app_capabilities: vec![],
+            headers: vec![],
         }
     }
 
@@ -280,6 +444,7 @@ mod tests {
             fallback: None,
             strip_prefix: false,
             allow: vec![],
+            headers: vec![],
         }
     }
 
@@ -293,6 +458,7 @@ mod tests {
             fallback: Some("/index.html".into()),
             strip_prefix: false,
             allow: vec![],
+            headers: vec![],
         };
         assert!(validate_config(&base_config(vec![url_route("/api"), dir_route])).is_ok());
     }
@@ -321,6 +487,7 @@ mod tests {
             fallback: None,
             strip_prefix: true,
             allow: vec![],
+            headers: vec![],
         };
         assert!(validate_config(&base_config(vec![strip_dir])).is_err());
     }
@@ -334,6 +501,174 @@ mod tests {
         let mut route = url_route("/api");
         route.allow = vec![String::new()];
         assert!(validate_config(&base_config(vec![route])).is_err());
+    }
+
+    // ── Response headers (RFC 030) ─────────────────────────────────────
+
+    /// The shared table. The sidecar's Go tests read the same file, so the
+    /// two validators cannot drift apart; VibeField copies it.
+    const RESPONSE_HEADER_VECTORS: &str = include_str!("response_headers_vectors.json");
+
+    #[derive(serde::Deserialize)]
+    struct Vectors {
+        bounds: VectorBounds,
+        refused: Vec<String>,
+        cases: Vec<VectorCase>,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct VectorBounds {
+        max_headers: usize,
+        max_name_bytes: usize,
+        max_value_bytes: usize,
+        max_list_bytes: usize,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct VectorCase {
+        id: String,
+        #[serde(default)]
+        serve: Vec<VectorHeader>,
+        route: Option<Vec<VectorHeader>>,
+        serve_fill: Option<VectorFill>,
+        route_fill: Option<VectorFill>,
+        ok: bool,
+        error: Option<String>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct VectorHeader {
+        name: String,
+        value: String,
+        repeat: Option<usize>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct VectorFill {
+        prefix: String,
+        count: usize,
+    }
+
+    fn vectors() -> Vectors {
+        serde_json::from_str(RESPONSE_HEADER_VECTORS).expect("the vector file parses")
+    }
+
+    /// A vector list as headers: each value its unit repeated `repeat` times,
+    /// then `fill`'s generated `{prefix}1..{prefix}N`, each valued `v`.
+    fn vector_headers(list: &[VectorHeader], fill: Option<&VectorFill>) -> Vec<ProxyHeader> {
+        let mut headers: Vec<ProxyHeader> = list
+            .iter()
+            .map(|h| header(&h.name, &h.value.repeat(h.repeat.unwrap_or(1))))
+            .collect();
+        if let Some(fill) = fill {
+            for i in 1..=fill.count {
+                headers.push(header(&format!("{}{i}", fill.prefix), "v"));
+            }
+        }
+        headers
+    }
+
+    /// A case's config: its serve list on the serve, and its route list (when
+    /// it has one) on a single `/` dir route.
+    fn vector_config(case: &VectorCase) -> ProxyConfig {
+        let mut config = base_config(vec![]);
+        config.headers = vector_headers(&case.serve, case.serve_fill.as_ref());
+        if case.route.is_some() || case.route_fill.is_some() {
+            let mut route = dir_route("/");
+            let list = case.route.as_deref().unwrap_or(&[]);
+            route.headers = vector_headers(list, case.route_fill.as_ref());
+            config.routes = vec![route];
+        }
+        config
+    }
+
+    fn header(name: &str, value: &str) -> ProxyHeader {
+        ProxyHeader {
+            name: name.into(),
+            value: value.into(),
+        }
+    }
+
+    fn dir_route(prefix: &str) -> ProxyRoute {
+        ProxyRoute {
+            prefix: prefix.into(),
+            target_url: None,
+            dir: Some("/srv".into()),
+            fallback: None,
+            strip_prefix: false,
+            allow: vec![],
+            headers: vec![],
+        }
+    }
+
+    #[test]
+    fn response_header_vectors_hold() {
+        let vectors = vectors();
+        assert!(vectors.cases.len() > 50, "the table lost its cases");
+        for case in &vectors.cases {
+            match (case.ok, validate_config(&vector_config(case))) {
+                (true, Ok(())) => {}
+                (true, Err(e)) => panic!("{}: refused: {e}", case.id),
+                (false, Ok(())) => panic!("{}: accepted", case.id),
+                (false, Err(e)) => {
+                    let want = case.error.as_deref().unwrap_or("<no error named>");
+                    assert!(e.contains(want), "{}: {e:?} lacks {want:?}", case.id);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn response_header_bounds_and_refused_names_are_the_vectors() {
+        let vectors = vectors();
+        let bounds = &vectors.bounds;
+        assert_eq!(bounds.max_headers, MAX_RESPONSE_HEADERS);
+        assert_eq!(bounds.max_name_bytes, MAX_RESPONSE_HEADER_NAME_BYTES);
+        assert_eq!(bounds.max_value_bytes, MAX_RESPONSE_HEADER_VALUE_BYTES);
+        assert_eq!(bounds.max_list_bytes, MAX_RESPONSE_HEADERS_BYTES);
+        let mut ours = REFUSED_RESPONSE_HEADERS.map(String::from).to_vec();
+        ours.push(format!("{REFUSED_RESPONSE_HEADER_PREFIX}*"));
+        let mut theirs = vectors.refused;
+        ours.sort();
+        theirs.sort();
+        assert_eq!(ours, theirs);
+    }
+
+    #[test]
+    fn response_header_errors_name_their_list() {
+        let mut config = base_config(vec![]);
+        config.headers = vec![header("Set-Cookie", "s=1")];
+        let err = validate_config(&config).unwrap_err();
+        assert!(err.starts_with("serve headers: "), "{err}");
+
+        let mut route = url_route("/api");
+        route.headers = vec![header("Connection", "close")];
+        let err = validate_config(&base_config(vec![route])).unwrap_err();
+        assert!(err.starts_with("route \"/api\" headers: "), "{err}");
+    }
+
+    #[test]
+    fn response_header_errors_never_echo_a_value() {
+        let mut config = base_config(vec![]);
+        let long = "secret".repeat(2000);
+        for value in ["secret\nvalue", " secret", long.as_str()] {
+            config.headers = vec![header("X-Token", value)];
+            let err = validate_config(&config).unwrap_err();
+            assert!(!err.contains("secret"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_route_without_headers_inherits_the_serves_checks() {
+        // The serve's own list is checked once, as the list an unmatched
+        // request and a header-less route carry.
+        let mut config = base_config(vec![url_route("/api"), dir_route("/")]);
+        config.headers = vec![header("Content-Security-Policy", "default-src 'self'")];
+        assert!(validate_config(&config).is_ok());
+        config.headers.push(header("Host", "evil.example"));
+        assert!(validate_config(&config).is_err());
     }
 
     #[test]

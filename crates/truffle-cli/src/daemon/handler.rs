@@ -934,6 +934,9 @@ struct ProxyRouteParams {
     strip_prefix: bool,
     #[serde(default)]
     allow: Vec<String>,
+    /// `[{name, value}]` — the same keys in either casing (RFC 030).
+    #[serde(default)]
+    headers: Vec<truffle_core::proxy::ProxyHeader>,
 }
 
 impl From<ProxyRouteParams> for truffle_core::proxy::ProxyRoute {
@@ -945,6 +948,7 @@ impl From<ProxyRouteParams> for truffle_core::proxy::ProxyRoute {
             fallback: r.fallback,
             strip_prefix: r.strip_prefix,
             allow: r.allow,
+            headers: r.headers,
         }
     }
 }
@@ -996,6 +1000,21 @@ async fn handle_proxy_add(
         }
         _ => vec![],
     };
+    // Serve-level response headers (RFC 030). Core `validate_config` owns
+    // the rules; a malformed shape is refused here like a malformed route.
+    let headers: Vec<truffle_core::proxy::ProxyHeader> = match params.get("headers") {
+        Some(v) if !v.is_null() => match serde_json::from_value(v.clone()) {
+            Ok(hs) => hs,
+            Err(e) => {
+                return DaemonResponse::error(
+                    id,
+                    error_code::INVALID_PARAMS,
+                    format!("Invalid 'headers' parameter: {e}"),
+                )
+            }
+        },
+        _ => vec![],
+    };
 
     if proxy_id.is_empty() {
         return DaemonResponse::error(id, error_code::INVALID_PARAMS, "Missing 'id' parameter");
@@ -1032,6 +1051,7 @@ async fn handle_proxy_add(
         allow,
         routes,
         accept_app_capabilities: Vec::new(),
+        headers,
     };
 
     match node.proxy().add(config).await {

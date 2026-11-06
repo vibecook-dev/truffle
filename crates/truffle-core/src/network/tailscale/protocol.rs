@@ -196,6 +196,10 @@ pub(crate) struct ProxyAddCommandData {
     /// (v9 sidecars; the provider gates it).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub accept_app_caps: Vec<String>,
+    /// Response headers set on every response of the serve (v13 sidecars,
+    /// RFC 030; the provider gates it). Routes carry their own.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<crate::network::ProxyHeader>,
     /// Correlation id echoed on `proxy:added` / `proxy:error` (v4 sidecars).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
@@ -1066,6 +1070,7 @@ mod tests {
             allow: vec![],
             routes: vec![],
             accept_app_caps: vec![],
+            headers: vec![],
             request_id: None,
         };
         let cmd = SidecarCommand {
@@ -1084,6 +1089,7 @@ mod tests {
         assert!(!json.contains("\"allow\""));
         assert!(!json.contains("\"routes\""));
         assert!(!json.contains("acceptAppCaps"));
+        assert!(!json.contains("headers"));
     }
 
     #[test]
@@ -1106,6 +1112,10 @@ mod tests {
                     fallback: None,
                     strip_prefix: true,
                     allow: vec!["ops@corp.com".to_string()],
+                    headers: vec![crate::network::ProxyHeader {
+                        name: "X-Frame-Options".to_string(),
+                        value: "DENY".to_string(),
+                    }],
                 },
                 crate::network::ProxyRoute {
                     prefix: "/".to_string(),
@@ -1114,9 +1124,20 @@ mod tests {
                     fallback: Some("/index.html".to_string()),
                     strip_prefix: false,
                     allow: vec![],
+                    headers: vec![],
                 },
             ],
             accept_app_caps: vec!["example.com/cap/media".to_string()],
+            headers: vec![
+                crate::network::ProxyHeader {
+                    name: "Content-Security-Policy".to_string(),
+                    value: "default-src 'self'".to_string(),
+                },
+                crate::network::ProxyHeader {
+                    name: "Referrer-Policy".to_string(),
+                    value: "no-referrer".to_string(),
+                },
+            ],
             request_id: None,
         };
         let json = serde_json::to_string(&data).unwrap();
@@ -1129,6 +1150,42 @@ mod tests {
         assert!(json.contains("\"fallback\":\"/index.html\""));
         // Per-route empty allow and absent backends are omitted.
         assert!(!json.contains("\"targetUrl\":null"));
+
+        // Protocol 13 (RFC 030): the serve's headers and each route's ride as
+        // `[{name, value}]`, in order; a route without headers omits the key.
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            value["headers"],
+            serde_json::json!([
+                {"name": "Content-Security-Policy", "value": "default-src 'self'"},
+                {"name": "Referrer-Policy", "value": "no-referrer"},
+            ])
+        );
+        assert_eq!(
+            value["routes"][0]["headers"],
+            serde_json::json!([{"name": "X-Frame-Options", "value": "DENY"}])
+        );
+        assert!(value["routes"][1].get("headers").is_none());
+    }
+
+    #[test]
+    fn proxy_route_headers_read_from_the_wire() {
+        // The shape a binding hands the core (and the sidecar reads back): an
+        // absent `headers` key is an empty list, never an error.
+        let route: crate::network::ProxyRoute = serde_json::from_str(
+            r#"{"prefix":"/","dir":"/srv","headers":[{"name":"X-Frame-Options","value":"DENY"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            route.headers,
+            vec![crate::network::ProxyHeader {
+                name: "X-Frame-Options".into(),
+                value: "DENY".into(),
+            }]
+        );
+        let bare: crate::network::ProxyRoute =
+            serde_json::from_str(r#"{"prefix":"/","dir":"/srv"}"#).unwrap();
+        assert!(bare.headers.is_empty());
     }
 
     #[test]

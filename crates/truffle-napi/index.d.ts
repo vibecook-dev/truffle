@@ -1041,6 +1041,12 @@ export interface NapiProxyConfig {
    * single `targetHost`/`targetPort`/`targetScheme` target.
    */
   routes?: Array<NapiProxyRoute>
+  /**
+   * Response headers set on every response of the serve (RFC 030), e.g.
+   * `Content-Security-Policy`. A route's own `headers` replace these by
+   * name. Needs sidecar protocol 13 (default: none).
+   */
+  headers?: Array<NapiProxyHeader>
 }
 
 /** A proxy lifecycle event delivered to JavaScript. */
@@ -1057,6 +1063,17 @@ export interface NapiProxyEvent {
   code?: string
   /** Error message (present for "error" events). */
   message?: string
+}
+
+/**
+ * One response header of a serve or a route (RFC 030). Validation lives in
+ * core `validate_config`, not here.
+ */
+export interface NapiProxyHeader {
+  /** Header name, an RFC 7230 token (compared case-insensitively). */
+  name: string
+  /** Header value: visible ASCII, spaces and tabs. */
+  value: string
 }
 
 /** Information about a running or configured proxy, returned to JavaScript. */
@@ -1105,6 +1122,11 @@ export interface NapiProxyRoute {
    * (default: none = inherit).
    */
   allow?: Array<string>
+  /**
+   * Response headers for this route (RFC 030); each replaces the
+   * config-level header of the same name (default: none = inherit).
+   */
+  headers?: Array<NapiProxyHeader>
 }
 
 /** A versioned slice of data owned by a single device. */

@@ -861,6 +861,7 @@ pub async fn prepare(
                     allow: allow.clone(),
                     routes: Vec::new(),
                     accept_app_capabilities: Vec::new(),
+                    headers: Vec::new(),
                 };
                 match r.node.proxy().add(cfg).await {
                     Ok(_) => {

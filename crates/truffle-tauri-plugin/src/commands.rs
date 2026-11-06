@@ -426,6 +426,8 @@ pub async fn proxy_add(
             .collect(),
         // Not exposed to the frontend yet (protocol 9 capability forwarding).
         accept_app_capabilities: Vec::new(),
+        // Not exposed to the frontend yet (protocol 13 response headers).
+        headers: Vec::new(),
     };
     let info = proxy.add(core_config).await.map_err(|e| e.to_string())?;
     Ok(info.into())
