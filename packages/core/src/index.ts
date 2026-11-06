@@ -28,6 +28,7 @@ export type {
   NapiTransferResult,
   NapiTransferProgress,
   NapiFileTransferEvent,
+  NapiNamedPullRoot,
   NapiSlice,
   NapiStoreEvent,
   NapiProxyConfig,
@@ -107,6 +108,7 @@ export {
   createMeshNode,
   type CreateMeshNodeOptions,
   type MeshNode,
+  type MeshFileTransfer,
   type MeshPeerEvent,
   type MeshNamespacedMessage,
 } from './create-mesh-node.js';
