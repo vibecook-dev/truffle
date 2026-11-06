@@ -628,7 +628,7 @@ mod tests {
         assert_eq!(bounds.max_name_bytes, MAX_RESPONSE_HEADER_NAME_BYTES);
         assert_eq!(bounds.max_value_bytes, MAX_RESPONSE_HEADER_VALUE_BYTES);
         assert_eq!(bounds.max_list_bytes, MAX_RESPONSE_HEADERS_BYTES);
-        let mut ours = REFUSED_RESPONSE_HEADERS.map(String::from).to_vec();
+        let mut ours = Vec::from(REFUSED_RESPONSE_HEADERS.map(String::from));
         ours.push(format!("{REFUSED_RESPONSE_HEADER_PREFIX}*"));
         let mut theirs = vectors.refused;
         ours.sort();
