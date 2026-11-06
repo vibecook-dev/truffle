@@ -63,7 +63,9 @@ export interface ServeOptions {
    * `{ 'Content-Security-Policy': "default-src 'self'" }`. Each replaces the
    * value a proxied backend sent for the same name; a route's own `headers`
    * replace these by name (case-insensitive). Hop-by-hop names, `Set-Cookie`,
-   * `Content-Length` and `Host` are refused. Needs sidecar protocol 13
+   * `Host` and the names that describe one body (`Content-Length`,
+   * `Content-Type`, `Content-Encoding`, `Content-Range`, `ETag`,
+   * `Last-Modified`) are refused. Needs sidecar protocol 13
    * (truffle ≥ 0.7.27); an older sidecar refuses the serve rather than
    * serving without them.
    */

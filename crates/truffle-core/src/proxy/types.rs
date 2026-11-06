@@ -81,9 +81,11 @@ pub struct ProxyConfig {
     /// responses and the engine's own errors alike. Each replaces the value a
     /// proxied backend sent for the same name. A route's own `headers`
     /// replace these by name (ASCII case-insensitive); names the route does
-    /// not set still apply to it. Hop-by-hop names, `Set-Cookie`,
-    /// `Content-Length` and `Host` are refused, as are malformed names and
-    /// values and lists past the bounds (see [`MAX_RESPONSE_HEADERS`]).
+    /// not set still apply to it. Hop-by-hop names, `Set-Cookie`, `Host` and
+    /// the names that describe one body (`Content-Length`, `Content-Type`,
+    /// `Content-Encoding`, `Content-Range`, `ETag`, `Last-Modified`) are
+    /// refused, as are malformed names and values and lists past the bounds
+    /// (see [`MAX_RESPONSE_HEADERS`]).
     /// Empty (the default) sets nothing. Needs sidecar protocol 13; `add`
     /// fails with [`NetworkError::Unsupported`] on an older sidecar rather
     /// than serving without the policy.

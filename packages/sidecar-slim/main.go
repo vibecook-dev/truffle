@@ -2555,11 +2555,15 @@ const (
 // refusedResponseHeaders are the names a serve may never set, lowercase,
 // besides any "proxy-" name. The hop-by-hop names (RFC 7230 §6.1) describe
 // one connection, not the response; the engine owns Content-Length (it frames
-// each body) and Host; and Set-Cookie would give every caller of the serve the
-// same session. The core holds the same list.
+// each body) and Host; Set-Cookie would give every caller of the serve the same
+// session; and the names that describe one body (Content-Type,
+// Content-Encoding, Content-Range, ETag, Last-Modified) would give every file
+// of the serve the same MIME type, encoding, range or validator. The core holds
+// the same list.
 var refusedResponseHeaders = []string{
 	"connection", "keep-alive", "te", "trailer", "transfer-encoding", "upgrade",
 	"set-cookie", "content-length", "host",
+	"content-type", "content-encoding", "content-range", "etag", "last-modified",
 }
 
 // refusedResponseHeaderPrefix: every Proxy-* name is hop-by-hop or belongs to

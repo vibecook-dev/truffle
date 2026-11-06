@@ -364,8 +364,11 @@ await mesh.serve({
 - Names must be plain header tokens. Values must be printable ASCII: no line
   breaks, and no leading or trailing spaces.
 - These names are refused: the hop-by-hop ones (`Connection`, `Keep-Alive`,
-  `Proxy-*`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`), plus
-  `Set-Cookie`, `Content-Length` and `Host`.
+  `Proxy-*`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`), `Set-Cookie`,
+  `Host`, and the ones that describe a single body (`Content-Length`,
+  `Content-Type`, `Content-Encoding`, `Content-Range`, `ETag`,
+  `Last-Modified`). One serve-wide `Content-Type` or `ETag` would give every
+  file the same type or the same cache validator.
 - Limits: at most 32 headers, 8 KiB per value, and 16 KiB in all on any route.
 - Two kinds of response carry none: a relayed `103 Early Hints`, and a WebSocket
   tunnel once it is upgraded.
@@ -446,7 +449,7 @@ other peers to browse is also future work: there's no `announce` option on
 | `createServer` reaping | No inactivity timer; `close()` sweeps idle sockets, `closeAllConnections()` is the hard stop |
 | `serve` path | Bytes stay in Go — its own connections (no 256-conn bridge cap), 120 s idle timeout, HTTP/2 to browsers for free |
 | `serve` targets | Loopback-only unless `allowNonLoopback`; a `target` must be a full `http(s)://` URL |
-| `serve` headers | At most 32, 8 KiB per value, 16 KiB per route in all; no hop-by-hop names, `Set-Cookie`, `Content-Length` or `Host`; need sidecar protocol 13 |
+| `serve` headers | At most 32, 8 KiB per value, 16 KiB per route in all; no hop-by-hop names, `Set-Cookie`, `Host` or body-describing names (`Content-Length`, `Content-Type`, `Content-Encoding`, `Content-Range`, `ETag`, `Last-Modified`); need sidecar protocol 13 |
 | Exposure | Reachable by the entire tailnet, gated by Tailscale ACLs (and `serve`'s `allow`) — not scoped to `appId` |
 | TLS | Default off for `createServer`, on for `serve`; needs MagicDNS + HTTPS certs enabled; cert matches the full `.ts.net` FQDN; current sidecar |
 | Ports | One listener per port per node; `9417` (the mesh's session port) is reserved; `443` needs an RFC 023 sidecar |

@@ -94,11 +94,11 @@ builds with Go 1.27.3, and its tests pin the observable behaviour.)
 **What the engine itself rewrites:**
 
 - Go's `http.Error` sets `Content-Type: text/plain; charset=utf-8` and `X-Content-Type-Options:
-  nosniff` on the engine's own 403, 404, 405 and 502. A configured value for either name is
-  replaced there.
-- `http.ServeContent` drops `Content-Type`, `Content-Length` and `Content-Encoding` on a 304 (and
-  `Last-Modified` when an `ETag` is set). Its error path, such as a 416, drops `Cache-Control`,
-  `Content-Encoding`, `ETag` and `Last-Modified`.
+  nosniff` on the engine's own 403, 404, 405 and 502. A configured `X-Content-Type-Options` is
+  replaced there. (`Content-Type` is refused, §3.4.)
+- `http.ServeContent`'s error path, such as a 416, drops a configured `Cache-Control`. The other
+  names `ServeContent` drops or rewrites (`Content-Type`, `Content-Length`, `Content-Encoding`,
+  `ETag`, `Last-Modified`) are refused, §3.4.
 
 ### 3.4 Validation
 
@@ -132,6 +132,14 @@ its value's). A route that replaces a serve name is counted and sized once.
   name. These are hop-by-hop (RFC 7230 §6.1, and `Proxy-Connection`): they describe one
   connection, not the response.
 - `Content-Length`: the engine frames each body.
+- `Content-Type`, `Content-Encoding`, `Content-Range`, `ETag` and `Last-Modified`: each describes
+  one body. The static server sets the list on the writer before `http.ServeContent` runs, and
+  `ServeContent` keeps a `Content-Type` already set, matches a request's `If-None-Match` against
+  the `ETag` already set, and sends no `Content-Length` when a `Content-Encoding` is set. One
+  serve-wide value would give every file the same MIME type (with `nosniff`, browsers then refuse
+  its scripts and styles), answer a 304 to every client holding the configured `ETag` after a
+  redeploy, or mislabel the bytes. On a proxied route it would replace the backend's own
+  description of its body.
 - `Host`: a request header, and the engine's.
 - `Set-Cookie`: a serve is not a session. Every caller of the serve would get the same cookie.
 
@@ -143,7 +151,7 @@ consumer that composes a policy, such as a CSP naming many hosts, must bound it 
 253 bytes in each of six directives do not fit in 8192 bytes.
 
 **The shared table.** `crates/truffle-core/src/proxy/response_headers_vectors.json` holds the
-bounds, the refused names (`proxy-*` for the prefix) and 68 cases. The Rust tests
+bounds, the refused names (`proxy-*` for the prefix) and 74 cases. The Rust tests
 (`proxy/mod.rs`) and the Go tests (`response_headers_v13_test.go`) both run every case. Both also
 assert that their constants and their refused list equal the file, so neither side can change a
 rule alone. Each case has the following fields:
@@ -270,10 +278,11 @@ be at least as strict as these.
 
 ## 10. Open questions
 
-- **Q1.** Should `Content-Type`, `Content-Encoding`, `Content-Range`, `ETag` and `Last-Modified` also
-  be refused? They describe one body. On a static route, a configured `Content-Type` replaces every
-  file's MIME type, and a configured `ETag` makes every file share one validator. Protocol 13
-  allows them. A future protocol may refuse them.
+- **Q1** (closed for 13, by the review of 2026-11-06). Should `Content-Type`, `Content-Encoding`,
+  `Content-Range`, `ETag` and `Last-Modified` also be refused? Yes: each describes one body (§3.4),
+  and protocol 13 refuses them (D6). A later protocol may loosen the list, and no caller breaks.
+  Tightening it after a release would refuse serves that work today, so it is decided before the
+  first release. The maintainer confirms it at review.
 - **Q2.** Should a route be able to unset a serve header? In 13 it cannot: values are non-empty.
 - **Q3.** Should proxied responses append a policy (so a backend's stricter CSP still intersects)
   rather than replace it? 13 replaces, as one rule for every name.
@@ -294,7 +303,9 @@ be at least as strict as these.
 - **D5** one validation table with two implementations, held together by a shared vector file
   (§3.4). The Go token check is written by hand to mirror the Rust one, not taken from
   `httpguts`, so the file is the only reference.
-- **D6** hop-by-hop names, `Set-Cookie`, `Content-Length` and `Host` are refused (§3.4).
+- **D6** hop-by-hop names, `Set-Cookie`, `Host` and the names that describe one body
+  (`Content-Length`, `Content-Type`, `Content-Encoding`, `Content-Range`, `ETag`,
+  `Last-Modified`) are refused (§3.4, Q1).
 - **D7** bounds in bytes: 32 headers, 64-byte names, 8192-byte values and 16 KiB per effective list
   (§3.4).
 - **D8** protocol 13. The core refuses with the typed `NetworkError::Unsupported`, as egress (v7)
