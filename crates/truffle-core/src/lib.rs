@@ -82,8 +82,9 @@ pub use egress::{
 };
 pub use envelope::Envelope;
 pub use file_transfer::{
-    FileOffer, FileTransfer, FileTransferEvent, FtMessage, OfferDecision, OfferResponder,
-    TransferDirection, TransferError, TransferProgress, TransferResult, TransferTimings,
+    FileOffer, FileTransfer, FileTransferEvent, FtMessage, NamedPath, NamedPullRoot, OfferDecision,
+    OfferResponder, TransferDirection, TransferError, TransferProgress, TransferResult,
+    TransferTimings,
 };
 pub use identity::{slug, tailscale_hostname, AppId, DeviceId, DeviceName, IdentityError};
 pub use node::{NamespacedMessage, Node, NodeBuilder, NodeError, Peer};

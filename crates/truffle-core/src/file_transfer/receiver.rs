@@ -4,8 +4,10 @@
 //! Instead of auto-accepting, offers are forwarded through an offer channel
 //! so the application can decide whether to accept or reject each transfer.
 //! Pull requests are served only when the canonicalized requested path lives
-//! inside a configured pull root (see [`super::FileTransfer::add_pull_root`]);
-//! with no roots configured all incoming PULL_REQUESTs are denied.
+//! inside a configured pull root: an absolute-path pull against the roots of
+//! [`super::FileTransfer::add_pull_root`], a named pull (RFC 032) against the
+//! root of [`super::FileTransfer::add_named_pull_root`] it names. With no
+//! roots configured all incoming PULL_REQUESTs are denied.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,9 +21,11 @@ use crate::network::NetworkProvider;
 use crate::node::Node;
 use crate::transport::{RawIncoming, RawListener};
 
+use super::named::authorize_named_pull;
 use super::types::{
-    FileOffer, FileTransferEvent, FtMessage, OfferDecision, OfferResponder, OverwritePolicy,
-    TransferDirection, TransferError, TransferProgress,
+    FileOffer, FileTransferEvent, FtMessage, NamedPath, OfferDecision, OfferResponder,
+    OverwritePolicy, TransferDirection, TransferError, TransferProgress, NAMED_PULL_DENIED_REASON,
+    PULL_DENIED_REASON,
 };
 use super::MAX_PENDING_OFFERS_PER_PEER;
 
@@ -93,6 +97,16 @@ fn authorize_pull_path(
             "requested path is not shared".into(),
         ));
     }
+    servable_file(canon, max_size)
+}
+
+/// The last checks of every pull's authorization, once `canon` (a canonical
+/// path) is known to lie inside a pull root: it must be a regular file no
+/// larger than `max_size`. Returns `canon` when it may be served.
+pub(super) fn servable_file(
+    canon: std::path::PathBuf,
+    max_size: u64,
+) -> Result<std::path::PathBuf, TransferError> {
     let meta = std::fs::metadata(&canon)
         .map_err(|_| TransferError::Rejected("requested path is not shared".into()))?;
     if !meta.is_file() {
@@ -259,6 +273,7 @@ pub fn spawn_receive_handler<N: NetworkProvider + 'static>(
                     path,
                     requester_id: _,
                     token,
+                    named,
                 } => {
                     // Global cap applies to pull serving too — each served
                     // pull streams a file and holds a TCP connection.
@@ -287,12 +302,20 @@ pub fn spawn_receive_handler<N: NetworkProvider + 'static>(
                         tokio::select! {
                         _ = cancel.cancelled() => {}
                         _ = async {
-                        if let Err(e) =
-                            handle_pull_request(&node, &from, &path, &token, &event_tx).await
+                        if let Err(e) = handle_pull_request(
+                            &node,
+                            &from,
+                            &path,
+                            named.as_ref(),
+                            &token,
+                            &event_tx,
+                        )
+                        .await
                         {
+                            let label = pull_label(&path, named.as_ref());
                             error!(
                                 from = from.as_str(),
-                                path = path.as_str(),
+                                path = label.as_str(),
                                 "Failed to serve file: {e}"
                             );
                         }
@@ -625,15 +648,66 @@ async fn accept_and_receive<N: NetworkProvider + 'static>(
     Ok(())
 }
 
+/// How a PULL_REQUEST names its file, for logs: the absolute path, or
+/// `root:path` for a named pull.
+fn pull_label(path: &str, named: Option<&NamedPath>) -> String {
+    match named {
+        Some(target) => format!("{}:{}", target.root, target.path),
+        None => path.to_string(),
+    }
+}
+
+/// Authorize a PULL_REQUEST against this node's pull roots.
+///
+/// An absolute-path pull (`named` is `None`) is checked against the roots of
+/// [`super::FileTransfer::add_pull_root`]; a named pull against the named
+/// roots alone (RFC 032). The two tables never answer for each other. A named
+/// pull that also carries an absolute path is refused: a current requester
+/// sends it empty, so the request is ambiguous at best.
+fn authorize_pull<N: NetworkProvider + 'static>(
+    node: &Node<N>,
+    path: &str,
+    named: Option<&NamedPath>,
+    max_size: u64,
+) -> Result<std::path::PathBuf, TransferError> {
+    match named {
+        None => {
+            let roots = node.file_transfer_state.pull_roots.read().unwrap().clone();
+            authorize_pull_path(&roots, path, max_size)
+        }
+        Some(_) if !path.is_empty() => Err(TransferError::Rejected(
+            "a named pull must not carry an absolute path".into(),
+        )),
+        Some(target) => {
+            let roots = node
+                .file_transfer_state
+                .named_pull_roots
+                .read()
+                .unwrap()
+                .clone();
+            authorize_named_pull(&roots, target, max_size)
+        }
+    }
+}
+
 /// Handle a PULL_REQUEST: read file, send OFFER, wait for ACCEPT, stream via TCP.
+///
+/// `named` is the request's named root and relative path (RFC 032), or `None`
+/// for an absolute-path pull of `path`.
 async fn handle_pull_request<N: NetworkProvider + 'static>(
     node: &Node<N>,
     from: &str,
     path: &str,
+    named: Option<&NamedPath>,
     token: &str,
     event_tx: &broadcast::Sender<FileTransferEvent>,
 ) -> Result<(), TransferError> {
-    info!(from = from, path = path, "Processing PULL_REQUEST");
+    let label = pull_label(path, named);
+    info!(
+        from = from,
+        path = label.as_str(),
+        "Processing PULL_REQUEST"
+    );
 
     // Authorize the peer-supplied path against the deny-by-default pull-root
     // allowlist BEFORE any filesystem I/O. This blocks arbitrary absolute-path
@@ -643,15 +717,27 @@ async fn handle_pull_request<N: NetworkProvider + 'static>(
         .file_transfer_state
         .max_transfer_size
         .load(std::sync::atomic::Ordering::Relaxed);
-    let roots = node.file_transfer_state.pull_roots.read().unwrap().clone();
-    let serve_path = match authorize_pull_path(&roots, path, max_size) {
+    let serve_path = match authorize_pull(node, path, named, max_size) {
         Ok(p) => p,
         Err(e) => {
-            warn!(from = from, path = path, "Denying PULL_REQUEST: {e}");
-            // Best-effort Reject so the requester fails fast instead of timing out.
+            warn!(
+                from = from,
+                path = label.as_str(),
+                "Denying PULL_REQUEST: {e}"
+            );
+            // Best-effort Reject so the requester fails fast instead of timing
+            // out. One reason per kind of pull, whatever the cause, so the
+            // requester learns nothing about what exists here; the named one
+            // differs, so a named requester can tell this node from one that
+            // predates named roots (RFC 032).
+            let reason = if named.is_some() {
+                NAMED_PULL_DENIED_REASON
+            } else {
+                PULL_DENIED_REASON
+            };
             let reject = FtMessage::Reject {
                 token: token.to_string(),
-                reason: "pull denied by peer".to_string(),
+                reason: reason.to_string(),
             };
             if let Ok(payload) = serde_json::to_value(&reject) {
                 if let Err(send_err) = node.send_typed(from, "ft", "reject", &payload).await {
@@ -685,7 +771,9 @@ async fn handle_pull_request<N: NetworkProvider + 'static>(
         hex::encode(hasher.finalize())
     };
 
-    let file_name = std::path::Path::new(path)
+    // The name the requester sees: the last segment of what it asked for.
+    let requested = named.map_or(path, |target| target.path.as_str());
+    let file_name = std::path::Path::new(requested)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("file")
@@ -805,7 +893,11 @@ async fn handle_pull_request<N: NetworkProvider + 'static>(
     }
 
     let elapsed = start.elapsed().as_secs_f64();
-    info!(path = path, bytes = size, "File served successfully");
+    info!(
+        path = label.as_str(),
+        bytes = size,
+        "File served successfully"
+    );
 
     // Emit completed event
     let _ = event_tx.send(FileTransferEvent::Completed {
@@ -1154,6 +1246,7 @@ mod tests {
     // Extra imports for the behavioral mock-node test (`handle_pull_request_*`).
     use crate::envelope::codec::JsonCodec;
     use crate::envelope::EnvelopeCodec;
+    use crate::file_transfer::types::NamedPullRoot;
     use crate::network::*;
     use crate::session::PeerRegistry;
     use crate::transport::websocket::WebSocketTransport;
@@ -1473,7 +1566,7 @@ mod tests {
         let secret_path = secret.to_str().unwrap();
 
         let (event_tx, _rx) = tokio::sync::broadcast::channel(16);
-        let err = handle_pull_request(&node, "peer-x", secret_path, "tok-1", &event_tx)
+        let err = handle_pull_request(&node, "peer-x", secret_path, None, "tok-1", &event_tx)
             .await
             .unwrap_err();
 
@@ -1481,6 +1574,228 @@ mod tests {
             matches!(err, TransferError::Rejected(_)),
             "expected Rejected, got {err}"
         );
+    }
+
+    // ── Named pull roots (RFC 032) ────────────────────────────────────
+
+    /// A root directory holding `ab/f.bin`, and the file's path.
+    fn named_root_with_file() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("ab")).unwrap();
+        let file = dir.path().join("ab").join("f.bin");
+        std::fs::write(&file, b"named").unwrap();
+        (dir, file)
+    }
+
+    fn named(root: &str, path: &str) -> NamedPath {
+        NamedPath {
+            root: root.into(),
+            path: path.into(),
+        }
+    }
+
+    #[test]
+    fn holder_before_named_roots_refuses_the_empty_path() {
+        // A holder that predates RFC 032 runs exactly this absolute-path
+        // authorization on a named pull, whose `path` is empty. The empty path
+        // never resolves, even when a root covers the holder's working
+        // directory, against which a relative path would otherwise resolve.
+        let cwd = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+        let err = authorize_pull_path(&[cwd], "", u64::MAX).unwrap_err();
+        assert!(matches!(err, TransferError::Rejected(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn named_pull_of_a_file_under_its_root_is_authorized() {
+        // Authorization passes, so the handler hashes the file and fails only
+        // at the network: the OFFER to the absent peer cannot be sent.
+        let (node, _peer_events) = make_test_node("node-n1", random_port().await).await;
+        let (dir, _file) = named_root_with_file();
+        node.file_transfer()
+            .add_named_pull_root("objects", dir.path().to_str().unwrap())
+            .unwrap();
+
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(16);
+        let target = named("objects", "ab/f.bin");
+        let err = handle_pull_request(&node, "peer-x", "", Some(&target), "t", &event_tx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TransferError::Node(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn named_pulls_outside_the_rules_are_refused() {
+        let (node, _peer_events) = make_test_node("node-n2", random_port().await).await;
+        let (dir, file) = named_root_with_file();
+        node.file_transfer()
+            .add_named_pull_root("objects", dir.path().to_str().unwrap())
+            .unwrap();
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(16);
+
+        for target in [
+            named("other", "ab/f.bin"),
+            named("Objects", "ab/f.bin"),
+            named("objects", "../f.bin"),
+            named("objects", "ab/../../f.bin"),
+            named("objects", "ab/missing.bin"),
+            named("objects", "ab"),
+        ] {
+            let err = handle_pull_request(&node, "peer-x", "", Some(&target), "t", &event_tx)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, TransferError::Rejected(_)),
+                "{target:?}: {err}"
+            );
+        }
+
+        // A named pull that also names an absolute path is ambiguous: refused,
+        // even though both halves name the same shared file.
+        let target = named("objects", "ab/f.bin");
+        let err = handle_pull_request(
+            &node,
+            "peer-x",
+            file.to_str().unwrap(),
+            Some(&target),
+            "t",
+            &event_tx,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, TransferError::Rejected(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn named_roots_never_answer_an_absolute_pull() {
+        // A file under a named root is reachable by name only: the absolute
+        // path of the same file is refused, here with no absolute roots...
+        let (node, _peer_events) = make_test_node("node-n3", random_port().await).await;
+        let (dir, file) = named_root_with_file();
+        let abs = file.to_str().unwrap();
+        let ft = node.file_transfer();
+        ft.add_named_pull_root("objects", dir.path().to_str().unwrap())
+            .unwrap();
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(16);
+
+        let err = handle_pull_request(&node, "peer-x", abs, None, "t", &event_tx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TransferError::Rejected(_)), "{err}");
+
+        // ...and with an absolute root elsewhere.
+        let other = tempfile::tempdir().unwrap();
+        ft.add_pull_root(other.path().to_str().unwrap()).unwrap();
+        let err = handle_pull_request(&node, "peer-x", abs, None, "t", &event_tx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TransferError::Rejected(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn absolute_roots_never_answer_a_named_pull() {
+        // The reverse: an absolute root has no name, so no named pull reaches it.
+        let (node, _peer_events) = make_test_node("node-n4", random_port().await).await;
+        let (dir, _file) = named_root_with_file();
+        node.file_transfer()
+            .add_pull_root(dir.path().to_str().unwrap())
+            .unwrap();
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(16);
+
+        let target = named("objects", "ab/f.bin");
+        let err = handle_pull_request(&node, "peer-x", "", Some(&target), "t", &event_tx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TransferError::Rejected(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn named_root_registration_validates_and_replaces() {
+        let (node, _peer_events) = make_test_node("node-n5", random_port().await).await;
+        let ft = node.file_transfer();
+        let (dir_a, file) = named_root_with_file();
+        let dir_b = tempfile::tempdir().unwrap();
+        let a = dir_a.path().to_str().unwrap();
+        let b = dir_b.path().to_str().unwrap();
+
+        // A name outside the grammar, a root that is a file, a missing root.
+        let err = ft.add_named_pull_root("Objects", a).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{err}");
+        let err = ft
+            .add_named_pull_root("objects", file.to_str().unwrap())
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{err}");
+        let missing = dir_b.path().join("missing");
+        let err = ft
+            .add_named_pull_root("objects", missing.to_str().unwrap())
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound, "{err}");
+        assert!(ft.named_pull_roots().is_empty());
+
+        // Listed by name, canonicalized; registering a name again replaces it.
+        ft.add_named_pull_root("objects", a).unwrap();
+        ft.add_named_pull_root("drive", b).unwrap();
+        ft.add_named_pull_root("objects", b).unwrap();
+        let canon_b = std::fs::canonicalize(b).unwrap();
+        assert_eq!(
+            ft.named_pull_roots(),
+            vec![
+                NamedPullRoot {
+                    name: "drive".into(),
+                    path: canon_b.clone(),
+                },
+                NamedPullRoot {
+                    name: "objects".into(),
+                    path: canon_b,
+                },
+            ]
+        );
+        // Named roots are not absolute-path roots.
+        assert!(ft.pull_roots().is_empty());
+
+        assert!(ft.remove_named_pull_root("drive"));
+        assert!(!ft.remove_named_pull_root("drive"));
+        assert_eq!(ft.named_pull_roots().len(), 1);
+
+        // clear_pull_roots returns to deny-by-default for both kinds.
+        ft.add_pull_root(a).unwrap();
+        ft.clear_pull_roots();
+        assert!(ft.pull_roots().is_empty());
+        assert!(ft.named_pull_roots().is_empty());
+    }
+
+    #[tokio::test]
+    async fn named_pull_requests_are_checked_before_any_network() {
+        // The requester refuses a name or a path outside the grammar itself,
+        // before resolving the peer: "peer-x" does not exist, so any attempt
+        // to reach it would fail with a Node error instead.
+        let (node, _peer_events) = make_test_node("node-n6", random_port().await).await;
+        let ft = node.file_transfer();
+        let dest = tempfile::tempdir().unwrap();
+        let local = dest.path().join("pulled.bin");
+        let local = local.to_str().unwrap();
+
+        for (root, path) in [
+            ("Objects", "ab/f.bin"),
+            ("", "ab/f.bin"),
+            ("objects", "../f.bin"),
+            ("objects", "/etc/hosts"),
+            ("objects", "ab//f.bin"),
+            ("objects", ""),
+        ] {
+            let err = ft
+                .pull_named_file("peer-x", root, path, local)
+                .await
+                .unwrap_err();
+            let TransferError::Io(e) = &err else {
+                panic!("{root:?} {path:?}: expected an I/O error, got {err}");
+            };
+            assert_eq!(
+                e.kind(),
+                std::io::ErrorKind::InvalidInput,
+                "{root:?} {path:?}: {err}"
+            );
+        }
+        assert!(!dest.path().join("pulled.bin").exists());
     }
 
     // ── Overwrite policy / finalize helpers ────────────────────────────

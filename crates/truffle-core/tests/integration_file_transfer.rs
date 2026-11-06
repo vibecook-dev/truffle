@@ -10,6 +10,9 @@ mod common;
 
 use std::time::Duration;
 
+use truffle_core::file_transfer::NAMED_PULL_DENIED_REASON;
+use truffle_core::TransferError;
+
 const WAIT_FOR_FILE: Duration = Duration::from_secs(30);
 
 /// Deterministic payload: `(i * 7 + 13) % 256`.
@@ -229,6 +232,117 @@ async fn test_transfer_rejected() {
         result.is_err(),
         "send_file to a rejecting peer must return Err, got {result:?}"
     );
+
+    pair.stop().await;
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: Named pull roots (RFC 032) — pull by {root, relative path}
+// ---------------------------------------------------------------------------
+
+/// `dir/name`, as the string the file-transfer API takes.
+fn path_in(dir: &tempfile::TempDir, name: &str) -> String {
+    dir.path().join(name).to_string_lossy().into_owned()
+}
+
+#[tokio::test]
+async fn test_named_pull_roots() {
+    let Some(authkey) = common::require_authkey("test_named_pull_roots") else {
+        return;
+    };
+    common::init_test_tracing();
+
+    let pair = common::make_truffle_pair(&authkey).await;
+
+    // Beta shares one directory by name and another by absolute path.
+    let named_root = tempfile::TempDir::new().expect("named root tempdir");
+    let absolute_root = tempfile::TempDir::new().expect("absolute root tempdir");
+    let object = make_payload(256 * 1024);
+    std::fs::create_dir(named_root.path().join("ab")).expect("create ab/");
+    let object_path = named_root.path().join("ab").join("object.bin");
+    std::fs::write(&object_path, &object).expect("write the named object");
+    let shared_path = path_in(&absolute_root, "shared.bin");
+    std::fs::write(&shared_path, b"shared by absolute path").expect("write the shared file");
+
+    let beta_ft = pair.beta.file_transfer();
+    beta_ft
+        .add_named_pull_root("objects", &named_root.path().to_string_lossy())
+        .expect("register the named root");
+    beta_ft
+        .add_pull_root(&absolute_root.path().to_string_lossy())
+        .expect("register the absolute root");
+    // Beta answers pulls from its receiver, which a reject-all push policy starts.
+    beta_ft.auto_reject(pair.beta.clone()).await;
+
+    let dst = tempfile::TempDir::new().expect("dst tempdir");
+    let alpha_ft = pair.alpha.file_transfer();
+    let beta_id = pair.beta_device_id.as_str();
+
+    // 1. A named pull lands the object byte for byte.
+    let object_dst = path_in(&dst, "object.bin");
+    let result = alpha_ft
+        .pull_named_file(beta_id, "objects", "ab/object.bin", &object_dst)
+        .await
+        .expect("named pull should succeed");
+    assert_eq!(result.bytes_transferred, object.len() as u64);
+    let pulled = std::fs::read(object_dst).expect("read the pulled object");
+    assert_eq!(
+        pulled, object,
+        "the named pull must land the object byte for byte"
+    );
+
+    // 2. An absolute-path pull is still served from an absolute root.
+    let shared_dst = path_in(&dst, "shared.bin");
+    alpha_ft
+        .pull_file(beta_id, &shared_path, &shared_dst)
+        .await
+        .expect("an absolute-path pull should still succeed");
+    let pulled = std::fs::read(shared_dst).expect("read the pulled shared file");
+    assert_eq!(pulled, b"shared by absolute path");
+
+    // 3. An unknown root is refused with the named denial: the holder speaks
+    //    RFC 032, so this is a refusal, not Unsupported.
+    let missing_dst = path_in(&dst, "missing.bin");
+    let err = alpha_ft
+        .pull_named_file(beta_id, "missing", "ab/object.bin", &missing_dst)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, TransferError::Rejected(r) if r == NAMED_PULL_DENIED_REASON),
+        "{err}"
+    );
+
+    // 4. The named object's absolute path is not served: a named root
+    //    answers by its name only.
+    let by_path_dst = path_in(&dst, "by-path.bin");
+    let err = alpha_ft
+        .pull_file(beta_id, &object_path.to_string_lossy(), &by_path_dst)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, TransferError::Rejected(_)), "{err}");
+
+    // 5. A symlink inside the named root that leaves it is refused.
+    #[cfg(unix)]
+    {
+        let outside = tempfile::TempDir::new().expect("outside tempdir");
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, b"secret").expect("write the secret");
+        let link = named_root.path().join("ab").join("link.txt");
+        std::os::unix::fs::symlink(secret, link).expect("plant the symlink");
+        let link_dst = path_in(&dst, "link.bin");
+        let err = alpha_ft
+            .pull_named_file(beta_id, "objects", "ab/link.txt", &link_dst)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TransferError::Rejected(_)), "{err}");
+    }
+
+    for name in ["missing.bin", "by-path.bin", "link.bin"] {
+        assert!(
+            !dst.path().join(name).exists(),
+            "{name} must not have landed"
+        );
+    }
 
     pair.stop().await;
 }

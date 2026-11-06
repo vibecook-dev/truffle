@@ -45,12 +45,64 @@ pub enum FtMessage {
     Reject { token: String, reason: String },
 
     /// Request a file from a remote peer (for pull/download).
+    ///
+    /// A pull names its file one of two ways:
+    ///
+    /// - **By absolute path**: `path` is a path on the holder, served only if
+    ///   it lies inside one of the holder's absolute-path pull roots
+    ///   ([`add_pull_root`](super::FileTransfer::add_pull_root)), and `named`
+    ///   is absent.
+    /// - **By name** (RFC 032): `named` carries a root name and a path relative
+    ///   to that root ([`add_named_pull_root`](super::FileTransfer::add_named_pull_root)),
+    ///   and `path` is empty. A holder that predates named roots ignores
+    ///   `named`, cannot resolve the empty path, and refuses with
+    ///   [`PULL_DENIED_REASON`], which the requester reports as
+    ///   [`TransferError::Unsupported`]. It never serves a file for it.
     #[serde(rename = "pull_request")]
     PullRequest {
+        /// The holder's absolute path (absolute-path pull), or empty (named pull).
         path: String,
         requester_id: String,
         token: String,
+        /// The named root and relative path (named pull, RFC 032). Absent from
+        /// an absolute-path pull, so its JSON is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        named: Option<NamedPath>,
     },
+}
+
+/// The REJECT reason a holder sends for every refused absolute-path pull,
+/// whatever the refusal's cause (an unknown path, one outside every root, a
+/// directory, an oversize file), so a requester learns nothing about what
+/// exists on the holder.
+pub const PULL_DENIED_REASON: &str = "pull denied by peer";
+
+/// The REJECT reason a holder sends for every refused named pull (RFC 032),
+/// with the same single-answer rule as [`PULL_DENIED_REASON`]. It differs
+/// from that reason so a requester can tell a refusal from a holder that
+/// predates named roots.
+pub const NAMED_PULL_DENIED_REASON: &str = "named pull denied by peer";
+
+/// A file below a holder's named pull root (RFC 032), as a named pull
+/// carries it in [`FtMessage::PullRequest`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamedPath {
+    /// The root's name, as the holder registered it. Matched exactly: names
+    /// are lowercase by grammar, so there is no case folding.
+    pub root: String,
+    /// The path below the root: relative, `/`-separated and normalized (no
+    /// empty, `.` or `..` segment, no NUL, `\` or `:`).
+    pub path: String,
+}
+
+/// A registered named pull root, as
+/// [`named_pull_roots`](super::FileTransfer::named_pull_roots) lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedPullRoot {
+    /// The name peers pull by.
+    pub name: String,
+    /// The directory the name serves, canonicalized at registration.
+    pub path: std::path::PathBuf,
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +203,10 @@ pub enum TransferError {
     Timeout,
     /// Protocol error (unexpected message, etc.).
     Protocol(String),
+    /// The peer runs a version that predates what this request needs, so it
+    /// cannot answer it (a named pull sent to a holder that predates RFC 032).
+    /// Nothing was transferred.
+    Unsupported(String),
 }
 
 impl std::fmt::Display for TransferError {
@@ -164,6 +220,7 @@ impl std::fmt::Display for TransferError {
             }
             TransferError::Timeout => write!(f, "Timed out waiting for peer response"),
             TransferError::Protocol(e) => write!(f, "Protocol error: {e}"),
+            TransferError::Unsupported(what) => write!(f, "Unsupported by peer: {what}"),
         }
     }
 }
@@ -389,5 +446,125 @@ mod tests {
         );
         let back: TransferTimings = serde_json::from_value(v).unwrap();
         assert_eq!(back, t);
+    }
+
+    // ── PULL_REQUEST wire shape (RFC 032) ──────────────────────────────
+
+    /// The PULL_REQUEST as truffle 0.4.8 through 0.7.26 parse it, field for
+    /// field: what a holder that predates named roots sees.
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "type")]
+    enum HolderBeforeNamedRoots {
+        #[serde(rename = "pull_request")]
+        PullRequest {
+            path: String,
+            requester_id: String,
+            token: String,
+        },
+    }
+
+    #[test]
+    fn absolute_pull_json_is_unchanged() {
+        // An absolute-path pull carries no `named` key, so its JSON is the
+        // same bytes every earlier holder already parses.
+        let msg = FtMessage::PullRequest {
+            path: "/srv/shared/f.txt".into(),
+            requester_id: "01HZZZZZZZZZZZZZZZZZZZZZZZ".into(),
+            token: "tok-1".into(),
+            named: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            serde_json::json!({
+                "type": "pull_request",
+                "path": "/srv/shared/f.txt",
+                "requester_id": "01HZZZZZZZZZZZZZZZZZZZZZZZ",
+                "token": "tok-1",
+            })
+        );
+    }
+
+    #[test]
+    fn earlier_requesters_parse_as_absolute_pulls() {
+        // An earlier requester's JSON has no `named`: a current holder reads
+        // it as an absolute-path pull, exactly as before.
+        let raw = r#"{"type":"pull_request","path":"/s/f.txt","requester_id":"r","token":"t"}"#;
+        match serde_json::from_str::<FtMessage>(raw).unwrap() {
+            FtMessage::PullRequest { path, named, .. } => {
+                assert_eq!(path, "/s/f.txt");
+                assert_eq!(named, None);
+            }
+            other => panic!("expected a PULL_REQUEST, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn named_pull_round_trips_and_sends_an_empty_path() {
+        let msg = FtMessage::PullRequest {
+            path: String::new(),
+            requester_id: "r".into(),
+            token: "t".into(),
+            named: Some(NamedPath {
+                root: "drive-objects".into(),
+                path: "ab/ab01.bin".into(),
+            }),
+        };
+        let value = serde_json::to_value(&msg).unwrap();
+        assert_eq!(value["path"], "");
+        assert_eq!(value["named"]["root"], "drive-objects");
+        assert_eq!(value["named"]["path"], "ab/ab01.bin");
+
+        match serde_json::from_value::<FtMessage>(value).unwrap() {
+            FtMessage::PullRequest { path, named, .. } => {
+                assert_eq!(path, "");
+                assert_eq!(
+                    named,
+                    Some(NamedPath {
+                        root: "drive-objects".into(),
+                        path: "ab/ab01.bin".into(),
+                    })
+                );
+            }
+            other => panic!("expected a PULL_REQUEST, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_holder_before_named_roots_sees_only_the_empty_path() {
+        // The earlier parser ignores `named` and keeps the empty `path`, the
+        // one value its authorization can never resolve to a file (see the
+        // receiver's `holder_before_named_roots_refuses_the_empty_path`).
+        let msg = FtMessage::PullRequest {
+            path: String::new(),
+            requester_id: "r".into(),
+            token: "t".into(),
+            named: Some(NamedPath {
+                root: "objects".into(),
+                path: "f.txt".into(),
+            }),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: HolderBeforeNamedRoots = serde_json::from_str(&json).unwrap();
+        let HolderBeforeNamedRoots::PullRequest {
+            path,
+            requester_id,
+            token,
+        } = parsed;
+        assert_eq!(path, "");
+        assert_eq!(requester_id, "r");
+        assert_eq!(token, "t");
+    }
+
+    #[test]
+    fn the_two_denial_reasons_differ() {
+        // The requester tells an earlier holder from a refusal by this
+        // difference alone.
+        assert_ne!(PULL_DENIED_REASON, NAMED_PULL_DENIED_REASON);
+    }
+
+    #[test]
+    fn unsupported_displays_its_cause() {
+        let e = TransferError::Unsupported("named pull roots".into());
+        assert_eq!(e.to_string(), "Unsupported by peer: named pull roots");
     }
 }
