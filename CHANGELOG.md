@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.27](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.26...truffle-v0.7.27) (2026-11-06)
+
+
+### Features
+
+* **core,sidecar:** response headers per serve and per route (sidecar protocol 13) ([#254](https://github.com/vibecook-dev/truffle/issues/254)) ([901283d](https://github.com/vibecook-dev/truffle/commit/901283d90b4ca92e9e9cab6cc02a30964663db75))
+* **core:** named pull roots — pull a file by {root, relative path} (RFC 032) ([#255](https://github.com/vibecook-dev/truffle/issues/255)) ([72b58ac](https://github.com/vibecook-dev/truffle/commit/72b58ac4268d25674a0059f75bfcb8255b24f434))
+
+
+### Bug Fixes
+
+* **deps:** klauspost/compress 1.20.2 (GO-2026-6865), and cargo-deny ignores RUSTSEC-2026-0441 until hyper moves ([#256](https://github.com/vibecook-dev/truffle/issues/256)) ([f16df30](https://github.com/vibecook-dev/truffle/commit/f16df30e6002361a3e52c1cbfbbb00b145fffa51))
+
 ## [0.7.26](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.25...truffle-v0.7.26) (2026-11-03)
 
 
