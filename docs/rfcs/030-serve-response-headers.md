@@ -146,8 +146,13 @@ its value's). A route that replaces a serve name is counted and sized once.
 
 **Bounds** (`MAX_RESPONSE_HEADERS` = 32, `MAX_RESPONSE_HEADER_NAME_BYTES` = 64,
 `MAX_RESPONSE_HEADER_VALUE_BYTES` = 8192, `MAX_RESPONSE_HEADERS_BYTES` = 16384, as `pub` consts in
-`truffle_core::proxy` and the sidecar's `maxResponseHeader*`). All are counted in bytes. They keep
-a `proxy:add` far below the sidecar's 8 MiB command line, and keep a fixed per-response cost. A
+`truffle_core::proxy` and the sidecar's `maxResponseHeader*`). All are counted in bytes, and all
+bound one list. They fix the cost each response carries, and cap the names and values one list adds
+to a `proxy:add` at 16 KiB. They do not bound the `proxy:add` itself: nothing bounds the number of
+routes (RFC 023 bounds neither routes nor `allow` globs), so a serve with some hundreds of routes,
+each carrying a full list, can pass the sidecar's 8 MiB command line. The sidecar then skips the
+line with an untagged `COMMAND_TOO_LARGE`, and the core reports `proxy add timed out` after 10
+seconds rather than a validation refusal. That limit, and its untagged error, predate this RFC. A
 consumer that composes a policy, such as a CSP naming many hosts, must bound it to fit: 16 hosts of
 253 bytes in each of six directives do not fit in 8192 bytes.
 
@@ -228,7 +233,8 @@ Status events advertise `"protocolVersion": 13`.
 2. **No response splitting.** Names are tokens, and values hold no CR, LF, NUL or other control
    bytes. Both sides check, because the sidecar must not trust the wire.
 3. **No shared session.** `Set-Cookie` is refused (§3.4).
-4. **Bounded cost.** The bounds cap memory per serve and bytes per response (§3.4).
+4. **Bounded cost.** The bounds cap the bytes each response carries and the size of each list
+   (§3.4). A serve's total grows with its route count, which nothing bounds.
 5. **No leaks in errors.** A refusal never echoes a value: a value may carry a nonce or a
    reporting endpoint.
 6. **Not a gate.** Headers instruct the browser. Who may reach the serve is still the tailnet's ACLs
