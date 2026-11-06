@@ -309,6 +309,13 @@ exactly, so old cores work against new sidecars):
 - Static handler: `http.FileServer` behind the route mux with the §6.2 hardening.
 - **Behavioral tests (G7 fix)**: Go httptest-level tests for routing, header
   strip/inject, loopback gate, fallback; Rust wire-format tests for new fields.
+- **Response headers**: *Amended (sidecar v13, 2026-11-06):* `proxy:add` and each
+  route carry `headers` (`[{name, value}]`). A route's header replaces the serve's
+  of the same name. The sidecar sets the list on every response of the serve or
+  route: static files, proxied responses (replacing the backend's value) and the
+  engine's own 404, 403 and 502. Both sides validate it. The core refuses headers
+  on a sidecar below v13. The normative text is RFC 030
+  (`030-serve-response-headers.md`).
 
 ### 7.1 `tsnet:listen` TLS plumb (JS path)
 
