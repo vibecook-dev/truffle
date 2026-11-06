@@ -1218,6 +1218,27 @@ pub(crate) fn login_gate_supported(
     )))
 }
 
+/// The `proxy:add` payload for `config`, before a correlation id is set:
+/// every field the provider was handed, the serve's response headers and each
+/// route's own (RFC 030) included, unchanged and in order.
+fn proxy_add_command(config: &ProxyAddParams) -> ProxyAddCommandData {
+    ProxyAddCommandData {
+        id: config.id.clone(),
+        name: config.name.clone(),
+        listen_port: config.listen_port,
+        target_host: config.target_host.clone(),
+        target_port: config.target_port,
+        target_scheme: config.target_scheme.clone(),
+        tls: config.tls,
+        allow_non_loopback: config.allow_non_loopback,
+        allow: config.allow.clone(),
+        routes: config.routes.clone(),
+        accept_app_caps: config.accept_app_capabilities.clone(),
+        headers: config.headers.clone(),
+        request_id: None,
+    }
+}
+
 impl super::super::NetworkProvider for TailscaleProvider {
     async fn start(&mut self) -> Result<(), NetworkError> {
         {
@@ -1871,21 +1892,7 @@ impl super::super::NetworkProvider for TailscaleProvider {
             )));
         }
 
-        let command = ProxyAddCommandData {
-            id: config.id.clone(),
-            name: config.name.clone(),
-            listen_port: config.listen_port,
-            target_host: config.target_host.clone(),
-            target_port: config.target_port,
-            target_scheme: config.target_scheme.clone(),
-            tls: config.tls,
-            allow_non_loopback: config.allow_non_loopback,
-            allow: config.allow.clone(),
-            routes: config.routes.clone(),
-            accept_app_caps: config.accept_app_capabilities.clone(),
-            headers: config.headers.clone(),
-            request_id: None,
-        };
+        let command = proxy_add_command(&config);
 
         // v4 sidecars echo a correlation id on proxy:added / proxy:error,
         // routing the reply through the broker; older ones fall back to
@@ -2705,6 +2712,63 @@ mod diagnostic_tests {
             provider.proxy_add(params(vec![csp()], vec![csp()])).await,
             Err(NetworkError::NotRunning)
         ));
+    }
+
+    /// RFC 030: the `proxy:add` payload carries the serve's headers and each
+    /// route's own, unchanged and in order. A list lost between the params
+    /// and the wire would pass the v13 gate and serve without the policy.
+    #[test]
+    fn proxy_add_command_carries_the_serve_and_route_headers() {
+        use crate::network::{ProxyAddParams, ProxyHeader, ProxyRoute};
+
+        fn header(name: &str, value: &str) -> ProxyHeader {
+            ProxyHeader {
+                name: name.into(),
+                value: value.into(),
+            }
+        }
+        fn dir_route(prefix: &str, headers: Vec<ProxyHeader>) -> ProxyRoute {
+            ProxyRoute {
+                prefix: prefix.into(),
+                target_url: None,
+                dir: Some("/srv/app".into()),
+                fallback: None,
+                strip_prefix: false,
+                allow: Vec::new(),
+                headers,
+            }
+        }
+        let params = ProxyAddParams {
+            id: "app".into(),
+            name: "app".into(),
+            listen_port: 8443,
+            target_host: "localhost".into(),
+            target_port: 0,
+            target_scheme: "http".into(),
+            tls: false,
+            allow_non_loopback: false,
+            allow: Vec::new(),
+            routes: vec![
+                dir_route("/admin", vec![header("X-Frame-Options", "DENY")]),
+                dir_route("/", Vec::new()),
+            ],
+            accept_app_capabilities: vec!["vibecook.dev/cap/flux".into()],
+            headers: vec![
+                header("Content-Security-Policy", "default-src 'self'"),
+                header("Referrer-Policy", "no-referrer"),
+            ],
+        };
+
+        let command = proxy_add_command(&params);
+        assert_eq!(command.headers, params.headers);
+        assert_eq!(command.routes, params.routes);
+        assert_eq!(
+            command.routes[0].headers,
+            vec![header("X-Frame-Options", "DENY")]
+        );
+        assert!(command.routes[1].headers.is_empty());
+        assert_eq!(command.accept_app_caps, params.accept_app_capabilities);
+        assert!(command.request_id.is_none());
     }
 
     #[test]

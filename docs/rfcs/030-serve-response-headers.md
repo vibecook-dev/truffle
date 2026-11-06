@@ -251,12 +251,17 @@ the field.
 - **Rust** (`cargo test -p truffle-core`):
   - `proxy::tests`: every vector case, plus the bounds and the refused names against the file;
     errors naming their list; no value echoed; a header-less route still checked through the
-    serve's list.
+    serve's list; and the `ProxyAddParams` that `Proxy::add` hands the provider carry the serve's
+    and each route's list unchanged (`proxy_add_params`).
   - `protocol::tests`: the v1 shape has no `headers` key; serve and route lists serialize as
     `[{name, value}]` in order; a route without headers omits the key; the field is read back.
   - `provider::diagnostic_tests::proxy_response_headers_require_protocol_v13`: serve-level and
     route-level headers are refused at v12 with both versions named. No headers at v12, and headers
     at v13, pass the gate.
+  - `provider::diagnostic_tests::proxy_add_command_carries_the_serve_and_route_headers`: the
+    `proxy:add` payload built from those params (`proxy_add_command`) carries both lists unchanged.
+  - Not unit-tested: the NAPI mapping (`truffle-napi` is a `cdylib` with no Rust tests). The
+    TypeScript tests pin the NAPI shapes it receives.
 - **Go** (`go test ./...` in `packages/sidecar-slim`):
   - `response_headers_v13_test.go`: the vector table and its bounds and refused names; the wire
     shape; the merge and replace rules.

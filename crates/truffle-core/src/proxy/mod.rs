@@ -101,21 +101,7 @@ impl<'a, N: NetworkProvider + 'static> Proxy<'a, N> {
         crate::node::ensure_port_unreserved(config.listen_port, self.node.ws_port)?;
         validate_config(&config).map_err(NodeError::ConnectionFailed)?;
 
-        let params = ProxyAddParams {
-            id: config.id.clone(),
-            name: config.name.clone(),
-            listen_port: config.listen_port,
-            target_host: config.target.host.clone(),
-            target_port: config.target.port,
-            target_scheme: config.target.scheme.clone(),
-            tls: config.tls,
-            allow_non_loopback: config.allow_non_loopback,
-            allow: config.allow.clone(),
-            routes: config.routes.clone(),
-            accept_app_capabilities: config.accept_app_capabilities.clone(),
-            headers: config.headers.clone(),
-        };
-
+        let params = proxy_add_params(&config);
         let result = self.node.network.proxy_add(params).await?;
 
         let info = ProxyInfo {
@@ -166,6 +152,26 @@ impl<'a, N: NetworkProvider + 'static> Proxy<'a, N> {
             .send(ProxyEvent::Stopped { id: id.to_string() });
 
         Ok(())
+    }
+}
+
+/// The provider's view of a validated config: every field `proxy:add`
+/// carries, the serve's response headers and each route's own (RFC 030)
+/// included, unchanged and in order.
+fn proxy_add_params(config: &ProxyConfig) -> ProxyAddParams {
+    ProxyAddParams {
+        id: config.id.clone(),
+        name: config.name.clone(),
+        listen_port: config.listen_port,
+        target_host: config.target.host.clone(),
+        target_port: config.target.port,
+        target_scheme: config.target.scheme.clone(),
+        tls: config.tls,
+        allow_non_loopback: config.allow_non_loopback,
+        allow: config.allow.clone(),
+        routes: config.routes.clone(),
+        accept_app_capabilities: config.accept_app_capabilities.clone(),
+        headers: config.headers.clone(),
     }
 }
 
@@ -676,6 +682,29 @@ mod tests {
         assert!(validate_config(&config).is_ok());
         config.headers.push(header("Host", "evil.example"));
         assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn proxy_add_params_carry_the_serve_and_route_headers() {
+        // `Proxy::add` hands the provider exactly this. A list lost here
+        // would pass every validation test and serve without the policy.
+        let mut api = url_route("/api");
+        api.headers = vec![header("X-Frame-Options", "DENY")];
+        let mut config = base_config(vec![api, dir_route("/")]);
+        config.headers = vec![
+            header("Content-Security-Policy", "default-src 'self'"),
+            header("Referrer-Policy", "no-referrer"),
+        ];
+        let params = proxy_add_params(&config);
+        assert_eq!(params.headers, config.headers);
+        assert_eq!(params.routes, config.routes);
+        assert_eq!(
+            params.routes[0].headers,
+            vec![header("X-Frame-Options", "DENY")]
+        );
+        assert!(params.routes[1].headers.is_empty());
+        assert_eq!(params.listen_port, config.listen_port);
+        assert_eq!(params.target_host, config.target.host);
     }
 
     #[test]
