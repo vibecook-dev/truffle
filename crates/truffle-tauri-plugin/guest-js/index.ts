@@ -160,6 +160,15 @@ export type FileTransferEvent =
       reason: string;
     };
 
+/** One response header of a serve or a route (RFC 030). Mirrors core's `ProxyHeader`.
+ *  The core checks names and values and refuses a bad list. */
+export interface ProxyHeader {
+  /** Header name, e.g. "Content-Security-Policy" (compared case-insensitively). */
+  name: string;
+  /** Header value: visible ASCII, spaces and tabs. */
+  value: string;
+}
+
 /** One path-prefix route of a v2 proxy. Mirrors `ProxyRouteJs` (RFC 023 §7).
  *  Exactly one of `targetUrl` / `dir` is set; longest prefix wins. */
 export interface ProxyRoute {
@@ -175,6 +184,8 @@ export interface ProxyRoute {
   stripPrefix?: boolean;
   /** Per-route loginName globs; overrides the config-level `allow`. */
   allow?: string[];
+  /** Response headers for this route (RFC 030); each replaces the config-level one of that name. */
+  headers?: ProxyHeader[];
 }
 
 /** Reverse-proxy config. Mirrors `ProxyConfigJs`. */
@@ -194,6 +205,8 @@ export interface ProxyConfig {
   allow?: string[];
   /** Path-prefix routes; when non-empty they replace the single target. */
   routes?: ProxyRoute[];
+  /** Response headers on every response of the serve (RFC 030; sidecar protocol 13). */
+  headers?: ProxyHeader[];
 }
 
 /** Reverse-proxy info. Mirrors `ProxyInfoJs`. */

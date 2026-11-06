@@ -441,6 +441,45 @@ pub struct ProxyConfigJs {
     /// Path-prefix routes (RFC 023 §7). When non-empty they replace the
     /// single `targetHost`/`targetPort`/`targetScheme` target.
     pub routes: Option<Vec<ProxyRouteJs>>,
+    /// Response headers set on every response of the serve (RFC 030), e.g.
+    /// `[{name: "Content-Security-Policy", value: "default-src 'self'"}]`.
+    /// A route's own `headers` replace these by name. Needs sidecar protocol
+    /// 13; core refuses them on an older one (default: none).
+    pub headers: Option<Vec<truffle_core::network::ProxyHeader>>,
+}
+
+impl From<ProxyConfigJs> for truffle_core::proxy::ProxyConfig {
+    fn from(config: ProxyConfigJs) -> Self {
+        Self {
+            id: config.id,
+            name: config.name,
+            listen_port: config.listen_port,
+            target: truffle_core::proxy::ProxyTarget {
+                host: config
+                    .target_host
+                    .unwrap_or_else(|| "localhost".to_string()),
+                port: config.target_port,
+                scheme: config.target_scheme.unwrap_or_else(|| "http".to_string()),
+            },
+            announce: config.announce.unwrap_or(true),
+            // RFC 023 v2 fields. Core `validate_config` (called in
+            // `Proxy::add`) owns the shape rules — this only maps.
+            tls: config.tls.unwrap_or(true),
+            allow_non_loopback: config.allow_non_loopback.unwrap_or(false),
+            allow: config.allow.unwrap_or_default(),
+            routes: config
+                .routes
+                .unwrap_or_default()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            // Not exposed to the frontend yet (protocol 9 capability forwarding).
+            accept_app_capabilities: Vec::new(),
+            // RFC 030: mapped through, never dropped. Core `validate_config`
+            // refuses a bad list and the protocol gate an old sidecar.
+            headers: config.headers.unwrap_or_default(),
+        }
+    }
 }
 
 /// One path-prefix route of a v2 proxy (RFC 023 §7). Exactly one of
@@ -466,6 +505,9 @@ pub struct ProxyRouteJs {
     /// Per-route loginName globs; overrides the config-level `allow`
     /// (default: none = inherit).
     pub allow: Option<Vec<String>>,
+    /// Response headers for this route (RFC 030); each replaces the
+    /// config-level header of the same name (default: none = inherit).
+    pub headers: Option<Vec<truffle_core::network::ProxyHeader>>,
 }
 
 impl From<ProxyRouteJs> for truffle_core::network::ProxyRoute {
@@ -477,8 +519,7 @@ impl From<ProxyRouteJs> for truffle_core::network::ProxyRoute {
             fallback: r.fallback,
             strip_prefix: r.strip_prefix.unwrap_or(false),
             allow: r.allow.unwrap_or_default(),
-            // Not exposed to the frontend yet (protocol 13 response headers).
-            headers: Vec::new(),
+            headers: r.headers.unwrap_or_default(),
         }
     }
 }
@@ -664,6 +705,7 @@ mod proxy_route_mapping_tests {
             fallback: Some("/index.html".to_string()),
             strip_prefix: None,
             allow: None,
+            headers: None,
         };
         let mapped: truffle_core::network::ProxyRoute = route.into();
         assert_eq!(
@@ -704,5 +746,66 @@ mod proxy_route_mapping_tests {
                 headers: vec![],
             }
         );
+    }
+
+    fn header(name: &str, value: &str) -> truffle_core::network::ProxyHeader {
+        truffle_core::network::ProxyHeader {
+            name: name.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    #[test]
+    fn response_headers_map_through_on_the_config_and_its_routes() {
+        // RFC 030: a frontend's `headers` must reach core, never be dropped,
+        // or the serve would run without the policy the caller set. Core
+        // `validate_config` then owns the rules.
+        let config: ProxyConfigJs = serde_json::from_value(serde_json::json!({
+            "id": "app",
+            "name": "app",
+            "listenPort": 8443,
+            "targetPort": 0,
+            "headers": [
+                {"name": "Content-Security-Policy", "value": "default-src 'self'"},
+                {"name": "Referrer-Policy", "value": "no-referrer"},
+            ],
+            "routes": [
+                {
+                    "prefix": "/",
+                    "dir": "/srv/app",
+                    "headers": [{"name": "X-Frame-Options", "value": "DENY"}],
+                },
+                {"prefix": "/api", "targetUrl": "http://localhost:8000"},
+            ],
+        }))
+        .unwrap();
+        let mapped: truffle_core::proxy::ProxyConfig = config.into();
+        assert_eq!(
+            mapped.headers,
+            vec![
+                header("Content-Security-Policy", "default-src 'self'"),
+                header("Referrer-Policy", "no-referrer"),
+            ]
+        );
+        assert_eq!(mapped.routes.len(), 2);
+        assert_eq!(
+            mapped.routes[0].headers,
+            vec![header("X-Frame-Options", "DENY")]
+        );
+        assert!(mapped.routes[1].headers.is_empty());
+    }
+
+    #[test]
+    fn absent_response_headers_map_to_an_empty_list() {
+        let config: ProxyConfigJs = serde_json::from_value(serde_json::json!({
+            "id": "app",
+            "name": "app",
+            "listenPort": 8443,
+            "targetPort": 3000,
+        }))
+        .unwrap();
+        let mapped: truffle_core::proxy::ProxyConfig = config.into();
+        assert!(mapped.headers.is_empty());
+        assert!(mapped.routes.is_empty());
     }
 }

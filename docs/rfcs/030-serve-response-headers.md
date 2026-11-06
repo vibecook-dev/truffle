@@ -1,6 +1,6 @@
 # RFC 030: Response headers per serve — the serve's policy rides every response
 
-**Status**: Implemented (sidecar protocol 13, core, NAPI, `mesh.serve`); ships in the release after 0.7.26
+**Status**: Implemented (sidecar protocol 13, core, NAPI, `mesh.serve`, the Tauri plugin); ships in the release after 0.7.26
 **Author**: James Yong + Claude
 **Date**: 2026-11-06
 **Depends on**: RFC 023 (HTTP serving — the engine this extends)
@@ -49,6 +49,7 @@ and it should leave every stored object as it is.
 | Wire (`proxy:add`) | `"headers": [{"name": …, "value": …}]` | `routes[i].headers`, same shape |
 | NAPI | `NapiProxyConfig.headers?: NapiProxyHeader[]` | `NapiProxyRoute.headers?: NapiProxyHeader[]` |
 | `mesh.serve` | `ServeOptions.headers?: Record<string, string>` | `ServeRouteValue.headers?: Record<string, string>` |
+| Tauri (`proxyAdd`) | `ProxyConfig.headers?: ProxyHeader[]` | `ProxyRoute.headers?: ProxyHeader[]` |
 
 `ProxyHeader { name: String, value: String }` lives in `truffle_core::network` and is re-exported
 from `truffle_core::proxy`. An empty list is the default and sets nothing. The wire omits the key
@@ -214,7 +215,9 @@ Status events advertise `"protocolVersion": 13`.
   `handle.config`, so a replay reproduces them.
 - **CLI daemon**: `proxy_add` reads `headers` on the params and on each route. There is no
   `truffle serve --header` flag yet (Q5).
-- **Tauri plugin**: not exposed yet. Its routes and configs pass an empty list (Q5).
+- **Tauri plugin**: `headers` on `ProxyConfigJs` and `ProxyRouteJs` (guest-js `ProxyHeader[]` on
+  `ProxyConfig` and `ProxyRoute`), mapped through to core unchanged. A plugin that took the key
+  and dropped it would serve without the policy and report nothing, which §3.5 exists to prevent.
 - **Swift**: the Swift package has no serve surface, so nothing changes.
 
 ## 6. Security model
@@ -268,6 +271,9 @@ the field.
   - `main_test.go` pins protocol 13.
 - **TypeScript** (`packages/core/test/serve.test.cjs`): the records map to the NAPI lists for every
   shape, absence stays absent, shape errors throw, and `serve()` and replay carry them.
+- **Tauri plugin** (`cargo test -p truffle-tauri-plugin`, `proxy_route_mapping_tests`): a
+  frontend config's serve and route `headers` reach core's `ProxyConfig` in order; absent ones map
+  to an empty list.
 
 ## 9. Consumers
 
@@ -288,8 +294,8 @@ be at least as strict as these.
   rather than replace it? 13 replaces, as one rule for every name.
 - **Q4.** The bounds (32, 64, 8192 and 16384 bytes) are first numbers, sized for policy headers. They
   are for the maintainer to confirm.
-- **Q5.** Expose headers in `truffle serve --header 'Name: value'` and in the Tauri plugin's
-  guest API?
+- **Q5.** Expose headers in `truffle serve --header 'Name: value'`? (The Tauri plugin's guest API
+  carries them since the review of 2026-11-06, §5.)
 
 ## 11. Decisions
 
