@@ -969,17 +969,20 @@ impl TailscaleProvider {
                                     h.state = "crashed".to_string();
                                     h.healthy = false;
                                 }
+                                // The node is gone for good (no restart):
+                                // tell the app, which otherwise keeps showing
+                                // a running node that serves nothing. Sent
+                                // BEFORE a pending start fails, as
+                                // LoggingRequired is, so a build() that fails
+                                // here hands its hook this event too.
+                                let _ = status
+                                    .tx
+                                    .send(NetworkStatusEvent::SidecarExited { exit_code });
                                 if let Some(tx) = started_tx.take() {
                                     let _ = tx.send(Err(NetworkError::SidecarError(format!(
                                         "process exited with code {exit_code:?}"
                                     ))));
                                 }
-                                // The node is gone for good (no restart):
-                                // tell the app, which otherwise keeps showing
-                                // a running node that serves nothing.
-                                let _ = status
-                                    .tx
-                                    .send(NetworkStatusEvent::SidecarExited { exit_code });
                                 return;
                             }
                             SidecarInternalEvent::ProxyError { id, code, message } => {
