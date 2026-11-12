@@ -21,8 +21,9 @@ The Apple graph keeps Go 1.27.3 until the next TailscaleKit artifact, as it kept
 Validation on November 12, 2026: under Go 1.27.4 the sidecar builds with
 `CGO_ENABLED=0`, and the binary embeds Go 1.27.4 and Tailscale 1.104.1.
 `scripts/check-go-security.sh` (govulncheck 1.9.0) under Go 1.27.3 reports
-GO-2026-6859 for the sidecar. The same scan under Go 1.27.4, `go vet` and the Go
-tests are this change's CI (Security Audit and CI).
+GO-2026-6859 for the sidecar. The same scan under Go 1.27.4 and the Go tests
+(`go test ./...`) are this change's CI (Security Audit and CI); `go vet` was not
+run.
 
 ---
 
