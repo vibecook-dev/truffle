@@ -1760,21 +1760,75 @@ pub struct NodeBuilder {
 /// A [`NodeBuilder::on_network_status`] handler.
 type NetworkStatusHandler = Arc<dyn Fn(NetworkStatusEvent) + Send + Sync>;
 
-/// Forward `rx` to `handler` until the provider's status channel closes
-/// (the provider is dropped) or the task is aborted.
-fn spawn_status_forwarder(
-    mut rx: broadcast::Receiver<NetworkStatusEvent>,
-    handler: NetworkStatusHandler,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(event) => handler(event),
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => break,
+/// How long a failed `build()` waits for the [`NodeBuilder::on_network_status`]
+/// hook to take the events its failed start sent, before it returns the error
+/// anyway. Only a hook that blocks comes near it.
+const STATUS_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// The task that hands the provider's status events to the
+/// [`NodeBuilder::on_network_status`] hook, subscribed before
+/// `provider.start()`.
+///
+/// Dropping it leaves the task running: it forwards until the provider's
+/// status channel closes (the provider is dropped). A failed start ends it
+/// with [`drain_and_stop`](Self::drain_and_stop), never an abort alone: an
+/// event the start sent just before it failed (`LoggingRequired`,
+/// `SidecarExited`) may still be queued, unpolled, and an aborted task never
+/// runs the hook for it.
+struct StatusForwarder {
+    task: tokio::task::JoinHandle<()>,
+    drain: Arc<tokio::sync::Notify>,
+}
+
+impl StatusForwarder {
+    fn spawn(
+        mut rx: broadcast::Receiver<NetworkStatusEvent>,
+        handler: NetworkStatusHandler,
+    ) -> Self {
+        let drain = Arc::new(tokio::sync::Notify::new());
+        let asked = drain.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    () = asked.notified() => {
+                        // Everything sent before the ask is in `rx`: hand it
+                        // over, then stop.
+                        loop {
+                            match rx.try_recv() {
+                                Ok(event) => handler(event),
+                                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                                Err(
+                                    broadcast::error::TryRecvError::Empty
+                                    | broadcast::error::TryRecvError::Closed,
+                                ) => return,
+                            }
+                        }
+                    }
+                    event = rx.recv() => match event {
+                        Ok(event) => handler(event),
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Closed) => return,
+                    },
+                }
             }
+        });
+        Self { task, drain }
+    }
+
+    /// After a failed start: the hook takes every event already sent, then
+    /// the task ends. Bounded by [`STATUS_DRAIN_TIMEOUT`], after which the
+    /// task is aborted, so a hook that blocks cannot hold back the error.
+    async fn drain_and_stop(self) {
+        let Self { mut task, drain } = self;
+        drain.notify_one();
+        if tokio::time::timeout(STATUS_DRAIN_TIMEOUT, &mut task)
+            .await
+            .is_err()
+        {
+            task.abort();
         }
-    })
+    }
 }
 
 /// Manual `Debug`: `auth_key` is a tailnet credential and must never reach
@@ -2144,7 +2198,13 @@ impl NodeBuilder {
     /// when a tailnet refuses a node built with
     /// [`client_log_upload(false)`](Self::client_log_upload).
     ///
-    /// The handler runs on a tokio task; keep it short and non-blocking.
+    /// When `build()` fails, every event the start reported before it failed
+    /// has reached the handler by the time the error is returned: a refusal
+    /// arrives as [`NetworkStatusEvent::LoggingRequired`], a sidecar that
+    /// died during the start as [`NetworkStatusEvent::SidecarExited`].
+    ///
+    /// The handler runs on a tokio task; keep it short and non-blocking. A
+    /// failed `build()` waits at most a second for it.
     /// Works with both [`build`](Self::build) and
     /// [`build_with_auth_handler`](Self::build_with_auth_handler).
     ///
@@ -2316,13 +2376,15 @@ impl NodeBuilder {
         let mut provider = TailscaleProvider::new(config);
         // Subscribe before start() so conditions that keep it waiting
         // (device approval) reach the hook.
-        let status_task = self
+        let status = self
             .on_network_status
             .clone()
-            .map(|handler| spawn_status_forwarder(provider.status_events(), handler));
+            .map(|handler| StatusForwarder::spawn(provider.status_events(), handler));
         if let Err(e) = provider.start().await {
-            if let Some(task) = status_task {
-                task.abort();
+            // The hook sees what the failed start reported before the error
+            // is returned.
+            if let Some(status) = status {
+                status.drain_and_stop().await;
             }
             return Err(NodeError::Network(e));
         }
@@ -2389,10 +2451,10 @@ impl NodeBuilder {
         // 2. Subscribe to peer events BEFORE start() so we capture auth URLs
         //    (and to status events, for the on_network_status hook).
         let mut auth_rx = provider.peer_events();
-        let status_task = self
+        let status = self
             .on_network_status
             .clone()
-            .map(|handler| spawn_status_forwarder(provider.status_events(), handler));
+            .map(|handler| StatusForwarder::spawn(provider.status_events(), handler));
 
         // 3. Spawn a task that forwards AuthRequired events to the callback.
         let auth_task = tokio::spawn(async move {
@@ -2416,8 +2478,8 @@ impl NodeBuilder {
         auth_task.abort();
 
         if start_result.is_err() {
-            if let Some(task) = status_task {
-                task.abort();
+            if let Some(status) = status {
+                status.drain_and_stop().await;
             }
         }
         start_result?;
@@ -4163,5 +4225,222 @@ done
             ]
         );
         node.stop().await;
+    }
+
+    fn scripted(dir: &std::path::Path, script: &str) -> PathBuf {
+        let sidecar = dir.join("fake-sidecar.sh");
+        std::fs::write(&sidecar, script).unwrap();
+        std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o755)).unwrap();
+        sidecar
+    }
+
+    /// A builder whose hook records every event.
+    fn recording_builder(
+        dir: &std::path::Path,
+        sidecar: &std::path::Path,
+    ) -> (NodeBuilder, Arc<StdMutex<Vec<NetworkStatusEvent>>>) {
+        let seen: Arc<StdMutex<Vec<NetworkStatusEvent>>> = Arc::default();
+        let sink = seen.clone();
+        let builder = Node::<TailscaleProvider>::builder()
+            .app_id("playground")
+            .unwrap()
+            .device_name("dev")
+            .sidecar_path(sidecar)
+            .state_dir(dir.join("state").to_str().unwrap())
+            .on_network_status(move |event| sink.lock().unwrap().push(event));
+        (builder, seen)
+    }
+
+    /// Reads the start, then exits on its own: the process watcher reaps it
+    /// before the start fails, so nothing ever has to kill it.
+    const DIES_DURING_START: &str = "#!/bin/sh\nread start\nexit 3\n";
+
+    fn assert_the_hook_has_the_exit(
+        result: Result<Node<TailscaleProvider>, NodeError>,
+        seen: &StdMutex<Vec<NetworkStatusEvent>>,
+    ) {
+        let Err(err) = result else {
+            panic!("a sidecar that died during the start must fail the build");
+        };
+        assert!(
+            matches!(&err, NodeError::Network(crate::network::NetworkError::SidecarError(m)) if m.contains("exited")),
+            "unexpected error: {err:?}"
+        );
+        // Read at once: the event must be in by the time the error is.
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.contains(&NetworkStatusEvent::SidecarExited { exit_code: Some(3) }),
+            "the hook missed the sidecar's exit: {seen:?}"
+        );
+    }
+
+    /// End to end through `build()`: a sidecar that dies during the start
+    /// fails the build, and the hook has its exit by the time the error is
+    /// returned. This pins the guarantee; it does not tell the fix from the
+    /// code before it, which passed it too (2026-11-12, 03:32:13Z; a variant
+    /// with a hook kept busy also passed, 03:35:20Z). The drain itself is
+    /// proven in `status_forwarder_tests`.
+    #[tokio::test]
+    async fn a_build_that_fails_on_a_dead_sidecar_hands_the_hook_its_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let sidecar = scripted(dir.path(), DIES_DURING_START);
+        let (builder, seen) = recording_builder(dir.path(), &sidecar);
+        let result = tokio::time::timeout(Duration::from_secs(20), builder.build())
+            .await
+            .expect("build must fail once the sidecar is gone");
+        assert_the_hook_has_the_exit(result, &seen);
+    }
+
+    /// [`a_build_that_fails_on_a_dead_sidecar_hands_the_hook_its_exit`] for
+    /// `build_with_auth_handler()`. The same holds: it pins the guarantee,
+    /// and the code before the fix passed it too (2026-11-12, 03:32:13Z and,
+    /// with a hook kept busy, 03:35:20Z).
+    #[tokio::test]
+    async fn a_build_with_auth_handler_that_fails_on_a_dead_sidecar_hands_the_hook_its_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let sidecar = scripted(dir.path(), DIES_DURING_START);
+        let (builder, seen) = recording_builder(dir.path(), &sidecar);
+        let result = tokio::time::timeout(
+            Duration::from_secs(20),
+            builder.build_with_auth_handler(|_url| {}),
+        )
+        .await
+        .expect("build must fail once the sidecar is gone");
+        assert_the_hook_has_the_exit(result, &seen);
+    }
+
+    /// Answers the version probe an opted-out build sends first, reports the
+    /// tailnet's refusal, then exits.
+    const REFUSES_AN_OPTED_OUT_NODE: &str = r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"requestId":"\([^"]*\)".*/\1/p')
+  case "$line" in
+    *'"tsnet:version"'*)
+      echo "{\"event\":\"tsnet:versionResult\",\"data\":{\"requestId\":\"$id\",\"protocolVersion\":13,\"tailscaleVersion\":\"1.104.1\",\"tailscaleVersionLong\":\"1.104.1-dev20261020-g0123abcd\"}}" ;;
+    *'"tsnet:start"'*)
+      echo '{"event":"tsnet:status","data":{"state":"starting","protocolVersion":13}}'
+      echo '{"event":"tsnet:loggingRequired"}'
+      exit 0 ;;
+  esac
+done
+"#;
+
+    /// End to end through `build()`: the refusal an app shows (TS-D16 in
+    /// VibeField) reaches the hook as the typed event by the time the error
+    /// is returned, so no app has to match the error's words. This pins the
+    /// guarantee; it was not run against the code before the fix, and the
+    /// two dead-sidecar tests above, which were, passed there too. The drain
+    /// itself is proven in `status_forwarder_tests`.
+    #[tokio::test]
+    async fn a_refused_build_hands_the_hook_logging_required() {
+        let dir = tempfile::tempdir().unwrap();
+        let sidecar = scripted(dir.path(), REFUSES_AN_OPTED_OUT_NODE);
+        let (builder, seen) = recording_builder(dir.path(), &sidecar);
+        let result = tokio::time::timeout(
+            Duration::from_secs(20),
+            builder.client_log_upload(false).build(),
+        )
+        .await
+        .expect("the refusal must fail the build at once");
+        let Err(err) = result else {
+            panic!("a refused node must fail the build");
+        };
+        assert!(
+            matches!(&err, NodeError::Network(crate::network::NetworkError::StartFailed(m)) if m.contains("requires client logging")),
+            "unexpected error: {err:?}"
+        );
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.contains(&NetworkStatusEvent::LoggingRequired),
+            "the hook missed the refusal: {seen:?}"
+        );
+    }
+}
+
+/// The forwarder behind `NodeBuilder::on_network_status`, alone, with no
+/// process: a failed start must not lose the events it left queued.
+#[cfg(test)]
+mod status_forwarder_tests {
+    use super::*;
+    use std::sync::Mutex as StdMutex;
+
+    fn recording() -> (NetworkStatusHandler, Arc<StdMutex<Vec<NetworkStatusEvent>>>) {
+        let seen: Arc<StdMutex<Vec<NetworkStatusEvent>>> = Arc::default();
+        let sink = seen.clone();
+        (
+            Arc::new(move |event| sink.lock().unwrap().push(event)),
+            seen,
+        )
+    }
+
+    /// The race a failed `build()` had: the start's last events are queued
+    /// and the forwarder has not run since. On this current-thread runtime
+    /// it has not been polled once when the drain is asked.
+    #[tokio::test]
+    async fn a_drain_hands_the_hook_what_was_queued_then_stops() {
+        let (tx, rx) = broadcast::channel(16);
+        let (handler, seen) = recording();
+        let forwarder = StatusForwarder::spawn(rx, handler);
+        tx.send(NetworkStatusEvent::LoggingRequired).unwrap();
+        tx.send(NetworkStatusEvent::SidecarExited { exit_code: Some(3) })
+            .unwrap();
+
+        forwarder.drain_and_stop().await;
+
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            [
+                NetworkStatusEvent::LoggingRequired,
+                NetworkStatusEvent::SidecarExited { exit_code: Some(3) }
+            ]
+        );
+        assert_eq!(
+            tx.receiver_count(),
+            0,
+            "the forwarder must stop after the drain"
+        );
+    }
+
+    /// A built node drops its forwarder, which must go on forwarding.
+    #[tokio::test]
+    async fn a_dropped_forwarder_keeps_forwarding() {
+        let (tx, rx) = broadcast::channel(16);
+        let (handler, seen) = recording();
+        drop(StatusForwarder::spawn(rx, handler));
+        tx.send(NetworkStatusEvent::NeedsApproval).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while seen.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the event must reach the hook");
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            [NetworkStatusEvent::NeedsApproval]
+        );
+        assert_eq!(
+            tx.receiver_count(),
+            1,
+            "the forwarder must still be listening"
+        );
+    }
+
+    /// A hook that blocks holds a failed build's error back for the bound,
+    /// never for as long as it blocks.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_blocking_hook_holds_the_drain_for_the_bound_only() {
+        let (tx, rx) = broadcast::channel(16);
+        let handler: NetworkStatusHandler =
+            Arc::new(|_| std::thread::sleep(Duration::from_secs(3)));
+        let forwarder = StatusForwarder::spawn(rx, handler);
+        tx.send(NetworkStatusEvent::NeedsApproval).unwrap();
+        let t0 = std::time::Instant::now();
+        forwarder.drain_and_stop().await;
+        let waited = t0.elapsed();
+        assert!(
+            waited < STATUS_DRAIN_TIMEOUT + Duration::from_millis(900),
+            "a blocked hook held the drain {waited:?}"
+        );
     }
 }
