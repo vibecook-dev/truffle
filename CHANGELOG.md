@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.28](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.27...truffle-v0.7.28) (2026-11-12)
+
+
+### Bug Fixes
+
+* **core:** a failed build() hands its status hook what the start reported (T12) ([#263](https://github.com/vibecook-dev/truffle/issues/263)) ([88243d0](https://github.com/vibecook-dev/truffle/commit/88243d0eea2ce23e928f7853bd7142c9309f0a21))
+* **deps:** build the sidecar with Go 1.27.4 (GO-2026-6859) ([#261](https://github.com/vibecook-dev/truffle/issues/261)) ([5042300](https://github.com/vibecook-dev/truffle/commit/5042300354b66e710a11fcbb44a80a51579f8c67))
+
 ## [0.7.27](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.26...truffle-v0.7.27) (2026-11-06)
 
 
