@@ -1,3 +1,32 @@
+# Go 1.27.4 for the sidecar (November 2026)
+
+The sidecar now builds with Go 1.27.4 for GO-2026-6859: an HTTP/1 server crash
+due to a `MaxBytesReader` header race in `net/http`, fixed in Go 1.27.4
+(released November 10, 2026). Under Go 1.27.3, govulncheck reports it as
+reachable, for example through the sidecar's own HTTP/1 servers: the egress
+proxy (`handleEgressProxy` → `http.Server.Serve`) and the loopback listener
+(`handleLoopback` → `tsnet.Server.Loopback` → `http.Serve`). Tailscale stays at
+1.104.1.
+
+The Apple graph keeps Go 1.27.3 until the next TailscaleKit artifact, as it kept
+1.27.2 after the move to Go 1.27.3:
+
+- `apple-tests` keeps Go 1.27.3, because the materializer requires the exact Go
+  version in `apple/Vendor/libtailscale/go.mod`.
+- The security workflow scans both graphs with Go 1.27.4, so it does not report
+  GO-2026-6859 for the published framework, which was built with 1.27.3 and
+  still carries it. The audit cannot see it there; the next TailscaleKit
+  artifact, built with 1.27.4, removes it.
+
+Validation on November 12, 2026: under Go 1.27.4 the sidecar builds with
+`CGO_ENABLED=0`, and the binary embeds Go 1.27.4 and Tailscale 1.104.1.
+`scripts/check-go-security.sh` (govulncheck 1.9.0) under Go 1.27.3 reports
+GO-2026-6859 for the sidecar. The same scan under Go 1.27.4 and the Go tests
+(`go test ./...`) are this change's CI (Security Audit and CI); `go vet` was not
+run.
+
+---
+
 # TailscaleKit on libtailscale main with Go 1.27.3 (October 2026)
 
 The Apple framework now uses the sidecar's Go 1.27.3 (CVE-2026-111943) and
