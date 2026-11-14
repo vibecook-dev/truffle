@@ -48,14 +48,28 @@ versions embedded in the resulting framework binaries.
   Cancellation stops the underlying URLSession, and stale completion
   callbacks cannot interrupt a replacement watch. The materializer runs
   URLSession regression tests against these exact patched Swift sources.
+- `libtailscale-client-log-upload.patch` lets an app turn off the upload of
+  the node's client logs to Tailscale, as the sidecar's `clientLogUpload:
+  false` does. tsnet's logger has no option for it: it skips its upload only
+  in a test binary. So `tailscale_set_client_log_upload` throws the two
+  process-wide switches the control server's `DisableLogTail` throws,
+  `logtail.Disable()` and `envknob.SetNoLogsNoSupport()`, before the server
+  starts, and refuses a started server. `tailscale_client_log_upload` reports
+  the process's state. TailscaleKit applies `Configuration.clientLogUpload`
+  (default `true`) before `tailscale_start` and reports
+  `TailscaleNode.clientLogUpload`. `TestClientLogUploadSwitch` drives the C API
+  against the local test coordination server; `TestClientLogUploadOffStopsLogtail`
+  checks, in a child process because the switches cannot be undone, that
+  logtail sends nothing once they are thrown.
 
 | Input file | SHA-256 |
 | --- | --- |
 | `libtailscale-conn-cleanup.patch` | `4b473188ad1c7149769b97d19347812802cf07d7a62f98e145b6cb99f2308ace` |
 | `libtailscale-peer-notifications.patch` | `23be455e4c2b1637a276c5574d5e976d1c2c1f23ac5e21418e9b6f2db8fe96bf` |
 | `libtailscale-ipn-stream-recovery.patch` | `9bc20231b7e8dc81e0a09ddd178e7a6b45396882663ba57d42a0c3bb89c0bb22` |
-| `libtailscale/go.mod` | `9969fc1f5b10da3b4f7693b32e576160adcd15432f93528bf9c8c8a4e031ea4b` |
-| `libtailscale/go.sum` | `86cc3286bdd486996ef3d012d83de656d605b6e854f8d0a7b8c1e4802424280b` |
+| `libtailscale-client-log-upload.patch` | `39cb8f97c6d269a1832c85178a6f5a0f57fd23a479cb6497f44029549b775bfe` |
+| `libtailscale/go.mod` | `278ac67d70309ef1134cc46e4ba74345fb9d4fe1b054cc4cdb7db6adc4d4d54a` |
+| `libtailscale/go.sum` | `6786a20f3ca1cf8710095cbbf419a8ad3a82babc8684fa65c0fe4c1df60de73c` |
 
 ## Published artifact
 

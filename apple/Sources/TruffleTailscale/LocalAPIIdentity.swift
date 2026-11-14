@@ -64,6 +64,9 @@ struct LocalAPIStatusLogins: Decodable, Equatable {
         /// The row's hostname, which keys the app-tag cache with the node ID
         /// (a renamed peer is re-read).
         var HostName: String? = nil
+        /// The row's capability names (`CapMap`). Only `Self`'s is read: it
+        /// says whether the tailnet requires client logs (`ClientLogUpload`).
+        var CapMap: CapabilityNames? = nil
     }
 
     struct Profile: Decodable, Equatable {

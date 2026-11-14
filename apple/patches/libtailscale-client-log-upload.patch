@@ -1,0 +1,525 @@
+diff --git a/swift/TailscaleKit/TailscaleKit.h b/swift/TailscaleKit/TailscaleKit.h
+index f2c1220..08da86c 100644
+--- a/swift/TailscaleKit/TailscaleKit.h
++++ b/swift/TailscaleKit/TailscaleKit.h
+@@ -82,6 +82,30 @@ extern int tailscale_set_ephemeral(tailscale sd, int ephemeral);
+ // Returns zero on success or -1 on error, call tailscale_errmsg for details.
+ extern int tailscale_set_logfd(tailscale sd, int fd);
+ 
++// tailscale_set_client_log_upload turns off (enabled == 0) the upload of
++// this process's Tailscale client logs to Tailscale's log service
++// (log.tailscale.com), which is on by default, as in Tailscale's own
++// clients. It is the opt-out tailscaled's --no-logs-no-support makes.
++//
++// Turning the upload off is process-wide and one-way: it stops the upload
++// of every server in this process, including servers already running, and
++// a later call with enabled != 0 does not turn it back on. Call it before
++// tailscale_start, or any call that starts the server: a started server may
++// already have uploaded, so it is refused. A tailnet with network flow logs
++// on stops a server that does not upload its logs.
++//
++// Returns:
++//     0     - success
++//     EBADF - sd is not a valid tailscale
++//     -1    - sd has started; call tailscale_errmsg for details
++extern int tailscale_set_client_log_upload(tailscale sd, int enabled);
++
++// tailscale_client_log_upload reports whether this process uploads its
++// Tailscale client logs: 1 until the upload is turned off, by
++// tailscale_set_client_log_upload or by TS_NO_LOGS_NO_SUPPORT in the
++// process environment, and 0 after.
++extern int tailscale_client_log_upload(void);
++
+ // A tailscale_conn is a connection to an address on the tailnet.
+ //
+ // It is a pipe(2) on which you can use read(2), write(2), and close(2).
+diff --git a/swift/TailscaleKit/TailscaleNode.swift b/swift/TailscaleKit/TailscaleNode.swift
+index c1cc9a0..18ae14a 100644
+--- a/swift/TailscaleKit/TailscaleNode.swift
++++ b/swift/TailscaleKit/TailscaleNode.swift
+@@ -13,18 +13,26 @@ public struct Configuration: Sendable {
+     public let authKey: String?    ///< An auth key.  Leave empty to use web auth
+     public let controlURL: String  ///< URL for Tailscale control
+     public let ephemeral: Bool
++    /// Whether the node uploads its client logs to Tailscale's log service, as
++    /// Tailscale's own clients do.  false turns the upload off before the node
++    /// starts.  That is process-wide and one-way: it stops the upload of every
++    /// node in this process, and a later node that asks for uploads does not turn
++    /// them back on.  See TailscaleNode.clientLogUpload.
++    public let clientLogUpload: Bool
+ 
+     public init(hostName: String,
+                 path: String,
+                 authKey: String?,
+                 controlURL: String,
+-                ephemeral: Bool = false)
++                ephemeral: Bool = false,
++                clientLogUpload: Bool = true)
+     {
+         self.hostName = hostName
+         self.path = path
+         self.authKey = authKey
+         self.controlURL = controlURL
+         self.ephemeral = ephemeral
++        self.clientLogUpload = clientLogUpload
+     }
+ 
+ }
+@@ -83,6 +91,13 @@ public actor TailscaleNode {
+         tailscale_set_control_url(tailscale, config.controlURL)
+         tailscale_set_ephemeral(tailscale, config.ephemeral ? 1 : 0)
+ 
++        if !config.clientLogUpload {
++            let res = tailscale_set_client_log_upload(tailscale, 0)
++            guard res == 0 else {
++                throw TailscaleError.fromPosixErrCode(res, tailscale.getErrorMessage())
++            }
++        }
++
+         let res = tailscale_start(tailscale)
+ 
+         guard res == 0 else {
+@@ -98,6 +113,15 @@ public actor TailscaleNode {
+         }
+     }
+ 
++    /// Whether this process uploads its Tailscale client logs: true until a node
++    /// turns the upload off (Configuration.clientLogUpload), or when the process
++    /// started with TS_NO_LOGS_NO_SUPPORT set.
++    ///
++    /// @See tailscale_client_log_upload in Tailscale.h
++    public static var clientLogUpload: Bool {
++        tailscale_client_log_upload() != 0
++    }
++
+     /// Closes/stops the Tailscale server
+     ///
+     /// @See tailscale_close in Tailscale.h
+diff --git a/tailscale.c b/tailscale.c
+index 420d67e..94bc103 100644
+--- a/tailscale.c
++++ b/tailscale.c
+@@ -19,6 +19,8 @@ extern int TsnetSetAuthKey(int sd, char* str);
+ extern int TsnetSetControlURL(int sd, char* str);
+ extern int TsnetSetEphemeral(int sd, int ephemeral);
+ extern int TsnetSetLogFD(int sd, int fd);
++extern int TsnetSetClientLogUpload(int sd, int enabled);
++extern int TsnetClientLogUpload();
+ extern int TsnetGetIps(int sd, char *buf, size_t buflen);
+ extern int TsnetGetRemoteAddr(int listener, int conn, char *buf, size_t buflen);
+ extern int TsnetListen(int sd, char* net, char* addr, int* listenerOut);
+@@ -81,6 +83,12 @@ int tailscale_set_ephemeral(tailscale sd, int ephemeral) {
+ int tailscale_set_logfd(tailscale sd, int fd) {
+ 	return TsnetSetLogFD(sd, fd);
+ }
++int tailscale_set_client_log_upload(tailscale sd, int enabled) {
++	return TsnetSetClientLogUpload(sd, enabled);
++}
++int tailscale_client_log_upload(void) {
++	return TsnetClientLogUpload();
++}
+ 
+ int tailscale_loopback(tailscale sd, char* addr_out, size_t addrlen, char* proxy_cred_out, char* local_api_cred_out) {
+ 	return TsnetLoopback(sd, addr_out, addrlen, proxy_cred_out, local_api_cred_out);
+diff --git a/tailscale.go b/tailscale.go
+index af0ab5e..7147d09 100644
+--- a/tailscale.go
++++ b/tailscale.go
+@@ -24,8 +24,10 @@ import (
+ 	"unsafe"
+ 
+ 	"golang.org/x/sys/unix"
++	"tailscale.com/envknob"
+ 	"tailscale.com/hostinfo"
+ 	"tailscale.com/ipn"
++	"tailscale.com/logtail"
+ 	"tailscale.com/tsnet"
+ 	"tailscale.com/types/logger"
+ )
+@@ -601,6 +603,69 @@ func TsnetSetLogFD(sd, fd C.int) C.int {
+ 	return 0
+ }
+ 
++// clientLogs records whether this process turned off the upload of its
++// Tailscale client logs. Like the switches it records, it is process-wide
++// and lasts for the life of the process.
++var clientLogs struct {
++	mu  sync.Mutex
++	off bool
++}
++
++// disableClientLogUpload throws the two process-wide switches the control
++// server's DisableLogTail throws: logtail.Disable stops every upload, and
++// envknob.SetNoLogsNoSupport, which tailscaled's --no-logs-no-support sets,
++// turns logpolicy's log transport into a no-op and tells the control server
++// through Hostinfo. Neither can be undone within the process, so tests
++// replace this.
++var disableClientLogUpload = func() {
++	logtail.Disable()
++	envknob.SetNoLogsNoSupport()
++}
++
++// TsnetSetClientLogUpload turns the upload of client logs to Tailscale off
++// (enabled == 0) or leaves it on. tsnet's own logger has no option for it:
++// it skips the upload only in a test binary. Turning it off is process-wide
++// and one-way, and must come before the server starts, since a started
++// server may already have uploaded.
++//
++//export TsnetSetClientLogUpload
++func TsnetSetClientLogUpload(sd C.int, enabled C.int) C.int {
++	s := getServer(sd)
++	if s == nil {
++		return C.EBADF
++	}
++	if enabled != 0 {
++		// Uploads are on unless this process turned them off, which
++		// cannot be undone: there is nothing to do.
++		return s.recErr(nil)
++	}
++	if s.started {
++		return s.recErr(fmt.Errorf("libtailscale: client log upload must be turned off before the server starts"))
++	}
++	clientLogs.mu.Lock()
++	defer clientLogs.mu.Unlock()
++	if !clientLogs.off {
++		disableClientLogUpload()
++		clientLogs.off = true
++	}
++	return s.recErr(nil)
++}
++
++// TsnetClientLogUpload reports whether this process uploads its client logs
++// to Tailscale: 1 until the upload is turned off, by
++// TsnetSetClientLogUpload or by TS_NO_LOGS_NO_SUPPORT, and 0 after.
++//
++//export TsnetClientLogUpload
++func TsnetClientLogUpload() C.int {
++	clientLogs.mu.Lock()
++	off := clientLogs.off
++	clientLogs.mu.Unlock()
++	if off || envknob.NoLogsNoSupport() {
++		return 0
++	}
++	return 1
++}
++
+ //export TsnetLoopback
+ func TsnetLoopback(sd C.int, addrOut *C.char, addrLen C.size_t, proxyOut *C.char, localOut *C.char) C.int {
+ 	// Panic here to ensure we always leave the out values NUL-terminated.
+diff --git a/tailscale.h b/tailscale.h
+index 9bc8e7c..108b81a 100644
+--- a/tailscale.h
++++ b/tailscale.h
+@@ -75,6 +75,30 @@ extern int tailscale_set_ephemeral(tailscale sd, int ephemeral);
+ // Returns zero on success or -1 on error, call tailscale_errmsg for details.
+ extern int tailscale_set_logfd(tailscale sd, int fd);
+ 
++// tailscale_set_client_log_upload turns off (enabled == 0) the upload of
++// this process's Tailscale client logs to Tailscale's log service
++// (log.tailscale.com), which is on by default, as in Tailscale's own
++// clients. It is the opt-out tailscaled's --no-logs-no-support makes.
++//
++// Turning the upload off is process-wide and one-way: it stops the upload
++// of every server in this process, including servers already running, and
++// a later call with enabled != 0 does not turn it back on. Call it before
++// tailscale_start, or any call that starts the server: a started server may
++// already have uploaded, so it is refused. A tailnet with network flow logs
++// on stops a server that does not upload its logs.
++//
++// Returns:
++// 	0     - success
++// 	EBADF - sd is not a valid tailscale
++// 	-1    - sd has started; call tailscale_errmsg for details
++extern int tailscale_set_client_log_upload(tailscale sd, int enabled);
++
++// tailscale_client_log_upload reports whether this process uploads its
++// Tailscale client logs: 1 until the upload is turned off, by
++// tailscale_set_client_log_upload or by TS_NO_LOGS_NO_SUPPORT in the
++// process environment, and 0 after.
++extern int tailscale_client_log_upload(void);
++
+ // A tailscale_conn is a connection to an address on the tailnet.
+ //
+ // It is a pipe(2) on which you can use read(2), write(2), and close(2).
+diff --git a/tailscale_test.go b/tailscale_test.go
+index e2773c2..7e8592a 100644
+--- a/tailscale_test.go
++++ b/tailscale_test.go
+@@ -1,13 +1,21 @@
+ package main
+ 
+ import (
++	"context"
++	"io"
+ 	"net"
++	"net/http"
++	"os"
++	"os/exec"
+ 	"sync"
++	"sync/atomic"
+ 	"syscall"
+ 	"testing"
+ 	"time"
+ 
+ 	"github.com/tailscale/libtailscale/tsnetctest"
++	"tailscale.com/envknob"
++	"tailscale.com/logtail"
+ )
+ 
+ func TestConn(t *testing.T) {
+@@ -134,3 +142,124 @@ func TestConnCleanupAfterFDReuse(t *testing.T) {
+ 		}
+ 	}
+ }
++
++// clientLogSwitches replaces the process-wide client-log switches for one
++// test, because the real ones cannot be undone within the process, and
++// counts how often they are thrown. It restores the switches and the
++// record after the test.
++func clientLogSwitches(t *testing.T) *atomic.Int32 {
++	t.Helper()
++	if envknob.NoLogsNoSupport() {
++		t.Skip("TS_NO_LOGS_NO_SUPPORT is set, so client log upload is off before the test starts")
++	}
++	var thrown atomic.Int32
++	switches := disableClientLogUpload
++	disableClientLogUpload = func() { thrown.Add(1) }
++	setClientLogsOff(false)
++	t.Cleanup(func() {
++		disableClientLogUpload = switches
++		setClientLogsOff(false)
++	})
++	return &thrown
++}
++
++func setClientLogsOff(off bool) {
++	clientLogs.mu.Lock()
++	defer clientLogs.mu.Unlock()
++	clientLogs.off = off
++}
++
++// TestClientLogUploadSwitch drives tailscale_set_client_log_upload from C.
++// Turning uploads off before start throws the switches once and is
++// reported, asking for uploads again cannot undo it, and a started server
++// is refused.
++func TestClientLogUploadSwitch(t *testing.T) {
++	thrown := clientLogSwitches(t)
++	tsnetctest.RunTestClientLogUpload(t)
++	if got := thrown.Load(); got != 1 {
++		t.Fatalf("client log switches thrown %d times, want 1", got)
++	}
++}
++
++// clientLogChildEnv marks the child process that
++// TestClientLogUploadOffStopsLogtail throws the real switches in.
++const clientLogChildEnv = "LIBTAILSCALE_TEST_CLIENT_LOG_CHILD"
++
++type roundTripFunc func(*http.Request) (*http.Response, error)
++
++func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
++
++// TestClientLogUploadOffStopsLogtail throws the real switches, so it runs in
++// a child process: they cannot be undone. tsnet starts no log uploader in a
++// test binary, so the test drives a logtail.Logger directly, through a
++// transport that counts requests. Before the switch a log line reaches the
++// transport; after it, nothing does, and logpolicy's knob for its log
++// transport is set.
++func TestClientLogUploadOffStopsLogtail(t *testing.T) {
++	if os.Getenv(clientLogChildEnv) != "1" {
++		if envknob.NoLogsNoSupport() {
++			t.Skip("TS_NO_LOGS_NO_SUPPORT is set, so client log upload is off before the test starts")
++		}
++		cmd := exec.Command(os.Args[0], "-test.run=^TestClientLogUploadOffStopsLogtail$", "-test.count=1")
++		cmd.Env = append(os.Environ(), clientLogChildEnv+"=1")
++		if out, err := cmd.CombinedOutput(); err != nil {
++			t.Fatalf("child process: %v\n%s", err, out)
++		}
++		return
++	}
++
++	var requests atomic.Int32
++	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
++		if r.Body != nil {
++			r.Body.Close()
++		}
++		requests.Add(1)
++		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: r}, nil
++	})
++	newLogger := func() *logtail.Logger {
++		return logtail.NewLogger(logtail.Config{
++			Collection:   logtail.CollectionNode,
++			BaseURL:      "http://logtail.invalid",
++			HTTPC:        &http.Client{Transport: transport},
++			Stderr:       io.Discard,
++			FlushDelayFn: func() time.Duration { return 0 },
++		}, t.Logf)
++	}
++	shutdown := func(lg *logtail.Logger) {
++		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++		defer cancel()
++		lg.Shutdown(ctx)
++	}
++
++	before := newLogger()
++	before.Logf("a line before the switch")
++	deadline := time.Now().Add(10 * time.Second)
++	for requests.Load() == 0 && time.Now().Before(deadline) {
++		time.Sleep(10 * time.Millisecond)
++	}
++	shutdown(before)
++	if requests.Load() == 0 {
++		t.Fatal("logtail sent nothing before the switch, so this test cannot see an upload")
++	}
++
++	sd := TsnetNewServer()
++	defer TsnetClose(sd)
++	if rc := TsnetSetClientLogUpload(sd, 0); rc != 0 {
++		t.Fatalf("TsnetSetClientLogUpload(off) = %d, want 0", rc)
++	}
++	if TsnetClientLogUpload() != 0 {
++		t.Fatal("client log upload is still reported on after the switch")
++	}
++	if !envknob.NoLogsNoSupport() {
++		t.Fatal("TS_NO_LOGS_NO_SUPPORT is not set after the switch, so logpolicy's log transport stays live")
++	}
++
++	sent := requests.Load()
++	after := newLogger()
++	after.Logf("a line after the switch")
++	time.Sleep(500 * time.Millisecond)
++	shutdown(after)
++	if got := requests.Load() - sent; got != 0 {
++		t.Fatalf("logtail sent %d requests after the switch, want 0", got)
++	}
++}
+diff --git a/tsnetctest/tsnetctest.go b/tsnetctest/tsnetctest.go
+index ed4e5cc..758a086 100644
+--- a/tsnetctest/tsnetctest.go
++++ b/tsnetctest/tsnetctest.go
+@@ -284,6 +284,91 @@ int test_getremoteaddr() {
+ 	}
+ 	return 0;
+ }
++
++tailscale sl;
++char* tmpsl = NULL;
++
++// test_client_log_upload drives tailscale_set_client_log_upload. Uploads
++// are on until a server turns them off before it starts. Turning them off
++// is process-wide and one-way, so asking for them again changes nothing.
++// A started server is refused, because it may already have uploaded.
++int test_client_log_upload() {
++	int ret;
++	char msg[256];
++
++	if (err == NULL) {
++		err = calloc(errlen, 1);
++	}
++
++	if ((ret = tailscale_client_log_upload()) != 1) {
++		snprintf(err, errlen, "client log upload before any switch = %d, want 1", ret);
++		return 1;
++	}
++	if ((ret = tailscale_set_client_log_upload(-1, 0)) != EBADF) {
++		snprintf(err, errlen, "switch on an invalid server = %d, want EBADF", ret);
++		return 1;
++	}
++
++	sl = tailscale_new();
++	if (tailscale_set_control_url(sl, control_url) != 0) {
++		return set_err(sl, 'h');
++	}
++	if (tailscale_set_dir(sl, tmpsl) != 0) {
++		return set_err(sl, 'i');
++	}
++	if (tailscale_set_logfd(sl, -1) != 0) {
++		return set_err(sl, 'j');
++	}
++
++	// Asking for the default changes nothing.
++	if (tailscale_set_client_log_upload(sl, 1) != 0) {
++		return set_err(sl, 'k');
++	}
++	if ((ret = tailscale_client_log_upload()) != 1) {
++		snprintf(err, errlen, "client log upload after asking for it = %d, want 1", ret);
++		return 1;
++	}
++
++	if (tailscale_set_client_log_upload(sl, 0) != 0) {
++		return set_err(sl, 'l');
++	}
++	if ((ret = tailscale_client_log_upload()) != 0) {
++		snprintf(err, errlen, "client log upload after turning it off = %d, want 0", ret);
++		return 1;
++	}
++
++	// One-way: asking for uploads again succeeds and leaves them off, and
++	// turning them off a second time is not an error.
++	if (tailscale_set_client_log_upload(sl, 1) != 0) {
++		return set_err(sl, 'm');
++	}
++	if (tailscale_set_client_log_upload(sl, 0) != 0) {
++		return set_err(sl, 'n');
++	}
++	if ((ret = tailscale_client_log_upload()) != 0) {
++		snprintf(err, errlen, "client log upload after asking for it again = %d, want 0", ret);
++		return 1;
++	}
++
++	if (tailscale_start(sl) != 0) {
++		return set_err(sl, 'o');
++	}
++	if ((ret = tailscale_set_client_log_upload(sl, 0)) != -1) {
++		snprintf(err, errlen, "switch after start = %d, want -1", ret);
++		return 1;
++	}
++	msg[0] = '\0';
++	tailscale_errmsg(sl, msg, sizeof msg);
++	if (strstr(msg, "before the server starts") == NULL) {
++		snprintf(err, errlen, "switch after start: errmsg %s, want it to say the switch comes before the server starts", msg);
++		return 1;
++	}
++
++	if (tailscale_close(sl) != 0) {
++		return set_err(sl, 'p');
++	}
++	return 0;
++}
+ */
+ import "C"
+ import (
+@@ -404,3 +489,34 @@ func RunTestGetRemoteAddr(t *testing.T) {
+ 		t.Fatal(C.GoString(C.err))
+ 	}
+ }
++
++// RunTestClientLogUpload runs the C-side test_client_log_upload. The caller
++// replaces the process-wide client-log switches first: they cannot be undone
++// within the process.
++func RunTestClientLogUpload(t *testing.T) {
++	// Corp#4520: don't use netns for tests.
++	netns.SetEnabled(false)
++	t.Cleanup(func() {
++		netns.SetEnabled(true)
++	})
++
++	derpLogf := logger.Discard
++	if *verboseDERP {
++		derpLogf = t.Logf
++	}
++	derpMap := integration.RunDERPAndSTUN(t, derpLogf, "127.0.0.1")
++	control := &testcontrol.Server{
++		DERPMap: derpMap,
++	}
++	control.HTTPTestServer = httptest.NewUnstartedServer(control)
++	control.HTTPTestServer.Start()
++	t.Cleanup(control.HTTPTestServer.Close)
++	t.Logf("testcontrol listening on %s", control.HTTPTestServer.URL)
++
++	C.control_url = C.CString(control.HTTPTestServer.URL)
++	C.tmpsl = C.CString(t.TempDir())
++
++	if C.test_client_log_upload() != 0 {
++		t.Fatal(C.GoString(C.err))
++	}
++}

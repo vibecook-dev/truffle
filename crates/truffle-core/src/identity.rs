@@ -127,10 +127,7 @@ impl AppId {
         }
         // Trailing hyphen is reserved (would produce ambiguous
         // `truffle-{app_id}-{slug}` hostnames with double separators).
-        if bytes[bytes.len() - 1] == b'-' {
-            return false;
-        }
-        true
+        bytes[bytes.len() - 1] != b'-'
     }
 
     /// Borrow the underlying string representation.

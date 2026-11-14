@@ -59,6 +59,23 @@ prefer a supplied `dnsName` over reconstructing an address from `hostname`.
 An absent DNS name remains `nil`; it is never synthesized. Updating or clearing
 it changes the peer snapshot's equality while preserving its `PeerRef` identity.
 
+## Client log upload
+
+The embedded Tailscale client uploads its client logs to Tailscale
+(`log.tailscale.com`) by default, as Tailscale's own clients do. Set
+`MeshConfiguration.clientLogUpload` to `false` to turn that off before the node
+starts, as the sidecar's `clientLogUpload: false` and the Rust core's
+`NodeBuilder::client_log_upload(false)` do.
+
+- It is process-wide and one-way. TailscaleKit stops the upload of every node in
+  the process, and a later node that asks for uploads does not turn them back
+  on. `MeshNode.clientLogUpload` reports what the process does.
+- A tailnet with network flow logs on refuses a node that does not upload its
+  logs: Tailscale stops it. `MeshNode.loggingRequired` becomes `true`, the phase
+  becomes `.failed` with one `.health` event, and `waitUntilRunning` throws
+  `MeshError.loggingRequired`. Start the node again with uploads allowed, or
+  turn the tailnet's flow logs off.
+
 ## Build & test (working on Truffle itself)
 
 From the repository root, exactly as a consumer resolves it:

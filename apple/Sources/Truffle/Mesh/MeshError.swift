@@ -3,6 +3,11 @@ public enum MeshError: Error, Sendable, Equatable {
     case invalidAppId(String)
     case needsLogin
     case needsMachineAuth
+    /// The tailnet requires client logs (network flow logs are on), and this
+    /// node turned their upload off (``MeshConfiguration/clientLogUpload``), so
+    /// Tailscale stopped it. Start it with uploads allowed, or turn the
+    /// tailnet's flow logs off.
+    case loggingRequired
     case notRunning
     case peerNotFound(String)
     case peerAmbiguous(query: String, candidates: [String])
