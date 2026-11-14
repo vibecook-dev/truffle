@@ -1,3 +1,246 @@
+diff --git a/swift/TailscaleKit/TailscaleKit.h b/swift/TailscaleKit/TailscaleKit.h
+index f2c1220..08da86c 100644
+--- a/swift/TailscaleKit/TailscaleKit.h
++++ b/swift/TailscaleKit/TailscaleKit.h
+@@ -82,6 +82,30 @@ extern int tailscale_set_ephemeral(tailscale sd, int ephemeral);
+ // Returns zero on success or -1 on error, call tailscale_errmsg for details.
+ extern int tailscale_set_logfd(tailscale sd, int fd);
+ 
++// tailscale_set_client_log_upload turns off (enabled == 0) the upload of
++// this process's Tailscale client logs to Tailscale's log service
++// (log.tailscale.com), which is on by default, as in Tailscale's own
++// clients. It is the opt-out tailscaled's --no-logs-no-support makes.
++//
++// Turning the upload off is process-wide and one-way: it stops the upload
++// of every server in this process, including servers already running, and
++// a later call with enabled != 0 does not turn it back on. Call it before
++// tailscale_start, or any call that starts the server: a started server may
++// already have uploaded, so it is refused. A tailnet with network flow logs
++// on stops a server that does not upload its logs.
++//
++// Returns:
++//     0     - success
++//     EBADF - sd is not a valid tailscale
++//     -1    - sd has started; call tailscale_errmsg for details
++extern int tailscale_set_client_log_upload(tailscale sd, int enabled);
++
++// tailscale_client_log_upload reports whether this process uploads its
++// Tailscale client logs: 1 until the upload is turned off, by
++// tailscale_set_client_log_upload or by TS_NO_LOGS_NO_SUPPORT in the
++// process environment, and 0 after.
++extern int tailscale_client_log_upload(void);
++
+ // A tailscale_conn is a connection to an address on the tailnet.
+ //
+ // It is a pipe(2) on which you can use read(2), write(2), and close(2).
+diff --git a/swift/TailscaleKit/TailscaleNode.swift b/swift/TailscaleKit/TailscaleNode.swift
+index c1cc9a0..18ae14a 100644
+--- a/swift/TailscaleKit/TailscaleNode.swift
++++ b/swift/TailscaleKit/TailscaleNode.swift
+@@ -13,18 +13,26 @@ public struct Configuration: Sendable {
+     public let authKey: String?    ///< An auth key.  Leave empty to use web auth
+     public let controlURL: String  ///< URL for Tailscale control
+     public let ephemeral: Bool
++    /// Whether the node uploads its client logs to Tailscale's log service, as
++    /// Tailscale's own clients do.  false turns the upload off before the node
++    /// starts.  That is process-wide and one-way: it stops the upload of every
++    /// node in this process, and a later node that asks for uploads does not turn
++    /// them back on.  See TailscaleNode.clientLogUpload.
++    public let clientLogUpload: Bool
+ 
+     public init(hostName: String,
+                 path: String,
+                 authKey: String?,
+                 controlURL: String,
+-                ephemeral: Bool = false)
++                ephemeral: Bool = false,
++                clientLogUpload: Bool = true)
+     {
+         self.hostName = hostName
+         self.path = path
+         self.authKey = authKey
+         self.controlURL = controlURL
+         self.ephemeral = ephemeral
++        self.clientLogUpload = clientLogUpload
+     }
+ 
+ }
+@@ -83,6 +91,13 @@ public actor TailscaleNode {
+         tailscale_set_control_url(tailscale, config.controlURL)
+         tailscale_set_ephemeral(tailscale, config.ephemeral ? 1 : 0)
+ 
++        if !config.clientLogUpload {
++            let res = tailscale_set_client_log_upload(tailscale, 0)
++            guard res == 0 else {
++                throw TailscaleError.fromPosixErrCode(res, tailscale.getErrorMessage())
++            }
++        }
++
+         let res = tailscale_start(tailscale)
+ 
+         guard res == 0 else {
+@@ -98,6 +113,15 @@ public actor TailscaleNode {
+         }
+     }
+ 
++    /// Whether this process uploads its Tailscale client logs: true until a node
++    /// turns the upload off (Configuration.clientLogUpload), or when the process
++    /// started with TS_NO_LOGS_NO_SUPPORT set.
++    ///
++    /// @See tailscale_client_log_upload in Tailscale.h
++    public static var clientLogUpload: Bool {
++        tailscale_client_log_upload() != 0
++    }
++
+     /// Closes/stops the Tailscale server
+     ///
+     /// @See tailscale_close in Tailscale.h
+diff --git a/tailscale.c b/tailscale.c
+index 420d67e..94bc103 100644
+--- a/tailscale.c
++++ b/tailscale.c
+@@ -19,6 +19,8 @@ extern int TsnetSetAuthKey(int sd, char* str);
+ extern int TsnetSetControlURL(int sd, char* str);
+ extern int TsnetSetEphemeral(int sd, int ephemeral);
+ extern int TsnetSetLogFD(int sd, int fd);
++extern int TsnetSetClientLogUpload(int sd, int enabled);
++extern int TsnetClientLogUpload();
+ extern int TsnetGetIps(int sd, char *buf, size_t buflen);
+ extern int TsnetGetRemoteAddr(int listener, int conn, char *buf, size_t buflen);
+ extern int TsnetListen(int sd, char* net, char* addr, int* listenerOut);
+@@ -81,6 +83,12 @@ int tailscale_set_ephemeral(tailscale sd, int ephemeral) {
+ int tailscale_set_logfd(tailscale sd, int fd) {
+ 	return TsnetSetLogFD(sd, fd);
+ }
++int tailscale_set_client_log_upload(tailscale sd, int enabled) {
++	return TsnetSetClientLogUpload(sd, enabled);
++}
++int tailscale_client_log_upload(void) {
++	return TsnetClientLogUpload();
++}
+ 
+ int tailscale_loopback(tailscale sd, char* addr_out, size_t addrlen, char* proxy_cred_out, char* local_api_cred_out) {
+ 	return TsnetLoopback(sd, addr_out, addrlen, proxy_cred_out, local_api_cred_out);
+diff --git a/tailscale.go b/tailscale.go
+index af0ab5e..7147d09 100644
+--- a/tailscale.go
++++ b/tailscale.go
+@@ -24,8 +24,10 @@ import (
+ 	"unsafe"
+ 
+ 	"golang.org/x/sys/unix"
++	"tailscale.com/envknob"
+ 	"tailscale.com/hostinfo"
+ 	"tailscale.com/ipn"
++	"tailscale.com/logtail"
+ 	"tailscale.com/tsnet"
+ 	"tailscale.com/types/logger"
+ )
+@@ -601,6 +603,69 @@ func TsnetSetLogFD(sd, fd C.int) C.int {
+ 	return 0
+ }
+ 
++// clientLogs records whether this process turned off the upload of its
++// Tailscale client logs. Like the switches it records, it is process-wide
++// and lasts for the life of the process.
++var clientLogs struct {
++	mu  sync.Mutex
++	off bool
++}
++
++// disableClientLogUpload throws the two process-wide switches the control
++// server's DisableLogTail throws: logtail.Disable stops every upload, and
++// envknob.SetNoLogsNoSupport, which tailscaled's --no-logs-no-support sets,
++// turns logpolicy's log transport into a no-op and tells the control server
++// through Hostinfo. Neither can be undone within the process, so tests
++// replace this.
++var disableClientLogUpload = func() {
++	logtail.Disable()
++	envknob.SetNoLogsNoSupport()
++}
++
++// TsnetSetClientLogUpload turns the upload of client logs to Tailscale off
++// (enabled == 0) or leaves it on. tsnet's own logger has no option for it:
++// it skips the upload only in a test binary. Turning it off is process-wide
++// and one-way, and must come before the server starts, since a started
++// server may already have uploaded.
++//
++//export TsnetSetClientLogUpload
++func TsnetSetClientLogUpload(sd C.int, enabled C.int) C.int {
++	s := getServer(sd)
++	if s == nil {
++		return C.EBADF
++	}
++	if enabled != 0 {
++		// Uploads are on unless this process turned them off, which
++		// cannot be undone: there is nothing to do.
++		return s.recErr(nil)
++	}
++	if s.started {
++		return s.recErr(fmt.Errorf("libtailscale: client log upload must be turned off before the server starts"))
++	}
++	clientLogs.mu.Lock()
++	defer clientLogs.mu.Unlock()
++	if !clientLogs.off {
++		disableClientLogUpload()
++		clientLogs.off = true
++	}
++	return s.recErr(nil)
++}
++
++// TsnetClientLogUpload reports whether this process uploads its client logs
++// to Tailscale: 1 until the upload is turned off, by
++// TsnetSetClientLogUpload or by TS_NO_LOGS_NO_SUPPORT, and 0 after.
++//
++//export TsnetClientLogUpload
++func TsnetClientLogUpload() C.int {
++	clientLogs.mu.Lock()
++	off := clientLogs.off
++	clientLogs.mu.Unlock()
++	if off || envknob.NoLogsNoSupport() {
++		return 0
++	}
++	return 1
++}
++
+ //export TsnetLoopback
+ func TsnetLoopback(sd C.int, addrOut *C.char, addrLen C.size_t, proxyOut *C.char, localOut *C.char) C.int {
+ 	// Panic here to ensure we always leave the out values NUL-terminated.
+diff --git a/tailscale.h b/tailscale.h
+index 9bc8e7c..108b81a 100644
+--- a/tailscale.h
++++ b/tailscale.h
+@@ -75,6 +75,30 @@ extern int tailscale_set_ephemeral(tailscale sd, int ephemeral);
+ // Returns zero on success or -1 on error, call tailscale_errmsg for details.
+ extern int tailscale_set_logfd(tailscale sd, int fd);
+ 
++// tailscale_set_client_log_upload turns off (enabled == 0) the upload of
++// this process's Tailscale client logs to Tailscale's log service
++// (log.tailscale.com), which is on by default, as in Tailscale's own
++// clients. It is the opt-out tailscaled's --no-logs-no-support makes.
++//
++// Turning the upload off is process-wide and one-way: it stops the upload
++// of every server in this process, including servers already running, and
++// a later call with enabled != 0 does not turn it back on. Call it before
++// tailscale_start, or any call that starts the server: a started server may
++// already have uploaded, so it is refused. A tailnet with network flow logs
++// on stops a server that does not upload its logs.
++//
++// Returns:
++// 	0     - success
++// 	EBADF - sd is not a valid tailscale
++// 	-1    - sd has started; call tailscale_errmsg for details
++extern int tailscale_set_client_log_upload(tailscale sd, int enabled);
++
++// tailscale_client_log_upload reports whether this process uploads its
++// Tailscale client logs: 1 until the upload is turned off, by
++// tailscale_set_client_log_upload or by TS_NO_LOGS_NO_SUPPORT in the
++// process environment, and 0 after.
++extern int tailscale_client_log_upload(void);
++
+ // A tailscale_conn is a connection to an address on the tailnet.
+ //
+ // It is a pipe(2) on which you can use read(2), write(2), and close(2).
 diff --git a/tailscale_test.go b/tailscale_test.go
 index e2773c2..7e8592a 100644
 --- a/tailscale_test.go

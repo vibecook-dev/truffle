@@ -84,6 +84,19 @@ public struct MeshConfiguration: Sendable {
     /// node (RFC 025 §3.1).
     public var loginAllow: [String]
 
+    /// Whether the embedded Tailscale client uploads its client logs to
+    /// Tailscale (`log.tailscale.com`), as Tailscale's own clients do by
+    /// default. `true` (the default) keeps that. `false` turns the upload off
+    /// before the node starts, as the sidecar's `clientLogUpload: false` and
+    /// the Rust core's `NodeBuilder::client_log_upload(false)` do.
+    ///
+    /// Turning it off is process-wide and one-way: it stops the upload of
+    /// every node in this process, and a later node that asks for uploads
+    /// does not turn them back on (``MeshNode/clientLogUpload`` reports what
+    /// the process does). A tailnet with network flow logs on refuses a node
+    /// that does not upload its logs (``MeshNode/loggingRequired``).
+    public var clientLogUpload: Bool
+
     public var logger: (any MeshLogger)?
 
     public init(
@@ -94,6 +107,7 @@ public struct MeshConfiguration: Sendable {
         ephemeral: Bool = false,
         auth: MeshAuth = .existingState,
         loginAllow: [String] = [],
+        clientLogUpload: Bool = true,
         logger: (any MeshLogger)? = nil
     ) {
         self.appId = appId
@@ -103,6 +117,7 @@ public struct MeshConfiguration: Sendable {
         self.ephemeral = ephemeral
         self.auth = auth
         self.loginAllow = loginAllow
+        self.clientLogUpload = clientLogUpload
         self.logger = logger
     }
 }
