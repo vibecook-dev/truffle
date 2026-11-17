@@ -7,7 +7,7 @@
 | Upstream | `https://github.com/tailscale/libtailscale.git` |
 | Revision | `d1dc45d039edb7759ecbee6ba2aea0c4bca884b8` |
 | Embedded Tailscale | `tailscale.com v1.104.1` |
-| Go | `1.27.3` |
+| Go | `1.27.4` |
 | Recorded Apple toolchain | Xcode 16.4 (16F6), Apple Swift 6.1.2, GitHub Actions macOS 15 arm64 runner |
 | License | BSD-3-Clause; see `TAILSCALE-LICENSE` |
 
@@ -68,7 +68,7 @@ versions embedded in the resulting framework binaries.
 | `libtailscale-peer-notifications.patch` | `23be455e4c2b1637a276c5574d5e976d1c2c1f23ac5e21418e9b6f2db8fe96bf` |
 | `libtailscale-ipn-stream-recovery.patch` | `9bc20231b7e8dc81e0a09ddd178e7a6b45396882663ba57d42a0c3bb89c0bb22` |
 | `libtailscale-client-log-upload.patch` | `39cb8f97c6d269a1832c85178a6f5a0f57fd23a479cb6497f44029549b775bfe` |
-| `libtailscale/go.mod` | `278ac67d70309ef1134cc46e4ba74345fb9d4fe1b054cc4cdb7db6adc4d4d54a` |
+| `libtailscale/go.mod` | `958c7a0d3c69a383919adc3e49103c140861cf758f2a5d593775857d72e378de` |
 | `libtailscale/go.sum` | `6786a20f3ca1cf8710095cbbf419a8ad3a82babc8684fa65c0fe4c1df60de73c` |
 
 ## Published artifact
