@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.29](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.28...truffle-v0.7.29) (2026-11-18)
+
+
+### Features
+
+* **apple:** turn off the embedded node's client-log upload (MeshConfiguration.clientLogUpload) ([#264](https://github.com/vibecook-dev/truffle/issues/264)) ([9fdff86](https://github.com/vibecook-dev/truffle/commit/9fdff8692099507a4efc912c5a5f142e33885599))
+
+
+### Bug Fixes
+
+* **deps:** zip 9.0.5 (RUSTSEC-2026-0548), and cargo-deny ignores RUSTSEC-2026-0543 until chrono is replaced ([#268](https://github.com/vibecook-dev/truffle/issues/268)) ([44b15a4](https://github.com/vibecook-dev/truffle/commit/44b15a474f48e1b99667745f27f2b0c7572e943b))
+
 ## [0.7.28](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.27...truffle-v0.7.28) (2026-11-12)
 
 
