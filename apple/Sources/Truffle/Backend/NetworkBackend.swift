@@ -105,11 +105,22 @@ public struct BackendStatus: Sendable, Equatable {
     /// known, never fabricated. A tagged node reports `tagged-devices`.
     public var loginName: String?
     public var peers: [BackendPeer]
+    /// Whether this process uploads the embedded client's logs to Tailscale:
+    /// `false` once this node, or an earlier one in the process, turned the
+    /// upload off (``MeshConfiguration/clientLogUpload``). A backend with no
+    /// such switch reports Tailscale's default, `true`.
+    public var clientLogUpload: Bool
+    /// The tailnet requires client logs (network flow logs are on) and this
+    /// node does not upload them, so Tailscale stopped it. It stays down until
+    /// it is started again with uploads allowed, or the tailnet's flow logs are
+    /// turned off.
+    public var loggingRequired: Bool
 
     public init(
         running: Bool = false, needsLogin: Bool = false, needsMachineAuth: Bool = false,
         authURL: String? = nil, dnsName: String? = nil, tailnetIPs: [String] = [],
-        tailscaleId: String = "", loginName: String? = nil, peers: [BackendPeer] = []
+        tailscaleId: String = "", loginName: String? = nil, peers: [BackendPeer] = [],
+        clientLogUpload: Bool = true, loggingRequired: Bool = false
     ) {
         self.running = running
         self.needsLogin = needsLogin
@@ -120,6 +131,8 @@ public struct BackendStatus: Sendable, Equatable {
         self.tailscaleId = tailscaleId
         self.loginName = loginName
         self.peers = peers
+        self.clientLogUpload = clientLogUpload
+        self.loggingRequired = loggingRequired
     }
 }
 

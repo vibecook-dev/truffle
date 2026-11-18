@@ -1,3 +1,31 @@
+# TailscaleKit with the client-log switch and Go 1.27.4 (November 2026)
+
+TailscaleKit gains `Configuration.clientLogUpload`, and `TruffleTailscale` gains
+`MeshConfiguration.clientLogUpload`, so an app can turn off the embedded node's
+client-log upload as the sidecar's `clientLogUpload: false` does. The wrapper
+revision (`d1dc45d`) and Tailscale (1.104.1) are unchanged. Go moves to 1.27.4
+(GO-2026-6859), the sidecar's since #261, so `apple-tests` no longer trails it.
+The patch set gains `libtailscale-client-log-upload.patch`, so the framework is
+a new immutable artifact, `tailscalekit-d1dc45d0-ts1.104.1-go1.27.4`. It is
+also the first artifact built with klauspost/compress 1.20.2 (#256).
+
+Validation on November 18, 2026:
+
+- [CI source build](https://github.com/vibecook-dev/truffle/actions/runs/43999530036):
+  patched Go race tests, including the two client-log tests, 6 exact-source
+  Swift stream tests, 121 Swift package tests, and iOS device, simulator and
+  example-app builds.
+- The published archive's SHA-256 matches the CI log, GitHub's asset digest
+  and a fresh public download. Both binaries embed Go 1.27.4, Tailscale 1.104.1
+  and `golang.org/x/net` 0.60.0.
+
+Rollback: revert this change. The previous artifact,
+`tailscalekit-d1dc45d0-ts1.104.1-go1.27.3` (checksum
+`0895dc67fc6531b4b0183ae63648a8378aacd7a5a04aa35cacfdba5931fe71d3`), stays
+published.
+
+---
+
 # Go 1.27.4 for the sidecar (November 2026)
 
 The sidecar now builds with Go 1.27.4 for GO-2026-6859: an HTTP/1 server crash

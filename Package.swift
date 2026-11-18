@@ -48,8 +48,8 @@ let package = Package(
         .binaryTarget(
             name: "TailscaleKit",
             url:
-                "https://github.com/vibecook-dev/truffle/releases/download/tailscalekit-d1dc45d0-ts1.104.1-go1.27.3/TailscaleKit.xcframework.zip",
-            checksum: "0895dc67fc6531b4b0183ae63648a8378aacd7a5a04aa35cacfdba5931fe71d3"
+                "https://github.com/vibecook-dev/truffle/releases/download/tailscalekit-d1dc45d0-ts1.104.1-go1.27.4/TailscaleKit.xcframework.zip",
+            checksum: "0aef708648f154abd771b239193cd13acdec4a5c906f6edad7542c74fad4af12"
         ),
         .target(
             name: "Truffle",

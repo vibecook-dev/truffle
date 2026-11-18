@@ -58,7 +58,8 @@
                 path: stateDirectory.path,
                 authKey: authKey,
                 controlURL: config.controlURL?.absoluteString ?? kDefaultControlURL,
-                ephemeral: config.ephemeral)
+                ephemeral: config.ephemeral,
+                clientLogUpload: ClientLogUpload.requested(by: config))
             let logger = self.logger
             let createdNode = try await Self.blocking("create node") {
                 try TailscaleNode(config: kitConfig, logger: logger)
@@ -347,13 +348,18 @@
             // The logins TailscaleKit's status binding drops (RFC 025 §3.3).
             // A failed read leaves them nil — absent, never fabricated; a
             // gated node then admits nobody, which is the fail-closed answer.
-            if let rows = try? await statusRows() {
+            let rows = try? await statusRows()
+            if let rows {
                 mapped = LoginOverlay(rows).applied(to: mapped)
                 await readPeerApps(rows)
             }
             // T8: each peer's app tag, which decides app membership ahead of
             // the hostname prefix (`Hostname.isAppRow`).
             mapped = peerApps.applied(to: mapped)
+            // What the process does with its client logs, and whether the
+            // tailnet stopped this node for not uploading them.
+            mapped = ClientLogUpload.applied(
+                to: mapped, uploading: TailscaleNode.clientLogUpload, rows: rows)
             if emitChange, mapped != latest { emit(.status(mapped)) }
             if let authURL = mapped.authURL.flatMap(URL.init(string:)) {
                 emit(.authRequired(authURL))

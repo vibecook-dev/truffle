@@ -94,6 +94,8 @@ public actor MeshNode {
     /// Set once a gated node has seen a Layer 3 snapshot with no self login,
     /// so the health notice is emitted once rather than per refresh.
     private var warnedAboutMissingLogins = false
+    private var localClientLogUpload = true
+    private var localLoggingRequired = false
 
     // MARK: - Lifecycle
 
@@ -265,6 +267,9 @@ public actor MeshNode {
                 guard let self else { throw MeshError.stopped }
                 if await self.phase == .running { return }
                 if await self.isStoppedNow { throw MeshError.stopped }
+                // Tailscale stopped this node for the tailnet's flow logs;
+                // waiting cannot bring it up.
+                if await self.loggingRequired { throw MeshError.loggingRequired }
                 try await Task.sleep(for: .milliseconds(25))
             }
         }
@@ -285,6 +290,20 @@ public actor MeshNode {
     /// The login allow-list this node was started with (RFC 025 §3.1).
     /// Empty means ungated. Fixed for the node's lifetime.
     public var loginAllow: [String] { config.loginAllow }
+
+    /// Whether this process uploads the embedded Tailscale client's logs to
+    /// Tailscale, from the last Layer 3 status. `false` once this node, or an
+    /// earlier one in the process, turned the upload off
+    /// (``MeshConfiguration/clientLogUpload``): that cannot be undone within
+    /// the process.
+    public var clientLogUpload: Bool { localClientLogUpload }
+
+    /// The tailnet requires client logs (network flow logs are on) and this
+    /// node does not upload them, so Tailscale stopped it, from the last
+    /// Layer 3 status. The phase is then `.failed`, and the node stays down
+    /// until it is started again with uploads allowed, or the tailnet's flow
+    /// logs are turned off.
+    public var loggingRequired: Bool { localLoggingRequired }
 
     public var localPeer: Peer {
         Peer(
@@ -583,8 +602,15 @@ public actor MeshNode {
         localDnsName = status.dnsName
         localIPs = status.tailnetIPs
         localLoginName = status.loginName
+        localClientLogUpload = status.clientLogUpload
+        let newlyRefusedForLogs = status.loggingRequired && !localLoggingRequired
+        localLoggingRequired = status.loggingRequired
 
-        if status.running {
+        if status.loggingRequired {
+            // Tailscale stopped the node rather than run it without client
+            // logs; it does not come back up on its own.
+            setPhase(.failed)
+        } else if status.running {
             setPhase(.running)
         } else if status.needsMachineAuth {
             setPhase(.needsMachineAuth)
@@ -594,6 +620,16 @@ public actor MeshNode {
             // Backend lost its state (disconnected / restarting): a node
             // must not remain `.running` on a stale snapshot.
             setPhase(.starting)
+        }
+
+        // Say so once per refusal, as the sidecar's tsnet:loggingRequired
+        // does, rather than on every status.
+        if newlyRefusedForLogs {
+            emit(
+                .health(
+                    "this tailnet requires client logging (network flow logs are on), and "
+                        + "this node turned its client-log upload off, so Tailscale stopped it; "
+                        + "allow uploads, or turn the tailnet's flow logs off"))
         }
 
         // An auth URL present only in this snapshot (e.g. the initial
