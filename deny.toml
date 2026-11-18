@@ -18,6 +18,12 @@ ignore = [
   # longer depend on it (the crates.io index, read 2026-11-06). Remove this entry when Cargo.lock's hyper moves to
   # >= 1.10.1: that bump touches the serve proxy's HTTP stack, so it is its own change, not this chore's.
   { id = "RUSTSEC-2026-0441", reason = "pin-utils is unmaintained, not vulnerable; only via hyper 1.8.1, and hyper >= 1.10.1 drops it" },
+  # RUSTSEC-2026-0543 (2026-11): chrono is UNMAINTAINED (every version), with no vulnerability reported; the advisory
+  # says "No safe upgrade is available!". In cargo-deny's graph it reaches truffle only as a direct dependency of
+  # truffle-cli and truffle-bench (the workspace's `chrono` row; tauri's path through serde_with is in the excluded
+  # crates). Moving off it touches the CLI's daemon, TUI, watch and update check and the bench's clock, hub and
+  # reports, so it is its own change, not this chore's. Remove this entry when the workspace drops its `chrono` row.
+  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, not vulnerable; used directly by truffle-cli and truffle-bench" },
 ]
 
 # Licenses — only explicitly allowed licenses pass; everything else is denied.
