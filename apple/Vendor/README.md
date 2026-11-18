@@ -74,18 +74,18 @@ versions embedded in the resulting framework binaries.
 ## Published artifact
 
 CI built the framework from the inputs above, including `golang.org/x/net
-v0.60.0` for the October HTTP/2 security fixes. On October 25, 2026 the
-[apple-tests source build](https://github.com/vibecook-dev/truffle/actions/runs/40184193955/job/121141398540)
-passed all patched Go packages under the race detector, six exact-source Swift
-stream tests, 107 Swift package tests, and iOS device, simulator and example-app
-builds, then uploaded the archive. `govulncheck` reports no reachable
-vulnerabilities in either Go graph.
+v0.60.0` for the October HTTP/2 security fixes. On November 17, 2026 the
+[apple-tests source build](https://github.com/vibecook-dev/truffle/actions/runs/43999530036/job/133759838336)
+passed all patched Go packages under the race detector, including the two
+client-log tests, six exact-source Swift stream tests, 121 Swift package tests,
+and iOS device, simulator and example-app builds, then uploaded the archive.
+`govulncheck` reports no reachable vulnerabilities in either Go graph.
 
-The [dependency release](https://github.com/vibecook-dev/truffle/releases/tag/tailscalekit-d1dc45d0-ts1.104.1-go1.27.3)
+The [dependency release](https://github.com/vibecook-dev/truffle/releases/tag/tailscalekit-d1dc45d0-ts1.104.1-go1.27.4)
 publishes that uploaded archive unchanged, from source commit
-[`25f6e8af4f9b222ea5458f634c916f047bc9c02d`](https://github.com/vibecook-dev/truffle/commit/25f6e8af4f9b222ea5458f634c916f047bc9c02d).
+[`8b52def20a7f84f04e055f4d39a8bc460e2c0c58`](https://github.com/vibecook-dev/truffle/commit/8b52def20a7f84f04e055f4d39a8bc460e2c0c58).
 Its SHA-256 matches the checksum the CI run logged, GitHub's stored asset
-digest, and a fresh unauthenticated download. Both binaries embed Go 1.27.3,
+digest, and a fresh unauthenticated download. Both binaries embed Go 1.27.4,
 Tailscale 1.104.1 and `golang.org/x/net` 0.60.0, and both slices carry the
 reviewed privacy manifest and Swift interfaces. The root `Package.swift` pins
 the URL and checksum, and the published-package CI job resolves it before the
@@ -94,15 +94,15 @@ are attached to the release.
 
 | Field | Value |
 | --- | --- |
-| Release tag | `tailscalekit-d1dc45d0-ts1.104.1-go1.27.3` |
+| Release tag | `tailscalekit-d1dc45d0-ts1.104.1-go1.27.4` |
 | Asset | `TailscaleKit.xcframework.zip` (about 24 MiB) |
-| SwiftPM checksum | `0895dc67fc6531b4b0183ae63648a8378aacd7a5a04aa35cacfdba5931fe71d3` |
-| Patched source archive | `956500d6ccd47e16ea12ffce1d73d3bcca4fd5105f7eb54173de40bcde69026f` |
-| Device binary | `7c96a548b97689e86f66e7c24d8e85d80d62f971ff725ea9978ec985efb3fd74` |
-| Simulator binary | `ff71b9ca15e62565b864a0f00f96879f374f6cf3cf0310b24b756206fe03c8c4` |
+| SwiftPM checksum | `0aef708648f154abd771b239193cd13acdec4a5c906f6edad7542c74fad4af12` |
+| Patched source archive | `6d12cb7250b3fa1437183c8319f65499712ffcc7011c5f0c2788ee7fa02f2977` |
+| Device binary | `073581ac11d0c4a6c46b842a8e53686a5ada4411a95ac3e51c7bebc00c4758e1` |
+| Simulator binary | `e80d71177e065b6792c340585d4f7a863b3e8b0f0b853a69bf9ee25cd5beb663` |
 
-The previous artifact, `tailscalekit-59d4bb82-ts1.104.1-go1.27.2` (checksum
-`f8a61a742e42cbf04983213ea28f8a2370802b17fe420ea9cac7f59249c3238f`), stays
+The previous artifact, `tailscalekit-d1dc45d0-ts1.104.1-go1.27.3` (checksum
+`0895dc67fc6531b4b0183ae63648a8378aacd7a5a04aa35cacfdba5931fe71d3`), stays
 published for rollback.
 
 The artifact key includes the wrapper revision, embedded Tailscale version,
