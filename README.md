@@ -1,161 +1,189 @@
-# Truffle
+<p align="center">
+  <a href="https://vibecook-dev.github.io/truffle/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset=".github/readme/hero-dark.svg">
+      <img src=".github/readme/hero-light.svg" alt="truffle: simple network programming on top of Tailscale" width="100%">
+    </picture>
+  </a>
+</p>
 
-[![CI](https://github.com/vibecook-dev/truffle/actions/workflows/ci.yml/badge.svg)](https://github.com/vibecook-dev/truffle/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/vibecook-dev/truffle?label=latest)](https://github.com/vibecook-dev/truffle/releases/latest)
-[![npm](https://img.shields.io/npm/v/@vibecook/truffle?label=%40vibecook%2Ftruffle)](https://www.npmjs.com/package/@vibecook/truffle)
-[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<p align="center">
+  <b>Your devices, talking to each other directly.</b><br>
+  TCP, UDP, QUIC, WebSocket and HTTP between the machines on your tailnet,<br>
+  plus messaging, file transfer and synced state. No server to run.
+</p>
 
-**Simple network programming on top of Tailscale.**
+<p align="center">
+  <a href="https://vibecook-dev.github.io/truffle/"><b>Docs</b></a>&nbsp;&nbsp;·&nbsp;
+  <a href="https://vibecook-dev.github.io/truffle/api.html">API</a>&nbsp;&nbsp;·&nbsp;
+  <a href="#examples">Examples</a>&nbsp;&nbsp;·&nbsp;
+  <a href="benchmark/README.md">Benchmarks</a>&nbsp;&nbsp;·&nbsp;
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
 
-Truffle gives your apps familiar networking APIs — TCP, HTTP, UDP, WebSocket, QUIC — that run across devices on the same tailnet. Discover peers, open sockets, send messages, sync state, transfer files, and publish services. No central server. No new protocol to learn.
+<p align="center">
+  <a href="https://github.com/vibecook-dev/truffle/actions/workflows/ci.yml"><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/github/actions/workflow/status/vibecook-dev/truffle/ci.yml?branch=main&label=ci&style=flat-square&labelColor=262624&color=fafaf7"><img src="https://img.shields.io/github/actions/workflow/status/vibecook-dev/truffle/ci.yml?branch=main&label=ci&style=flat-square&labelColor=6a6a64&color=0a0a0a" alt="CI"></picture></a>
+  <a href="https://www.npmjs.com/package/@vibecook/truffle"><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/npm/v/%40vibecook%2Ftruffle?label=npm&style=flat-square&labelColor=262624&color=fafaf7"><img src="https://img.shields.io/npm/v/%40vibecook%2Ftruffle?label=npm&style=flat-square&labelColor=6a6a64&color=0a0a0a" alt="npm"></picture></a>
+  <a href="https://crates.io/crates/truffle"><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/crates/v/truffle?label=crates.io&style=flat-square&labelColor=262624&color=fafaf7"><img src="https://img.shields.io/crates/v/truffle?label=crates.io&style=flat-square&labelColor=6a6a64&color=0a0a0a" alt="crates.io"></picture></a>
+  <a href="LICENSE"><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/license-MIT-fafaf7?style=flat-square&labelColor=262624"><img src="https://img.shields.io/badge/license-MIT-0a0a0a?style=flat-square&labelColor=6a6a64" alt="MIT licence"></picture></a>
+</p>
+
+<br>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/readme/demo-dark.svg">
+    <img src=".github/readme/demo-light.svg" alt="The truffle CLI: list peers, send a message, copy a file with a verified hash, and publish a local server on the tailnet" width="100%">
+  </picture>
+</p>
+
+## Hello, mesh
 
 ```ts
 import { createMeshNode } from '@vibecook/truffle';
 
-const mesh = await createMeshNode({
-  appId: 'field-tools',
-  deviceName: 'alice-laptop',
-});
+const mesh = await createMeshNode({ appId: 'notes' });
 
+// Hear from every device running the same app
+mesh.onMessage('chat', (msg) => console.log(msg.payload));
+
+// Find one, and talk to it
 const bob = await mesh.peer('bob-laptop', { waitMs: 5000 });
-if (bob) await bob.sendJson('chat', { text: 'hello' });
+await bob?.sendJson('chat', { text: 'hello' });
 
-// Node-shaped transports over the private mesh
-const server = mesh.net.createServer((socket) => socket.pipe(socket));
-server.listen(7000);
+// Or use the sockets you already know
+mesh.net.createServer((socket) => socket.pipe(socket)).listen(7000);
 ```
+
+## No server in the middle
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/readme/direct-dark.svg">
+    <img src=".github/readme/direct-light.svg" alt="Without truffle, two devices talk through a relay server you run. With truffle, they talk directly over WireGuard." width="100%">
+  </picture>
+</p>
+
+Tailscale carries the bytes and knows who everyone is. truffle gives your code the APIs.
 
 ## What you get
 
-| Layer | Surface |
-| --- | --- |
-| **Transports** | `mesh.net` · `mesh.http` · `mesh.dgram` · `mesh.ws` · `mesh.quic` |
-| **Peers** | Interned `Peer` handles — no id-string soup for dial/send |
-| **App APIs** | Namespaced messaging, SHA-256 file transfer, device-owned synced stores |
-| **Publish** | `mesh.serve` and `mesh.http.createServer` for HTTP on the tailnet |
-| **CLI / TUI** | Interactive mesh view, `truffle cp`, JSONL for agents |
-
-Tailscale owns tunnels, identity, ACLs, and crypto. Truffle owns discovery-aware peers, app isolation (`appId`), and the APIs your code calls.
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset=".github/readme/tile-transports-dark.svg"><img src=".github/readme/tile-transports-light.svg" alt="" width="100%"></picture>
+      <b>Five transports</b><br>
+      <code>mesh.net</code>, <code>http</code>, <code>dgram</code>, <code>ws</code> and <code>quic</code>, shaped like the Node.js modules.
+    </td>
+    <td width="33%" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset=".github/readme/tile-peers-dark.svg"><img src=".github/readme/tile-peers-light.svg" alt="" width="100%"></picture>
+      <b>Peers</b><br>
+      Devices running your app find each other. You hold a <code>Peer</code>, not an address.
+    </td>
+    <td width="33%" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset=".github/readme/tile-messages-dark.svg"><img src=".github/readme/tile-messages-light.svg" alt="" width="100%"></picture>
+      <b>Messages</b><br>
+      <code>peer.sendJson('chat', …)</code>, routed by namespace. Send to one peer or broadcast to all.
+    </td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset=".github/readme/tile-files-dark.svg"><img src=".github/readme/tile-files-light.svg" alt="" width="100%"></picture>
+      <b>Files</b><br>
+      Send a file to a peer. Every transfer is checked with SHA-256.
+    </td>
+    <td width="33%" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset=".github/readme/tile-stores-dark.svg"><img src=".github/readme/tile-stores-light.svg" alt="" width="100%"></picture>
+      <b>Synced stores</b><br>
+      Each device owns its slice of the state and sees everyone else's.
+    </td>
+    <td width="33%" valign="top">
+      <picture><source media="(prefers-color-scheme: dark)" srcset=".github/readme/tile-serve-dark.svg"><img src=".github/readme/tile-serve-light.svg" alt="" width="100%"></picture>
+      <b>Serve</b><br>
+      <code>mesh.serve()</code> puts a local port or folder on your tailnet, with HTTPS.
+    </td>
+  </tr>
+</table>
 
 ## Install
 
-> Requires [Tailscale](https://tailscale.com/) installed and authenticated on the devices you want to connect.
-
-### JavaScript / Node.js
+All you need is a Tailscale account. truffle brings its own Tailscale node, and the first run opens a sign-in link.
 
 ```bash
+# In your app (Node.js 18+)
 pnpm add @vibecook/truffle
-# optional — only if you use mesh.ws
-pnpm add ws
-```
 
-Node.js 18+. The package includes a prebuilt native addon and platform sidecar.
-
-### CLI
-
-```bash
-# macOS / Linux
+# The CLI: macOS and Linux
 curl -fsSL https://vibecook-dev.github.io/truffle/install.sh | sh
 
-# Windows (PowerShell)
+# The CLI: Windows (PowerShell)
 iwr -useb https://vibecook-dev.github.io/truffle/install.ps1 | iex
 ```
 
-Supports macOS (arm64/x64), Linux (x64/arm64), and Windows (x64).
+<details>
+<summary>Swift and Rust</summary>
 
-## Quick start
+<br>
 
-### API
-
-```ts
-import { createMeshNode } from '@vibecook/truffle';
-
-const mesh = await createMeshNode({
-  appId: 'notes',
-  deviceName: 'alice-laptop',
-  onAuthRequired: (url) => console.log('Auth URL:', url),
-});
-
-// Discovery yields Peer handles (same object from events / messages)
-for (const p of await mesh.getPeers()) {
-  console.log(p.displayName, p.online ? 'online' : 'offline');
-}
-
-mesh.onMessage('chat', async (msg) => {
-  if (typeof msg.from === 'string') return;
-  console.log(msg.from.displayName, msg.payload);
-  await msg.from.sendJson('chat', { text: 'ack' });
-});
-
-// Serve a local process or SPA to the whole tailnet
-const h = await mesh.serve({
-  port: 443,
-  target: 'http://localhost:3000',
-});
-console.log(h.url); // https://….ts.net
+```swift
+// Package.swift (iOS 18.1+)
+.package(url: "https://github.com/vibecook-dev/truffle.git", from: "0.7.7")
 ```
-
-### CLI
 
 ```bash
-truffle                           # interactive TUI
-truffle up                        # start the background daemon
-truffle ls                        # list peers
-truffle send server "hello"       # send a message
-truffle cp report.pdf server:/tmp/  # send a file
-truffle serve http://localhost:3000 --port 443  # publish a local service
-truffle watch --json              # stream mesh events as JSONL
+cargo add truffle
 ```
 
-## Mental model
+</details>
 
-1. **Start a node** — `createMeshNode({ appId })` boots the native core + tsnet sidecar in-process.
-2. **Discover peers** — Tailscale status is the source of truth; you get interned `Peer` objects.
-3. **Talk on purpose** — messages, sockets, files, and HTTP are addressed with a Peer (or a query that resolves to one).
-4. **Ship features** — chat, agents, shared state, local dashboards — without operating a broker.
+## How it works
 
-`appId` is the isolation boundary: devices with different app IDs do not see each other as Truffle peers, even on the same tailnet.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/readme/stack-dark.svg">
+    <img src=".github/readme/stack-light.svg" alt="truffle's layers on two devices: your app, the Node API, Envelope, Session, Transport, Network and the Go sidecar, with Tailscale carrying the bytes underneath" width="100%">
+  </picture>
+</p>
+
+`appId` is the boundary: devices only see peers running the same app. One exception is HTTP you publish with `mesh.serve`, which your whole tailnet can open.
+
+## Measure it yourself
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/readme/bench-dark.png">
+    <img src=".github/readme/bench-light.png" alt="The truffle bench desktop app during a TCP throughput run, with a live goodput chart" width="100%">
+  </picture>
+</p>
+
+<p align="center"><sub><b>truffle bench</b> runs ten workloads between your own machines. Shown here with its built-in demo data. <a href="benchmark/README.md">Methods and results</a></sub></p>
 
 ## Packages
 
-| Package | Role |
-| --- | --- |
-| [`@vibecook/truffle`](packages/core) | Primary JS API (`createMeshNode`, transports, files, stores, serve) |
-| [`@vibecook/truffle-react`](packages/react) | React hooks (`useMesh`, `useAuth`, `useSyncedStore`) |
-| [`@vibecook/truffle-native`](crates/truffle-napi) | NAPI-RS native addon |
-| [`truffle` CLI](crates/truffle-cli) | Interactive CLI + TUI (`truffle serve`, `cp`, agents JSONL, …) |
-| [`truffle-core`](crates/truffle-core) | Rust core (network → transport → session → envelope → Node) |
-| [`truffle-tauri-plugin`](crates/truffle-tauri-plugin) | Tauri v2 desktop plugin |
-| [`sidecar-slim`](packages/sidecar-slim) | Go sidecar embedding tsnet |
-| [Truffle Swift](apple/) | Apple-native SPM package (RFC 024) — wire-compatible mesh core + SwiftUI helpers |
-| [`truffle-bench`](benchmark/engine) | Benchmark engine + CLI (RFC 027): every two-node workload, suites, reports. Not published |
-| [truffle bench](benchmark/app) | Tauri desktop app that benchmarks your own machines against each other (crate `truffle-bench-app`). Not published |
+| | Where | What |
+| --- | --- | --- |
+| [`@vibecook/truffle`](packages/core) | npm | The JavaScript and TypeScript API |
+| [`@vibecook/truffle-react`](packages/react) | npm | React hooks: `useMesh`, `useAuth`, `useSyncedStore` |
+| [`truffle`](crates/truffle-cli) CLI | install script | 14 commands and an interactive TUI, with `--json` for agents |
+| [`truffle`](crates/truffle), [`truffle-core`](crates/truffle-core) | crates.io | The Rust core |
+| [Truffle Swift](apple/) | SwiftPM | The same mesh on iOS, wire compatible |
+| [`truffle-tauri-plugin`](crates/truffle-tauri-plugin) | this repo | Tauri v2 plugin |
+| [truffle bench](benchmark/) | this repo | Benchmark engine, CLI and desktop app |
 
-Messaging prefers explicit wire types: `peer.sendJson` / `peer.sendBytes` (and `mesh.broadcastJson` / `broadcastBytes`) over the legacy content-sniffing `send` / `broadcast`.
+Runs on macOS, Linux and Windows. The Swift package runs on iOS 18.1 and later.
 
 ## Examples
 
-See [`examples/`](examples/) for runnable demos:
-
-- Discovery, chat, shared state
-- Netcat-style TCP, QUIC streams
-- Express over the mesh, static SPA + API, expose a local dev server
-- WebSocket chat over mesh
-
-Swift: [`apple/Examples/MeshChatDemo`](apple/Examples/MeshChatDemo) — iOS SwiftUI chat over an in-process demo mesh (loopback backend today; live TailscaleKit backend still pending).
+Ten runnable demos in [`examples/`](examples/): discovery, chat, shared state, netcat over TCP, QUIC streams, Express over the mesh, a static site with an API, exposing a dev server, WebSocket chat, and an Electron playground. For Swift there is [`MeshChatDemo`](apple/Examples/MeshChatDemo).
 
 ## Docs
 
-- **Guide:** [vibecook-dev.github.io/truffle](https://vibecook-dev.github.io/truffle/)
-- **API reference:** [api.html](https://vibecook-dev.github.io/truffle/api.html)
-- **HTTP serving guide:** [docs/guide/serving-http.md](docs/guide/serving-http.md)
-- **API stability:** [docs/API-STABILITY.md](docs/API-STABILITY.md)
-- **Testing:** [docs/TESTING.md](docs/TESTING.md)
-- **Benchmarks:** [benchmark/README.md](benchmark/README.md)
-- **Releasing:** [docs/RELEASING.md](docs/RELEASING.md)
-- **RFCs:** [docs/rfcs/](docs/rfcs/) · Swift: [RFC 024](docs/rfcs/024-truffle-swift.md)
+[Guide](https://vibecook-dev.github.io/truffle/) · [API reference](https://vibecook-dev.github.io/truffle/api.html) · [Serving HTTP](docs/guide/serving-http.md) · [API stability](docs/API-STABILITY.md) · [Testing](docs/TESTING.md) · [Releasing](docs/RELEASING.md) · [RFCs](docs/rfcs/)
 
-## Development
+<details>
+<summary><b>Development</b></summary>
+
+<br>
 
 ```bash
 pnpm install
@@ -165,28 +193,29 @@ pnpm run build
 pnpm run test
 ```
 
-A plain `cargo build` builds only the default members (no GUI crates).
-Benchmarks — criterion micro benches, the `truffle-bench` CLI and the desktop
-app — are covered in [benchmark/README.md](benchmark/README.md):
+A plain `cargo build` builds only the default members, with no GUI crates. Benchmarks are covered in [benchmark/README.md](benchmark/README.md).
 
 ```bash
-pnpm bench:micro                                           # criterion, no network
-cargo run --locked -p truffle-bench --release -- suite --profile smoke --pair   # needs an auth key
-pnpm --filter @vibecook/truffle-bench-app app:dev          # the desktop app
-```
-
-Swift package (macOS / Xcode toolchain):
-
-```bash
+# Swift package (macOS, Xcode toolchain)
 cd apple && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
-```
 
-Enable the pre-commit hook once per clone:
-
-```bash
+# Enable the pre-commit hook, once per clone
 git config core.hooksPath .githooks
 ```
 
-## License
+</details>
 
-[MIT](LICENSE)
+<br>
+
+<p align="center">
+  <a href="https://github.com/jamesyong-42">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset=".github/readme/james-yong-dark.svg">
+      <img src=".github/readme/james-yong-light.svg" alt="James Yong" height="14">
+    </picture>
+  </a>
+</p>
+
+<p align="center">
+  <sub><a href="LICENSE">MIT</a> © 2026 James Yong. truffle is a <a href="https://github.com/vibecook-dev">vibecook</a> project, built independently on Tailscale and not affiliated with Tailscale Inc.</sub>
+</p>
