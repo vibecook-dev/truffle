@@ -572,13 +572,14 @@ console.table(<span class="k">await</span> store.all());
 
 <section id="react">
 <h2>@vibecook/truffle-react <a class="anchor" href="#react" aria-label="Link to @vibecook/truffle-react">#</a></h2>
-<p class="summary">Thin hooks around an already-started node. <code>useMesh</code> and <code>useAuth</code> read the native event shape, so give them a <code>NapiNode</code> you started yourself (<code>new NapiNode()</code>, then <code>node.start({ appId, sidecarPath: resolveSidecarPath() })</code>). A node from <code>createMeshNode()</code> delivers a different event shape and suits <code>useSyncedStore</code> only. Hook peer snapshots currently track native <code>NapiPeer</code> fields; send helpers still take a peer query string. For handle-first networking, keep Peers from <code>mesh.getPeers()</code> / events and call <code>peer.send</code> yourself.</p>
+<p class="summary">Pass the mesh returned by <code>createMeshNode()</code>, its <code>mesh.native</code>, or a separately started <code>NapiNode</code>. <code>useMesh</code> returns native <code>NapiPeer</code> snapshots and its send helper takes a peer query string. Use <code>mesh.getPeers()</code> for handles with methods such as <code>peer.send()</code>.</p>
+<p>With the <code>0.7.29</code> npm packages, pass a separately started <code>NapiNode</code> to <code>useMesh</code> and <code>useAuth</code>. In that release, <code>mesh.native</code> delivers the mesh event shape.</p>
 <div class="code"><header><span>ts</span></header><pre tabindex="0"><code><span class="k">import</span> { useMesh, useAuth, useSyncedStore } <span class="k">from</span> <span class="s">'@vibecook/truffle-react'</span>;
 
-<span class="k">function</span> Peers({ node }) {
-  <span class="k">const</span> { peers, send, broadcast } = useMesh(node);
-  <span class="k">const</span> auth = useAuth(node);
-  <span class="k">const</span> presence = useSyncedStore(node, <span class="s">'presence'</span>);
+<span class="k">function</span> Peers({ mesh }) {
+  <span class="k">const</span> { peers, send, broadcast } = useMesh(mesh);
+  <span class="k">const</span> auth = useAuth(mesh);
+  <span class="k">const</span> presence = useSyncedStore(mesh, <span class="s">'presence'</span>);
 
   <span class="c">// send still takes a query string today</span>
   <span class="c">// await send(peers[0]?.deviceId ?? peers[0]?.displayName, 'chat', { text: 'hi' });</span>

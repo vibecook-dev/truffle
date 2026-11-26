@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import type { NapiNode, NapiPeerEvent } from '@vibecook/truffle';
+import type { MeshNode, NapiNode, NapiPeerEvent } from '@vibecook/truffle';
+import { getNativeNode } from './native-node.js';
 
 export type AuthStatus = 'unknown' | 'required' | 'authenticated';
 
@@ -17,7 +18,8 @@ export interface UseAuthResult {
 /**
  * React hook for tracking Tailscale auth state.
  *
- * Listens for `auth_required` peer events from the Node API.
+ * Listens for `auth_required` peer events on a started mesh or native node.
+ * Use the factory's `onAuthRequired` option for login prompts during startup.
  * Once peers start arriving, auth is considered complete.
  *
  * @example
@@ -29,7 +31,8 @@ export interface UseAuthResult {
  * }
  * ```
  */
-export function useAuth(node: NapiNode | null): UseAuthResult {
+export function useAuth(input: MeshNode | NapiNode | null): UseAuthResult {
+  const node = getNativeNode(input);
   const [status, setStatus] = useState<AuthStatus>('unknown');
   const [authUrl, setAuthUrl] = useState<string | null>(null);
 
