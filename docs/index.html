@@ -3,1732 +3,252 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Truffle — Simple network programming on Tailscale</title>
-    <meta
-      name="description"
-      content="Truffle is simple network programming on top of Tailscale: TCP, HTTP, UDP, WebSocket, and QUIC between your devices — plus messaging, files, and state sync."
-    />
-    <meta name="theme-color" content="#0b1512" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&amp;display=swap"
-      rel="stylesheet"
-    />
-    <style>
-      :root {
-        color-scheme: light dark;
-        --bg: #f4f1ea;
-        --bg-2: #ebe6db;
-        --surface: #fffcf6;
-        --surface-2: #f7f3ea;
-        --ink: #13201b;
-        --muted: #5a675f;
-        --faint: #8a948c;
-        --line: #d8d2c4;
-        --line-soft: #e8e2d4;
-        --accent: #0f6b57;
-        --accent-ink: #084538;
-        --accent-soft: #d8f0e7;
-        --accent-glow: #1f9a7a;
-        --warm: #b45309;
-        --warm-soft: #fde8c8;
-        --blue: #2557c4;
-        --blue-soft: #e4ecff;
-        --code-bg: #101816;
-        --code-ink: #d7e0da;
-        --code-muted: #7f9187;
-        --c-com: #7f9187;
-        --c-str: #d8bf7a;
-        --c-kw: #8fb4ef;
-        --c-typ: #c4b0f5;
-        --c-fn: #e2c48d;
-        --c-num: #e0a08f;
-        --shadow: 0 1px 0 rgba(19, 32, 27, 0.06), 0 18px 40px -28px rgba(19, 32, 27, 0.45);
-        --radius: 18px;
-        --max: 1160px;
-        --font: "DM Sans", system-ui, sans-serif;
-        --display: "Fraunces", Georgia, serif;
-        --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-      }
-
-      * {
-        box-sizing: border-box;
-      }
-
-      html {
-        scroll-behavior: smooth;
-      }
-
-      body {
-        margin: 0;
-        color: var(--ink);
-        background:
-          radial-gradient(1200px 500px at 10% -10%, rgba(31, 154, 122, 0.12), transparent 55%),
-          radial-gradient(900px 420px at 95% 5%, rgba(180, 83, 9, 0.08), transparent 50%),
-          var(--bg);
-        font-family: var(--font);
-        font-size: 16.5px;
-        line-height: 1.65;
-        -webkit-font-smoothing: antialiased;
-        text-rendering: optimizeLegibility;
-      }
-
-      a {
-        color: var(--accent);
-        text-decoration: none;
-      }
-
-      a:hover {
-        text-decoration: underline;
-        text-underline-offset: 3px;
-      }
-
-      code,
-      pre,
-      kbd {
-        font-family: var(--mono);
-      }
-
-      /* ── Top bar ─────────────────────────────────────────── */
-      .topbar {
-        position: sticky;
-        top: 0;
-        z-index: 40;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 20px;
-        padding: 12px clamp(16px, 4vw, 40px);
-        border-bottom: 1px solid rgb(216 210 196 / 70%);
-        background: rgb(244 241 234 / 88%);
-        backdrop-filter: blur(14px);
-      }
-
-      .brand {
-        display: inline-flex;
-        align-items: center;
-        gap: 10px;
-        color: var(--ink);
-        font-weight: 700;
-        letter-spacing: -0.02em;
-        text-decoration: none;
-      }
-
-      .brand:hover {
-        text-decoration: none;
-      }
-
-      .mark {
-        display: grid;
-        width: 32px;
-        height: 32px;
-        place-items: center;
-        border-radius: 10px;
-        background: linear-gradient(145deg, #1a8f72, #0d5c4a);
-        color: #eafff6;
-        font-family: var(--mono);
-        font-size: 12px;
-        font-weight: 600;
-        box-shadow: inset 0 1px 0 rgb(255 255 255 / 18%);
-      }
-
-      .topnav {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 6px 16px;
-        font-size: 14px;
-        font-weight: 500;
-      }
-
-      .topnav a {
-        color: var(--muted);
-      }
-
-      .topnav a.nav-cta {
-        display: inline-flex;
-        align-items: center;
-        min-height: 34px;
-        padding: 0 12px;
-        border-radius: 999px;
-        background: var(--ink);
-        color: #f7f3ea;
-        text-decoration: none;
-      }
-
-      .topnav a.nav-cta:hover {
-        background: var(--accent-ink);
-        text-decoration: none;
-      }
-
-      /* ── Layout helpers ──────────────────────────────────── */
-      .wrap {
-        width: min(100% - 32px, var(--max));
-        margin-inline: auto;
-      }
-
-      .section {
-        padding: clamp(56px, 8vw, 96px) 0;
-      }
-
-      .section.tight {
-        padding-top: 28px;
-      }
-
-      .section-head {
-        display: grid;
-        gap: 14px;
-        max-width: 720px;
-        margin-bottom: clamp(28px, 4vw, 44px);
-      }
-
-      .section-head.wide {
-        max-width: 860px;
-      }
-
-      .section-head.center {
-        margin-inline: auto;
-        text-align: center;
-      }
-
-      .eyebrow {
-        margin: 0;
-        color: var(--accent);
-        font-family: var(--mono);
-        font-size: 12px;
-        font-weight: 600;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-      }
-
-      h1,
-      h2,
-      h3,
-      h4 {
-        margin: 0;
-        letter-spacing: -0.03em;
-        line-height: 1.12;
-      }
-
-      h1 {
-        font-family: var(--display);
-        font-size: clamp(2.2rem, 5.2vw, 3.7rem);
-        font-weight: 600;
-      }
-
-      h2 {
-        font-family: var(--display);
-        font-size: clamp(1.7rem, 3.4vw, 2.5rem);
-        font-weight: 600;
-      }
-
-      h3 {
-        font-size: 1.15rem;
-        font-weight: 650;
-      }
-
-      p {
-        margin: 0;
-      }
-
-      .lede {
-        color: var(--muted);
-        font-size: clamp(1.05rem, 1.8vw, 1.25rem);
-        line-height: 1.55;
-      }
-
-      .muted {
-        color: var(--muted);
-      }
-
-      /* ── Buttons ─────────────────────────────────────────── */
-      .actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-      }
-
-      .btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 8px;
-        min-height: 44px;
-        padding: 0 18px;
-        border: 1px solid transparent;
-        border-radius: 999px;
-        font-weight: 600;
-        font-size: 15px;
-        text-decoration: none;
-        transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
-      }
-
-      .btn:hover {
-        text-decoration: none;
-        transform: translateY(-1px);
-      }
-
-      .btn-primary {
-        background: var(--accent);
-        color: #f4fffb;
-      }
-
-      .btn-primary:hover {
-        background: var(--accent-ink);
-      }
-
-      .btn-secondary {
-        border-color: var(--line);
-        background: var(--surface);
-        color: var(--ink);
-      }
-
-      .btn-ghost {
-        border-color: transparent;
-        background: transparent;
-        color: var(--muted);
-      }
-
-      /* ── Hero ─────────────────────────────────────────────── */
-      .hero {
-        display: grid;
-        grid-template-columns: minmax(0, 1.05fr) minmax(300px, 0.95fr);
-        gap: clamp(28px, 5vw, 56px);
-        align-items: center;
-        padding: clamp(40px, 7vw, 80px) 0 clamp(28px, 4vw, 48px);
-      }
-
-      .hero-copy {
-        display: grid;
-        gap: 20px;
-      }
-
-      .pill-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-      }
-
-      .pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        min-height: 30px;
-        padding: 0 11px;
-        border: 1px solid var(--line);
-        border-radius: 999px;
-        background: rgb(255 252 246 / 70%);
-        color: var(--muted);
-        font-size: 13px;
-        font-weight: 500;
-      }
-
-      .pill i {
-        width: 7px;
-        height: 7px;
-        border-radius: 50%;
-        background: var(--accent-glow);
-        box-shadow: 0 0 0 3px rgb(31 154 122 / 18%);
-      }
-
-      .hero-stats {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 10px;
-        margin-top: 8px;
-      }
-
-      .stat {
-        padding: 14px 12px;
-        border: 1px solid var(--line-soft);
-        border-radius: 14px;
-        background: rgb(255 252 246 / 65%);
-      }
-
-      .stat strong {
-        display: block;
-        font-family: var(--display);
-        font-size: 1.35rem;
-        letter-spacing: -0.03em;
-      }
-
-      .stat span {
-        color: var(--muted);
-        font-size: 13px;
-      }
-
-      /* ── Diagram cards ────────────────────────────────────── */
-      .diagram-card {
-        position: relative;
-        overflow: hidden;
-        border: 1px solid var(--line);
-        border-radius: calc(var(--radius) + 4px);
-        background:
-          linear-gradient(180deg, rgb(255 252 246 / 95%), rgb(247 243 234 / 95%)),
-          var(--surface);
-        box-shadow: var(--shadow);
-      }
-
-      .diagram-card .label {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 12px 16px;
-        border-bottom: 1px solid var(--line-soft);
-        color: var(--muted);
-        font-family: var(--mono);
-        font-size: 12px;
-        font-weight: 500;
-      }
-
-      .diagram-card .label em {
-        font-style: normal;
-        color: var(--accent);
-      }
-
-      .diagram-body {
-        padding: 18px 16px 20px;
-      }
-
-      .diagram-body svg {
-        display: block;
-        width: 100%;
-        height: auto;
-      }
-
-      .diagram-caption {
-        margin-top: 12px;
-        color: var(--muted);
-        font-size: 13.5px;
-        line-height: 1.5;
-      }
-
-      /* ── Value / compare ──────────────────────────────────── */
-      .compare {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 14px;
-      }
-
-      .compare-card {
-        display: grid;
-        gap: 12px;
-        padding: 22px;
-        border: 1px solid var(--line);
-        border-radius: var(--radius);
-        background: var(--surface);
-      }
-
-      .compare-card.bad {
-        background: linear-gradient(180deg, #fff, #faf7f1);
-      }
-
-      .compare-card.good {
-        border-color: #9fd3c0;
-        background: linear-gradient(180deg, #f4fffb, #eaf8f2);
-      }
-
-      .compare-card h3 {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-
-      .tag {
-        display: inline-flex;
-        align-items: center;
-        min-height: 24px;
-        padding: 0 9px;
-        border-radius: 999px;
-        font-family: var(--mono);
-        font-size: 11px;
-        font-weight: 600;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-      }
-
-      .tag-muted {
-        background: var(--bg-2);
-        color: var(--muted);
-      }
-
-      .tag-good {
-        background: var(--accent-soft);
-        color: var(--accent-ink);
-      }
-
-      .tag-warm {
-        background: var(--warm-soft);
-        color: #8a3f08;
-      }
-
-      .tag-blue {
-        background: var(--blue-soft);
-        color: #1a3f9c;
-      }
-
-      .compare-card ul {
-        margin: 0;
-        padding-left: 18px;
-        color: var(--muted);
-      }
-
-      .compare-card li + li {
-        margin-top: 6px;
-      }
-
-      /* ── Capability grid ──────────────────────────────────── */
-      .cap-grid {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 14px;
-      }
-
-      .cap {
-        display: grid;
-        gap: 10px;
-        padding: 20px;
-        border: 1px solid var(--line);
-        border-radius: var(--radius);
-        background: var(--surface);
-        box-shadow: 0 1px 0 rgb(19 32 27 / 4%);
-        transition: border-color 0.15s ease, transform 0.15s ease;
-      }
-
-      .cap:hover {
-        border-color: #b7d8cb;
-        transform: translateY(-2px);
-      }
-
-      .cap-icon {
-        display: grid;
-        width: 42px;
-        height: 42px;
-        place-items: center;
-        border-radius: 12px;
-        background: var(--accent-soft);
-        color: var(--accent-ink);
-      }
-
-      .cap-icon svg {
-        width: 22px;
-        height: 22px;
-      }
-
-      .cap p {
-        color: var(--muted);
-        font-size: 14.5px;
-      }
-
-      .cap code {
-        font-size: 12px;
-        color: var(--accent-ink);
-      }
-
-      /* ── Architecture layers ──────────────────────────────── */
-      .layers {
-        display: grid;
-        gap: 8px;
-      }
-
-      .layer {
-        display: grid;
-        grid-template-columns: 92px 1fr;
-        gap: 14px;
-        align-items: center;
-        padding: 14px 16px;
-        border: 1px solid var(--line);
-        border-radius: 14px;
-        background: var(--surface);
-      }
-
-      .layer-n {
-        display: grid;
-        place-items: center;
-        min-height: 42px;
-        border-radius: 10px;
-        font-family: var(--mono);
-        font-size: 12px;
-        font-weight: 600;
-      }
-
-      .layer-n.l7 { background: #efe6ff; color: #4b2d9b; }
-      .layer-n.l6 { background: var(--blue-soft); color: #1a3f9c; }
-      .layer-n.l5 { background: var(--accent-soft); color: var(--accent-ink); }
-      .layer-n.l4 { background: #e8f4d8; color: #3b5a12; }
-      .layer-n.l3 { background: var(--warm-soft); color: #8a3f08; }
-
-      .layer strong {
-        display: block;
-        margin-bottom: 2px;
-      }
-
-      .layer span {
-        color: var(--muted);
-        font-size: 14px;
-      }
-
-      .arch-grid {
-        display: grid;
-        grid-template-columns: 1.15fr 0.85fr;
-        gap: 18px;
-        align-items: start;
-      }
-
-      .stack-note {
-        display: grid;
-        gap: 14px;
-        padding: 22px;
-        border: 1px solid var(--line);
-        border-radius: var(--radius);
-        background: linear-gradient(165deg, #10231c, #17352a);
-        color: #dce8e1;
-        box-shadow: var(--shadow);
-      }
-
-      .stack-note h3 {
-        color: #f4fffb;
-      }
-
-      .stack-note p {
-        color: #b7c9bf;
-        font-size: 14.5px;
-      }
-
-      .stack-note ul {
-        margin: 0;
-        padding-left: 18px;
-        color: #c5d5cc;
-        font-size: 14.5px;
-      }
-
-      .stack-note li + li {
-        margin-top: 8px;
-      }
-
-      .stack-note code {
-        color: #9de0c4;
-        font-size: 12.5px;
-      }
-
-      /* ── Flow steps ────────────────────────────────────────── */
-      .flow {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 12px;
-        counter-reset: step;
-      }
-
-      .step {
-        position: relative;
-        display: grid;
-        gap: 10px;
-        padding: 18px;
-        border: 1px solid var(--line);
-        border-radius: var(--radius);
-        background: var(--surface);
-      }
-
-      .step::before {
-        counter-increment: step;
-        content: counter(step);
-        display: grid;
-        width: 28px;
-        height: 28px;
-        place-items: center;
-        border-radius: 50%;
-        background: var(--ink);
-        color: #f7f3ea;
-        font-family: var(--mono);
-        font-size: 12px;
-        font-weight: 600;
-      }
-
-      .step p {
-        color: var(--muted);
-        font-size: 14px;
-      }
-
-      /* ── Split recipe ──────────────────────────────────────── */
-      .recipe {
-        display: grid;
-        grid-template-columns: minmax(240px, 0.85fr) minmax(0, 1.15fr);
-        gap: 16px;
-        align-items: stretch;
-        margin-top: 14px;
-      }
-
-      .recipe-copy {
-        display: grid;
-        gap: 10px;
-        align-content: start;
-        padding: 20px;
-        border: 1px solid var(--line);
-        border-radius: var(--radius);
-        background: var(--surface);
-      }
-
-      .recipe-copy p {
-        color: var(--muted);
-        font-size: 14.5px;
-      }
-
-      .terminal {
-        overflow: hidden;
-        border: 1px solid #1d2b25;
-        border-radius: var(--radius);
-        background: var(--code-bg);
-        box-shadow: var(--shadow);
-        min-width: 0;
-      }
-
-      .terminal-bar {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 10px 14px;
-        border-bottom: 1px solid #22322b;
-        color: var(--code-muted);
-        font-family: var(--mono);
-        font-size: 12px;
-      }
-
-      .terminal-bar .dots {
-        display: flex;
-        gap: 5px;
-      }
-
-      .terminal-bar .dots i {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: #2f4038;
-      }
-
-      .terminal-bar .dots i:nth-child(1) { background: #c45c4a; }
-      .terminal-bar .dots i:nth-child(2) { background: #c4a04a; }
-      .terminal-bar .dots i:nth-child(3) { background: #4aa06a; }
-
-      pre {
-        margin: 0;
-        padding: 16px 18px 18px;
-        overflow-x: auto;
-        color: var(--code-ink);
-        font-size: 12.8px;
-        line-height: 1.55;
-      }
-
-      code .tok-c { color: var(--c-com); }
-      code .tok-s { color: var(--c-str); }
-      code .tok-k { color: var(--c-kw); }
-      code .tok-t { color: var(--c-typ); }
-      code .tok-f { color: var(--c-fn); }
-      code .tok-n { color: var(--c-num); }
-
-      .inline-code {
-        padding: 1px 6px;
-        border-radius: 6px;
-        background: var(--bg-2);
-        color: var(--accent-ink);
-        font-size: 0.9em;
-      }
-
-      /* ── Transport tabs / cards ───────────────────────────── */
-      .transport-grid {
-        display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
-        gap: 10px;
-        margin-bottom: 18px;
-      }
-
-      .t-chip {
-        display: grid;
-        gap: 4px;
-        padding: 14px 12px;
-        border: 1px solid var(--line);
-        border-radius: 14px;
-        background: var(--surface);
-        color: inherit;
-        text-decoration: none;
-        transition: border-color 0.15s ease, background 0.15s ease;
-      }
-
-      .t-chip:hover {
-        border-color: #9fd3c0;
-        background: #f4fffb;
-        text-decoration: none;
-      }
-
-      .t-chip strong {
-        font-size: 14px;
-      }
-
-      .t-chip span {
-        color: var(--muted);
-        font-size: 12.5px;
-        line-height: 1.35;
-      }
-
-      /* ── Use cases ────────────────────────────────────────── */
-      .use-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 14px;
-      }
-
-      .use {
-        display: grid;
-        grid-template-columns: auto 1fr;
-        gap: 14px;
-        padding: 18px;
-        border: 1px solid var(--line);
-        border-radius: var(--radius);
-        background: var(--surface);
-      }
-
-      .use-num {
-        font-family: var(--display);
-        font-size: 1.4rem;
-        color: var(--accent);
-      }
-
-      .use p {
-        margin-top: 4px;
-        color: var(--muted);
-        font-size: 14.5px;
-      }
-
-      /* ── Packages ─────────────────────────────────────────── */
-      .pkg-grid {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 12px;
-      }
-
-      .pkg {
-        display: grid;
-        gap: 8px;
-        padding: 18px;
-        border: 1px solid var(--line);
-        border-radius: var(--radius);
-        background: var(--surface);
-      }
-
-      .pkg code {
-        color: var(--accent-ink);
-        font-size: 13px;
-      }
-
-      .pkg p {
-        color: var(--muted);
-        font-size: 14px;
-      }
-
-      /* ── CTA band ──────────────────────────────────────────── */
-      .cta-band {
-        display: grid;
-        grid-template-columns: 1.2fr 0.8fr;
-        gap: 20px;
-        align-items: center;
-        padding: 28px;
-        border: 1px solid #1f3d33;
-        border-radius: calc(var(--radius) + 4px);
-        background:
-          radial-gradient(500px 200px at 10% 0%, rgba(31, 154, 122, 0.25), transparent 60%),
-          linear-gradient(145deg, #0d1a15, #143028);
-        color: #e8f2ec;
-        box-shadow: var(--shadow);
-      }
-
-      .cta-band h2 {
-        color: #f4fffb;
-      }
-
-      .cta-band p {
-        margin-top: 10px;
-        color: #b8cdc2;
-      }
-
-      .cta-band .btn-primary {
-        background: #2fba93;
-        color: #06251c;
-      }
-
-      .cta-band .btn-secondary {
-        border-color: #35584b;
-        background: transparent;
-        color: #e8f2ec;
-      }
-
-      /* ── Footer ────────────────────────────────────────────── */
-      .footer {
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 28px clamp(16px, 4vw, 40px) 40px;
-        border-top: 1px solid var(--line);
-        color: var(--muted);
-        font-size: 14px;
-      }
-
-      /* ── Callout ──────────────────────────────────────────── */
-      .callout {
-        display: grid;
-        gap: 8px;
-        padding: 16px 18px;
-        border: 1px solid #b7d8cb;
-        border-radius: 14px;
-        background: #f0faf5;
-      }
-
-      .callout strong {
-        color: var(--accent-ink);
-      }
-
-      .callout p {
-        color: var(--muted);
-        font-size: 14.5px;
-      }
-
-      /* ── Mesh viz background ───────────────────────────────── */
-      .mesh-bg {
-        position: absolute;
-        inset: 0;
-        opacity: 0.55;
-        pointer-events: none;
-      }
-
-      /* ── Responsive ──────────────────────────────────────── */
-      @media (max-width: 980px) {
-        .hero,
-        .arch-grid,
-        .recipe,
-        .cta-band,
-        .compare {
-          grid-template-columns: 1fr;
-        }
-
-        .cap-grid,
-        .pkg-grid {
-          grid-template-columns: 1fr 1fr;
-        }
-
-        .transport-grid {
-          grid-template-columns: 1fr 1fr;
-        }
-
-        .flow {
-          grid-template-columns: 1fr 1fr;
-        }
-      }
-
-      @media (max-width: 640px) {
-        .topnav a:not(.nav-cta) {
-          display: none;
-        }
-
-        .hero-stats,
-        .cap-grid,
-        .pkg-grid,
-        .use-grid,
-        .flow,
-        .transport-grid,
-        .layer {
-          grid-template-columns: 1fr;
-        }
-
-        .layer {
-          gap: 10px;
-        }
-      }
-
-      @media (prefers-reduced-motion: reduce) {
-        html {
-          scroll-behavior: auto;
-        }
-        .btn:hover,
-        .cap:hover {
-          transform: none;
-        }
-      }
-    </style>
+    <title>truffle: simple network programming on top of Tailscale</title>
+    <meta name="description" content="TCP, UDP, QUIC, WebSocket and HTTP between the machines on your tailnet, plus messaging, file transfer and synced state. No server to run." />
+    <link rel="canonical" href="https://vibecook-dev.github.io/truffle/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="truffle: simple network programming on top of Tailscale" />
+    <meta property="og:description" content="TCP, UDP, QUIC, WebSocket and HTTP between the machines on your tailnet, plus messaging, file transfer and synced state. No server to run." />
+    <meta property="og:url" content="https://vibecook-dev.github.io/truffle/" />
+    <meta property="og:image" content="https://vibecook-dev.github.io/truffle/assets/og.png" />
+    <meta property="og:image:width" content="1280" />
+    <meta property="og:image:height" content="640" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#fafaf7" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+    <link rel="preload" href="assets/fonts/Jost-Variable.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="assets/site.css" />
+    <script>
+      try {
+        const t = localStorage.getItem('vibecook-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+      } catch {}
+    </script>
+    <script src="assets/site.js" defer></script>
   </head>
   <body>
-    <header class="topbar">
-      <a class="brand" href="./index.html" aria-label="Truffle home">
-        <span class="mark">tr</span>
-        <span>Truffle</span>
-      </a>
-      <nav class="topnav" aria-label="Primary">
-        <a href="#why">Why</a>
-        <a href="#how">How it works</a>
-        <a href="#capabilities">Capabilities</a>
-        <a href="#quickstart">Quick start</a>
-        <a href="./api.html">API</a>
-        <a class="nav-cta" href="https://github.com/vibecook-dev/truffle">GitHub</a>
-      </nav>
+    <a class="skip" href="#main">Skip to the content</a>
+    <div class="guides" aria-hidden="true"></div>
+    <header class="bar">
+      <div class="sheet">
+        <a class="lockup" href="./" aria-label="truffle home"><svg viewBox="78 81.6 97.3 92.4" aria-hidden="true"><path d="M98.7047 139.617C106.418 139.221 112.734 142.28 115.58 149.86C117.317 154.6 117.123 159.84 115.043 164.441C112.429 170.124 109.319 171.949 103.904 173.973C78.6944 173.479 77.9612 146.947 98.7047 139.617Z"/><path d="M150.179 139.544C157.989 139.03 165.208 141.278 169.298 148.47C171.499 152.293 172.023 156.854 170.749 161.073C169.041 166.544 165.457 169.115 160.681 171.462C156.545 172.556 152.986 173.024 148.906 171.363C144.771 169.682 141.551 166.314 140.057 162.115C136.569 152.556 140.327 142.88 150.179 139.544Z"/><path d="M153.255 82.222C156.898 81.932 159.93 81.6024 163.312 83.5272C171.276 88.0557 175.255 100.719 170.344 108.734C167.683 113.078 164.427 114.014 159.814 115.174C136.98 115.254 132.989 91.3912 153.255 82.222Z"/><path d="M100.043 82.3538C108.871 81.6419 116.625 88.1679 117.433 96.9877C118.24 105.808 111.801 113.632 102.991 114.542C97.2021 115.135 91.5383 112.577 88.1625 107.838C84.7874 103.098 84.2203 96.9086 86.679 91.6351C89.137 86.3617 94.241 82.8153 100.043 82.3538Z"/></svg><span>truffle</span></a>
+        <nav aria-label="Site">
+          <a href="./" aria-current="page">Guide</a>
+          <a href="api.html">API</a>
+          <a class="ext" href="https://github.com/vibecook-dev/truffle">GitHub</a>
+          <button class="theme" type="button" aria-label="Switch theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M20 12A8 8 0 1 1 4 12A8 8 0 1 1 20 12Z"/><path d="M12 4A8 8 0 0 0 12 20Z" fill="currentColor" stroke="none"/></svg></button>
+        </nav>
+      </div>
     </header>
-
-    <main>
-      <!-- ═══════════════ HERO ═══════════════ -->
-      <div class="wrap">
-        <section class="hero" aria-labelledby="hero-title">
-          <div class="hero-copy">
-            <p class="eyebrow">Built on Tailscale</p>
-            <h1 id="hero-title">Simple network programming on top of Tailscale.</h1>
-            <p class="lede">
-              Truffle gives your Node apps familiar networking APIs — TCP, HTTP, UDP, WebSocket,
-              QUIC — that run across devices on the same tailnet. Discover peers, open sockets,
-              send messages, sync state, transfer files. No central server. No new protocol to learn.
-            </p>
-            <div class="pill-row" aria-label="Highlights">
-              <span class="pill"><i></i> Tailscale for identity &amp; tunnels</span>
-              <span class="pill">Node-shaped APIs</span>
-              <span class="pill">TCP · HTTP · UDP · WS · QUIC</span>
-            </div>
+    <main id="main">
+      <div class="sheet">
+        <section class="hero">
+          <div>
+            <p class="kicker">vibecook / mesh networking</p>
+            <h1><span>Simple network</span> <span>programming</span> <span class="quiet">on top of Tailscale.</span></h1>
+            <p class="lede">Your devices, talking to each other directly. TCP, UDP, QUIC, WebSocket and HTTP between the machines on your tailnet, plus messaging, file transfer and synced state. No server to run.</p>
+            <div class="cmd"><code>pnpm add @vibecook/truffle</code></div>
             <div class="actions">
-              <a class="btn btn-primary" href="#quickstart">Start in 3 steps</a>
-              <a class="btn btn-secondary" href="./api.html">API reference</a>
-              <a class="btn btn-ghost" href="#architecture">See architecture →</a>
-            </div>
-            <div class="hero-stats" aria-label="What you get">
-              <div class="stat">
-                <strong>1 node</strong>
-                <span>joins the mesh</span>
-              </div>
-              <div class="stat">
-                <strong>Peer</strong>
-                <span>handle for every device</span>
-              </div>
-              <div class="stat">
-                <strong>0</strong>
-                <span>servers you host</span>
-              </div>
+              <a class="btn solid" href="#start">Get started</a>
+              <a class="btn" href="api.html">Read the API</a>
             </div>
           </div>
-
-          <figure class="diagram-card" aria-label="Mesh overview diagram">
-            <div class="label">
-              <span>private tailnet</span>
-              <em>app-scoped mesh</em>
-            </div>
-            <div class="diagram-body">
-              <svg viewBox="0 0 420 340" role="img" aria-labelledby="mesh-title mesh-desc">
-                <title id="mesh-title">Truffle mesh on a Tailscale tailnet</title>
-                <desc id="mesh-desc">
-                  Three devices on one encrypted tailnet form an app mesh. Discovery comes from
-                  Tailscale; messaging and sockets ride Truffle transports.
-                </desc>
-                <defs>
-                  <radialGradient id="gNode" cx="50%" cy="40%" r="60%">
-                    <stop offset="0%" stop-color="#2fba93" stop-opacity="0.35" />
-                    <stop offset="100%" stop-color="#2fba93" stop-opacity="0" />
-                  </radialGradient>
-                  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-                    <path d="M0 0 L10 5 L0 10 z" fill="#6f8a7c" />
-                  </marker>
-                </defs>
-                <!-- soft field -->
-                <rect x="8" y="8" width="404" height="324" rx="20" fill="#0f1a16" />
-                <circle cx="210" cy="155" r="120" fill="url(#gNode)" />
-                <!-- links -->
-                <g stroke="#3d6b58" stroke-width="1.6" stroke-dasharray="4 5" fill="none" opacity="0.9">
-                  <path d="M120 120 C160 90, 260 90, 300 120" />
-                  <path d="M120 120 C150 190, 170 240, 210 260" />
-                  <path d="M300 120 C270 190, 250 240, 210 260" />
-                </g>
-                <g stroke="#5ec9a4" stroke-width="2" fill="none" opacity="0.85">
-                  <path d="M135 130 L285 130" marker-end="url(#arrow)" />
-                  <path d="M140 145 C165 200, 185 225, 200 245" marker-end="url(#arrow)" />
-                </g>
-                <!-- nodes -->
-                <g>
-                  <rect x="72" y="78" width="96" height="72" rx="14" fill="#173028" stroke="#3d8f72" />
-                  <circle cx="94" cy="102" r="7" fill="#3dba8c" />
-                  <text x="110" y="106" fill="#e8f2ec" font-family="DM Sans, sans-serif" font-size="13" font-weight="600">laptop</text>
-                  <text x="90" y="128" fill="#8fb5a4" font-family="IBM Plex Mono, monospace" font-size="10">online · direct</text>
-                </g>
-                <g>
-                  <rect x="252" y="78" width="96" height="72" rx="14" fill="#173028" stroke="#3d8f72" />
-                  <circle cx="274" cy="102" r="7" fill="#3dba8c" />
-                  <text x="290" y="106" fill="#e8f2ec" font-family="DM Sans, sans-serif" font-size="13" font-weight="600">server</text>
-                  <text x="270" y="128" fill="#8fb5a4" font-family="IBM Plex Mono, monospace" font-size="10">online · direct</text>
-                </g>
-                <g>
-                  <rect x="162" y="230" width="96" height="72" rx="14" fill="#173028" stroke="#6a7d74" />
-                  <circle cx="184" cy="254" r="7" fill="#8a948c" />
-                  <text x="200" y="258" fill="#e8f2ec" font-family="DM Sans, sans-serif" font-size="13" font-weight="600">phone</text>
-                  <text x="180" y="280" fill="#8fb5a4" font-family="IBM Plex Mono, monospace" font-size="10">offline</text>
-                </g>
-                <!-- labels -->
-                <text x="24" y="40" fill="#7f9187" font-family="IBM Plex Mono, monospace" font-size="11">Tailscale WireGuard fabric</text>
-                <text x="24" y="318" fill="#9de0c4" font-family="IBM Plex Mono, monospace" font-size="11">Truffle appId: field-tools</text>
-              </svg>
-              <p class="diagram-caption">
-                Tailscale owns tunnels, ACLs, and crypto. Truffle owns discovery-aware peers, app
-                isolation (<code class="inline-code">appId</code>), and the APIs your code calls.
-              </p>
-            </div>
+          <figure>
+            <img class="only-light" src="assets/img/figure-light.svg" width="405" height="378" alt="truffle's mark, four dots, drawn as four devices on one tailnet. Every device is joined to every other, and packets move along the lines." decoding="async" /><img aria-hidden="true" class="only-dark" src="assets/img/figure-dark.svg" width="405" height="378" alt="" decoding="async" />
           </figure>
         </section>
-      </div>
-
-      <!-- ═══════════════ WHY ═══════════════ -->
-      <section class="section" id="why" style="background: rgb(235 230 219 / 45%)">
-        <div class="wrap">
-          <div class="section-head wide">
-            <p class="eyebrow">Why Truffle</p>
-            <h2>Local-first apps need a mesh — not another hosted backend.</h2>
-            <p class="lede">
-              If your users already run Tailscale (or you can put devices on a tailnet), the hard
-              parts of private connectivity are solved. What is still hard is <em>application</em>
-              networking: finding the right device, talking to it with normal protocols, and
-              shipping higher-level features without inventing a protocol stack.
-            </p>
-          </div>
-
-          <div class="compare">
-            <article class="compare-card bad">
-              <span class="tag tag-muted">Without Truffle</span>
-              <h3>You re-build mesh plumbing</h3>
-              <ul>
-                <li>Track device IDs, hostnames, and IPs by hand</li>
-                <li>Roll your own discovery, reconnect, and framing</li>
-                <li>Stand up a coordination server or brittle NAT tricks</li>
-                <li>Re-implement file transfer, state sync, HTTP serving</li>
-              </ul>
-            </article>
-            <article class="compare-card good">
-              <span class="tag tag-good">With Truffle</span>
-              <h3>You write app logic on Peers</h3>
-              <ul>
-                <li>One <code>createMeshNode()</code> per process</li>
-                <li>Interned <code>Peer</code> handles for dial / send / maps</li>
-                <li>Node-shaped <code>net</code>, <code>http</code>, <code>dgram</code>, <code>ws</code>, <code>quic</code></li>
-                <li>Messages, SHA-256 file transfer, synced stores, serve</li>
-              </ul>
-            </article>
-          </div>
-
-          <div class="cap-grid" style="margin-top: 18px">
-            <article class="cap">
-              <div class="cap-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>
-              </div>
-              <h3>Built on Tailscale</h3>
-              <p>Reuse tailnet identity, WireGuard encryption, ACLs, and MagicDNS. No public ports. No “our cloud in the middle.”</p>
-            </article>
-            <article class="cap">
-              <div class="cap-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>
-              </div>
-              <h3>Familiar network APIs</h3>
-              <p>If you know Node’s <code>net</code> / <code>http</code> / <code>dgram</code>, you already know most of the transport surface.</p>
-            </article>
-            <article class="cap">
-              <div class="cap-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h10M4 17h14"/><circle cx="18" cy="12" r="2"/><circle cx="20" cy="17" r="2"/></svg>
-              </div>
-              <h3>App-ready primitives</h3>
-              <p>Namespaced messaging, verified file transfer, device-owned synced stores, reverse proxy, and declarative <code>mesh.serve</code>.</p>
-            </article>
-          </div>
-        </div>
-      </section>
-
-      <!-- ═══════════════ HOW IT WORKS ═══════════════ -->
-      <section class="section" id="how">
-        <div class="wrap">
-          <div class="section-head">
-            <p class="eyebrow">Mental model</p>
-            <h2>One mesh node. Live peers. Transports that feel like Node.</h2>
-            <p class="lede">
-              Truffle does not invent a new identity system. It sits on your tailnet and gives each
-              process a high-level node that discovery, sessions, and transports hang off of.
-            </p>
-          </div>
-
-          <div class="flow" aria-label="How Truffle works in four steps">
-            <article class="step">
-              <h3>Start a node</h3>
-              <p>
-                <code class="inline-code">createMeshNode({ appId })</code> boots the native core +
-                Go sidecar (tsnet) inside your process.
-              </p>
-            </article>
-            <article class="step">
-              <h3>Discover peers</h3>
-              <p>
-                Layer 3 Tailscale status is the source of truth. You get interned
-                <code class="inline-code">Peer</code> objects, not raw id strings.
-              </p>
-            </article>
-            <article class="step">
-              <h3>Talk on purpose</h3>
-              <p>
-                Send namespaced messages, open TCP/QUIC, serve HTTP, or push files — always addressed
-                with a Peer (or a query that resolves to one).
-              </p>
-            </article>
-            <article class="step">
-              <h3>Ship features</h3>
-              <p>
-                Build chat, agent tooling, shared state, local dashboards, or device meshes without
-                operating a broker.
-              </p>
-            </article>
-          </div>
-
-          <div class="recipe" style="margin-top: 28px">
-            <div class="recipe-copy">
-              <span class="tag tag-good">Core idea</span>
-              <h3>Networking takes Peers</h3>
-              <p>
-                Discovery, events, and messages yield the <strong>same</strong>
-                <code class="inline-code">Peer</code> object for a live registry generation — so
-                <code class="inline-code">Map&lt;Peer, T&gt;</code> and <code class="inline-code">===</code>
-                work. You do not pick between ULID, Tailscale id, and hostname for the happy path.
-              </p>
-              <div class="callout">
-                <strong>deviceId is for persistence only</strong>
-                <p>
-                  Save <code class="inline-code">peer.deviceId</code> when non-null. Rebind next run with
-                  <code class="inline-code">mesh.peer(savedId, { waitMs })</code>. Do not persist
-                  <code class="inline-code">peer.ref</code>.
-                </p>
-              </div>
-            </div>
-            <figure class="diagram-card">
-              <div class="label">
-                <span>peer handle lifecycle</span>
-                <em>RFC 022</em>
-              </div>
-              <div class="diagram-body">
-                <svg viewBox="0 0 460 280" role="img" aria-label="Peer handle flow diagram">
-                  <rect width="460" height="280" rx="12" fill="#101816" />
-                  <!-- boxes -->
-                  <rect x="24" y="36" width="120" height="52" rx="12" fill="#173028" stroke="#3d8f72" />
-                  <text x="42" y="58" fill="#9de0c4" font-family="IBM Plex Mono, monospace" font-size="11">getPeers()</text>
-                  <text x="42" y="74" fill="#dce8e1" font-family="DM Sans, sans-serif" font-size="12">events · messages</text>
-
-                  <rect x="170" y="28" width="120" height="68" rx="12" fill="#1f3d33" stroke="#5ec9a4" stroke-width="1.6" />
-                  <text x="190" y="56" fill="#f4fffb" font-family="DM Sans, sans-serif" font-size="16" font-weight="600">Peer</text>
-                  <text x="190" y="76" fill="#8fb5a4" font-family="IBM Plex Mono, monospace" font-size="11">live handle</text>
-
-                  <rect x="316" y="36" width="120" height="52" rx="12" fill="#173028" stroke="#3d8f72" />
-                  <text x="334" y="58" fill="#9de0c4" font-family="IBM Plex Mono, monospace" font-size="11">send / dial</text>
-                  <text x="334" y="74" fill="#dce8e1" font-family="DM Sans, sans-serif" font-size="12">net · quic · http</text>
-
-                  <path d="M144 62 H166" stroke="#5ec9a4" stroke-width="2" />
-                  <path d="M290 62 H314" stroke="#5ec9a4" stroke-width="2" />
-
-                  <!-- fields -->
-                  <rect x="70" y="130" width="320" height="120" rx="14" fill="#15241e" stroke="#2a4036" />
-                  <text x="90" y="158" fill="#7f9187" font-family="IBM Plex Mono, monospace" font-size="11">always safe</text>
-                  <text x="90" y="180" fill="#e8f2ec" font-family="DM Sans, sans-serif" font-size="13">displayName · online · ip · hostname · os</text>
-                  <text x="90" y="210" fill="#7f9187" font-family="IBM Plex Mono, monospace" font-size="11">when known</text>
-                  <text x="90" y="232" fill="#e8f2ec" font-family="DM Sans, sans-serif" font-size="13">deviceId (ULID | null) — persist across restarts</text>
-                </svg>
-                <p class="diagram-caption">
-                  Routing keys stay inside the library. Prefer
-                  <code class="inline-code">mesh.peer('bob-laptop')</code> or handles from events.
-                </p>
-              </div>
-            </figure>
-          </div>
-        </div>
-      </section>
-
-      <!-- ═══════════════ ARCHITECTURE ═══════════════ -->
-      <section class="section" id="architecture" style="background: rgb(235 230 219 / 45%)">
-        <div class="wrap">
-          <div class="section-head">
-            <p class="eyebrow">Architecture</p>
-            <h2>Clean layers. One public Node surface.</h2>
-            <p class="lede">
-              Truffle’s core is deliberately layered so discovery, transport, sessions, and
-              application primitives stay separable — while your app mostly sees
-              <code class="inline-code">createMeshNode()</code>.
-            </p>
-          </div>
-
-          <div class="arch-grid">
-            <div class="layers" aria-label="Layered architecture">
-              <div class="layer">
-                <div class="layer-n l7">L7</div>
-                <div>
-                  <strong>Applications</strong>
-                  <span>Your code, CLI/TUI, React hooks, Tauri plugins, Swift (RFC 024) — chat, agents, dashboards, file workflows</span>
-                </div>
-              </div>
-              <div class="layer">
-                <div class="layer-n l6">L6</div>
-                <div>
-                  <strong>Envelope</strong>
-                  <span>Namespace-routed message framing over the session bus</span>
-                </div>
-              </div>
-              <div class="layer">
-                <div class="layer-n l5">L5</div>
-                <div>
-                  <strong>Session</strong>
-                  <span>Peer registry, lazy connections, reconnect, hello / identity</span>
-                </div>
-              </div>
-              <div class="layer">
-                <div class="layer-n l4">L4</div>
-                <div>
-                  <strong>Transport</strong>
-                  <span>WebSocket bus, TCP, UDP, QUIC — protocol traits under familiar JS namespaces</span>
-                </div>
-              </div>
-              <div class="layer">
-                <div class="layer-n l3">L3</div>
-                <div>
-                  <strong>Network (Tailscale)</strong>
-                  <span>Peer discovery via WatchIPNBus, WireGuard tunnels, MagicDNS — source of truth for online</span>
-                </div>
-              </div>
-            </div>
-
-            <aside class="stack-note">
-              <h3>What this means for you</h3>
-              <p>
-                You almost never think about layers. You think about products:
-              </p>
-              <ul>
-                <li><code>mesh.getPeers()</code> / <code>mesh.peer()</code> for devices</li>
-                <li><code>mesh.net</code> · <code>http</code> · <code>dgram</code> · <code>ws</code> · <code>quic</code> for protocols</li>
-                <li><code>send</code> / <code>fileTransfer</code> / <code>syncedStore</code> for app features</li>
-                <li><code>mesh.serve</code> to publish local HTTP to the whole tailnet</li>
-              </ul>
-              <p>
-                <code>PeerState.online</code> tracks Tailscale status.
-                <code>wsConnected</code> is advanced bus state — do not gate sends on it.
-              </p>
-            </aside>
-          </div>
-        </div>
-      </section>
-
-      <!-- ═══════════════ CAPABILITIES ═══════════════ -->
-      <section class="section" id="capabilities">
-        <div class="wrap">
-          <div class="section-head wide">
-            <p class="eyebrow">What you can build</p>
-            <h2>From raw sockets to whole local products.</h2>
-            <p class="lede">
-              Pick the altitude that matches the job. Low-level transports when you want protocol
-              control. Higher-level helpers when you want local-first workflows with less plumbing.
-            </p>
-          </div>
-
-          <div class="transport-grid" aria-label="Transport namespaces">
-            <a class="t-chip" href="#recipes">
-              <strong>TCP</strong>
-              <span><code>mesh.net</code> duplex streams &amp; servers</span>
-            </a>
-            <a class="t-chip" href="#recipes">
-              <strong>HTTP</strong>
-              <span><code>mesh.http</code> + Express / Fastify</span>
-            </a>
-            <a class="t-chip" href="#recipes">
-              <strong>UDP</strong>
-              <span><code>mesh.dgram</code> lightweight signals</span>
-            </a>
-            <a class="t-chip" href="#recipes">
-              <strong>WebSocket</strong>
-              <span><code>mesh.ws</code> via the <code>ws</code> package</span>
-            </a>
-            <a class="t-chip" href="#recipes">
-              <strong>QUIC</strong>
-              <span>many streams, no HOL blocking</span>
-            </a>
-          </div>
-
-          <div class="use-grid">
-            <article class="use">
-              <div class="use-num">01</div>
-              <div>
-                <h3>Device-to-device messaging</h3>
-                <p>Namespaced envelopes for chat, control planes, agent events, and RPC-style request/reply patterns.</p>
-              </div>
-            </article>
-            <article class="use">
-              <div class="use-num">02</div>
-              <div>
-                <h3>Verified file transfer</h3>
-                <p>Push and pull with offers, progress, and SHA-256 verification — great for ops tooling and local agents.</p>
-              </div>
-            </article>
-            <article class="use">
-              <div class="use-num">03</div>
-              <div>
-                <h3>Shared presence &amp; state</h3>
-                <p>Device-owned synced stores: each peer publishes its own versioned JSON slice, everyone observes the map.</p>
-              </div>
-            </article>
-            <article class="use">
-              <div class="use-num">04</div>
-              <div>
-                <h3>Serve apps on the tailnet</h3>
-                <p>
-                  Publish a local dev server, SPA, or Express app with <code class="inline-code">mesh.serve</code> /
-                  <code class="inline-code">mesh.http.createServer</code> — phone browsers included, no public internet.
-                </p>
-              </div>
-            </article>
-          </div>
-
-          <div class="recipe" id="recipes" style="margin-top: 28px">
-            <div class="recipe-copy">
-              <span class="tag tag-blue">Transport</span>
-              <h3>Node-style TCP over the mesh</h3>
-              <p>
-                Sockets are standard duplex streams. Replace the dial/listen layer; keep the rest of
-                your stream pipeline.
-              </p>
-              <p>
-                Same idea for HTTP, UDP, WebSocket, and QUIC — see the
-                <a href="./api.html#tcp">API reference</a> for full signatures.
-              </p>
-            </div>
-            <div class="terminal">
-              <div class="terminal-bar">
-                <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-                <span>echo-over-mesh.ts</span>
-              </div>
-              <pre><code>// Bob listens
-const server = mesh.net.createServer((socket) =&gt; {
-  socket.on('data', (chunk) =&gt; {
-    socket.write(Buffer.from('echo: ' + chunk.toString()));
-  });
-});
-server.listen(7000);
-
-// Alice dials a Peer handle
-const bob = await mesh.peer('bob-laptop', { waitMs: 5000 });
-if (!bob) throw new Error('bob not found');
-const socket = mesh.net.connect({ peer: bob, port: 7000 });
-socket.write('hello over private TCP');</code></pre>
-            </div>
-          </div>
-
-          <div class="recipe">
-            <div class="recipe-copy">
-              <span class="tag tag-warm">App API</span>
-              <h3>Messages, files, synced stores</h3>
-              <p>
-                Higher-level helpers share the same node and Peer model. Prefer handles from
-                <code class="inline-code">getPeers()</code>, events, or <code class="inline-code">mesh.peer()</code>.
-              </p>
-            </div>
-            <div class="terminal">
-              <div class="terminal-bar">
-                <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-                <span>app-primitives.ts</span>
-              </div>
-              <pre><code>// Namespaced messaging
-mesh.onMessage('chat', async (msg) =&gt; {
-  if (typeof msg.from === 'string') return;
-  console.log(msg.from.displayName, msg.payload);
-  await msg.from.sendJson('chat', { text: 'ack' });
-});
-
-// File transfer (PeerLike)
-const ft = mesh.fileTransfer();
-ft.onOffer((offer, responder) =&gt; {
-  responder.accept('/tmp/' + offer.fileName);
-});
-const peer = (await mesh.getPeers())[0];
-if (peer) await ft.sendFile(peer, './report.pdf', '/tmp/report.pdf');
-
-// Device-owned state
-const presence = mesh.syncedStore('presence');
-await presence.set({ status: 'editing', file: 'notes.md' });</code></pre>
-            </div>
-          </div>
-
-          <div class="recipe">
-            <div class="recipe-copy">
-              <span class="tag tag-good">Serve</span>
-              <h3>Publish a local service to the tailnet</h3>
-              <p>
-                Use <code class="inline-code">mesh.serve</code> when the bytes are a directory or another process.
-                Use <code class="inline-code">mesh.http.createServer</code> when you wrote the handler
-                (Express, Fastify, plain <code class="inline-code">node:http</code>).
-              </p>
-            </div>
-            <div class="terminal">
-              <div class="terminal-bar">
-                <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-                <span>serve-tailnet.ts</span>
-              </div>
-              <pre><code>// Expose a local Vite/API process
-const h = await mesh.serve({
-  port: 443,
-  target: 'http://localhost:3000',
-});
-console.log(h.url); // https://myapp.tail1234.ts.net
-
-// Or a static SPA + API under one origin
-await mesh.serve({
-  port: 443,
-  routes: {
-    '/api': 'http://localhost:8000',
-    '/': { dir: './public', fallback: '/index.html' },
-  },
-});</code></pre>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ═══════════════ QUICK START ═══════════════ -->
-      <section class="section" id="quickstart" style="background: rgb(235 230 219 / 45%)">
-        <div class="wrap">
-          <div class="section-head">
-            <p class="eyebrow">Quick start</p>
-            <h2>From install to first Peer in minutes.</h2>
-            <p class="lede">
-              Requires Node.js 18+ and Tailscale installed &amp; authenticated on the devices you
-              want to connect. First run opens or reports a Tailscale auth URL unless you pass an
-              auth key.
-            </p>
-          </div>
-
-          <div class="recipe">
-            <div class="recipe-copy">
-              <span class="tag tag-muted">1 · Install</span>
-              <h3>Add the package</h3>
-              <p>
-                Prebuilt native addon + sidecar binary are included. Add
-                <code class="inline-code">ws</code> only if you use <code class="inline-code">mesh.ws</code>.
-              </p>
-            </div>
-            <div class="terminal">
-              <div class="terminal-bar">
-                <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-                <span>shell</span>
-              </div>
-              <pre><code class="shell">pnpm add @vibecook/truffle
-pnpm add ws   # optional — only for mesh.ws</code></pre>
-            </div>
-          </div>
-
-          <div class="recipe">
-            <div class="recipe-copy">
-              <span class="tag tag-muted">2 · Join</span>
-              <h3>Create an app-scoped mesh node</h3>
-              <p>
-                <code class="inline-code">appId</code> is the isolation boundary. Different app IDs
-                do not see each other as Truffle peers, even on the same tailnet.
-              </p>
-            </div>
-            <div class="terminal">
-              <div class="terminal-bar">
-                <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-                <span>mesh.ts</span>
-              </div>
-              <pre><code>import { createMeshNode } from '@vibecook/truffle';
-
-const mesh = await createMeshNode({
-  appId: 'field-tools',
-  deviceName: 'alice-laptop',
-  onAuthRequired: (url) =&gt; console.log('Auth URL:', url),
-});
-
-console.log(mesh.getLocalInfo());
-for (const p of await mesh.getPeers()) {
-  console.log(p.displayName, p.online ? 'online' : 'offline');
-}</code></pre>
-            </div>
-          </div>
-
-          <div class="recipe">
-            <div class="recipe-copy">
-              <span class="tag tag-muted">3 · Talk</span>
-              <h3>Send with a Peer handle</h3>
-              <p>
-                Prefer handles. String overloads are <em>queries</em> (name, ULID, hostname, IP) —
-                not a multi-id protocol you must learn.
-              </p>
-            </div>
-            <div class="terminal">
-              <div class="terminal-bar">
-                <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-                <span>chat.ts</span>
-              </div>
-              <pre><code>mesh.onMessage('chat', async (msg) =&gt; {
-  if (typeof msg.from === 'string') return; // not interned yet
-  console.log(msg.from.displayName, msg.payload);
-  await msg.from.sendJson('chat', { text: 'ack' });
-});
-
-const bob = await mesh.peer('bob-laptop', { waitMs: 5000 });
-if (bob) await bob.sendJson('chat', { text: 'hello' });</code></pre>
-            </div>
-          </div>
-
-          <div class="callout" style="margin-top: 20px">
-            <strong>CLI companion</strong>
-            <p>
-              Humans and agents can also drive the mesh with
-              <code class="inline-code">truffle up</code>, <code class="inline-code">truffle ls</code>,
-              <code class="inline-code">truffle send</code>, <code class="inline-code">truffle cp</code>,
-              <code class="inline-code">truffle serve</code>,
-              and <code class="inline-code">truffle watch --json</code>. Apps should integrate the
-              JavaScript API; the CLI is for ops, debugging, and interactive use. Install with
-              <code class="inline-code">curl -fsSL https://vibecook-dev.github.io/truffle/install.sh | sh</code>
-              (or <code class="inline-code">install.ps1</code> on Windows).
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <!-- ═══════════════ PACKAGES ═══════════════ -->
-      <section class="section" id="packages">
-        <div class="wrap">
-          <div class="section-head">
-            <p class="eyebrow">Surfaces</p>
-            <h2>One mesh stack, several ways to ship.</h2>
-          </div>
-          <div class="pkg-grid">
-            <article class="pkg">
-              <span class="tag tag-good">JavaScript</span>
-              <code>@vibecook/truffle</code>
-              <p>Primary app API: <code>createMeshNode</code>, Peer handles, transports, files, stores, serve.</p>
-            </article>
-            <article class="pkg">
-              <span class="tag tag-blue">React</span>
-              <code>@vibecook/truffle-react</code>
-              <p><code>useMesh</code>, <code>useAuth</code>, and <code>useSyncedStore</code> over a started node.</p>
-            </article>
-            <article class="pkg">
-              <span class="tag tag-warm">CLI / TUI</span>
-              <code>truffle</code>
-              <p>Interactive mesh view, slash commands, <code>truffle serve</code>, file transfer, JSONL for agents.</p>
-            </article>
-            <article class="pkg">
-              <span class="tag tag-blue">Swift</span>
-              <code>apple/ · Truffle SPM</code>
-              <p>
-                Apple-native mesh core (RFC 024): Peers, envelopes, <code>MeshNode</code>, SwiftUI
-                <code>MeshModel</code>. Wire-compatible with desktop; live TailscaleKit backend still pending.
-              </p>
-            </article>
-            <article class="pkg">
-              <span class="tag tag-muted">Rust</span>
-              <code>truffle-core</code>
-              <p>Layered native core: network, transport, session, envelope, Node API.</p>
-            </article>
-            <article class="pkg">
-              <span class="tag tag-muted">Desktop</span>
-              <code>truffle-tauri-plugin</code>
-              <p>Tauri v2 plugin for shipping mesh-backed desktop apps.</p>
-            </article>
-            <article class="pkg">
-              <span class="tag tag-muted">Native bridge</span>
-              <code>@vibecook/truffle-native</code>
-              <p>NAPI-RS addon + platform sidecar binaries resolved at install time.</p>
-            </article>
-          </div>
-        </div>
-      </section>
-
-      <!-- ═══════════════ CTA ═══════════════ -->
-      <section class="section tight">
-        <div class="wrap">
-          <div class="cta-band">
+        <div class="rule"></div>
+        <ul class="specs" aria-label="transports">
+          <li>transports</li>
+          <li>mesh.net</li>
+          <li>mesh.http</li>
+          <li>mesh.dgram</li>
+          <li>mesh.ws</li>
+          <li>mesh.quic</li>
+        </ul>
+        <div class="rule"></div>
+        <section class="sec">
+        <header>
+          <h2>Four commands, two machines.</h2>
+          <p>The CLI joins the same mesh your code does. List the devices, send a message, copy a file, publish a port.</p>
+        </header>
+        <figure class="plate">
+          <div class="wide"><img class="only-light" src="assets/img/demo-light.svg" width="0" height="1000" alt="The truffle CLI: list peers, send a message, copy a file with a verified hash, and publish a local server on the tailnet" loading="lazy" decoding="async" /><img aria-hidden="true" class="only-dark" src="assets/img/demo-dark.svg" width="0" height="1000" alt="" loading="lazy" decoding="async" /></div>
+          
+        </figure>
+        </section>
+        <div class="rule"></div>
+        <section class="sec">
+        <header>
+          <h2 id="start">Hello, mesh.</h2>
+          <p>All you need is a Tailscale account. truffle brings its own Tailscale node, and the first run opens a sign-in link.</p>
+        </header>
+        <div class="two">
+          <div class="steps">
             <div>
-              <p class="eyebrow" style="color: #7fd4b4">Next</p>
-              <h2>Read the API map, then build something on your tailnet.</h2>
-              <p>
-                The reference documents every namespace, option, and Peer rule — with the same design
-                language as this guide.
-              </p>
+              <h3>In your app</h3>
+              <p>Node.js 18 or later.</p>
+              <div class="cmd"><code>pnpm add @vibecook/truffle</code></div>
             </div>
-            <div class="actions">
-              <a class="btn btn-primary" href="./api.html">Open API reference</a>
-              <a class="btn btn-secondary" href="https://github.com/vibecook-dev/truffle/tree/main/examples">Browse examples</a>
-              <a class="btn btn-ghost" href="https://github.com/vibecook-dev/truffle/tree/main/apple">Swift package →</a>
+            <div>
+              <h3>The CLI</h3>
+              <p>macOS and Linux. On Windows, run the second line in PowerShell.</p>
+              <div class="cmd"><code>curl -fsSL https://vibecook-dev.github.io/truffle/install.sh | sh</code></div>
+              <div class="cmd"><code>iwr -useb https://vibecook-dev.github.io/truffle/install.ps1 | iex</code></div>
             </div>
           </div>
+          <div class="code"><header><div role="tablist" aria-label="Files"><button type="button" role="tab" id="code-1-t0" aria-controls="code-1-p0" aria-selected="true">mesh.ts</button><button type="button" role="tab" id="code-1-t1" aria-controls="code-1-p1" aria-selected="false" tabindex="-1">Package.swift</button><button type="button" role="tab" id="code-1-t2" aria-controls="code-1-p2" aria-selected="false" tabindex="-1">Rust</button></div></header><pre id="code-1-p0" role="tabpanel" aria-labelledby="code-1-t0" tabindex="0"><code><span class="k">import</span> { createMeshNode } <span class="k">from</span> <span class="s">'@vibecook/truffle'</span>;
+
+<span class="k">const</span> mesh = <span class="k">await</span> createMeshNode({ appId: <span class="s">'notes'</span> });
+
+<span class="c">// Hear from every device running the same app</span>
+mesh.onMessage(<span class="s">'chat'</span>, (msg) =&gt; console.log(msg.payload));
+
+<span class="c">// Find one, and talk to it</span>
+<span class="k">const</span> bob = <span class="k">await</span> mesh.peer(<span class="s">'bob-laptop'</span>, { waitMs: 5000 });
+<span class="k">await</span> bob?.sendJson(<span class="s">'chat'</span>, { text: <span class="s">'hello'</span> });
+
+<span class="c">// Or use the sockets you already know</span>
+mesh.net.createServer((socket) =&gt; socket.pipe(socket)).listen(7000);</code></pre><pre id="code-1-p1" role="tabpanel" aria-labelledby="code-1-t1" hidden tabindex="0"><code><span class="c">// iOS 18.1 and later</span>
+.package(url: <span class="s">"https://github.com/vibecook-dev/truffle.git"</span>, from: <span class="s">"0.7.7"</span>)</code></pre><pre id="code-1-p2" role="tabpanel" aria-labelledby="code-1-t2" hidden tabindex="0"><code>cargo add truffle</code></pre></div>
         </div>
-      </section>
+        </section>
+        <div class="rule"></div>
+        <section class="sec">
+        <header>
+          <h2>No server in the middle.</h2>
+          <p>Tailscale carries the bytes and knows who everyone is. truffle gives your code the APIs.</p>
+        </header>
+        <figure class="plate">
+          <div class="wide"><img class="only-light" src="assets/img/direct-light.svg" width="0" height="1000" alt="Without truffle, two devices talk through a relay server you run. With truffle, they talk directly over WireGuard." loading="lazy" decoding="async" /><img aria-hidden="true" class="only-dark" src="assets/img/direct-dark.svg" width="0" height="1000" alt="" loading="lazy" decoding="async" /></div>
+          
+        </figure>
+        </section>
+        <div class="rule"></div>
+        <section class="sec">
+        <header>
+          <h2>What you get.</h2>
+          
+        </header>
+        <ul class="tiles">
+          <li>
+            <img class="only-light" src="assets/img/tile-transports-light.svg" width="0" height="320" alt="" loading="lazy" decoding="async" /><img aria-hidden="true" class="only-dark" src="assets/img/tile-transports-dark.svg" width="0" height="320" alt="" loading="lazy" decoding="async" />
+            <h3>Five transports</h3>
+            <p><code>mesh.net</code>, <code>http</code>, <code>dgram</code>, <code>ws</code> and <code>quic</code>, shaped like the Node.js modules.</p>
+          </li>
+          <li>
+            <img class="only-light" src="assets/img/tile-peers-light.svg" width="0" height="320" alt="" loading="lazy" decoding="async" /><img aria-hidden="true" class="only-dark" src="assets/img/tile-peers-dark.svg" width="0" height="320" alt="" loading="lazy" decoding="async" />
+            <h3>Peers</h3>
+            <p>Devices running your app find each other. You hold a <code>Peer</code>, not an address.</p>
+          </li>
+          <li>
+            <img class="only-light" src="assets/img/tile-messages-light.svg" width="0" height="320" alt="" loading="lazy" decoding="async" /><img aria-hidden="true" class="only-dark" src="assets/img/tile-messages-dark.svg" width="0" height="320" alt="" loading="lazy" decoding="async" />
+            <h3>Messages</h3>
+            <p><code>peer.sendJson('chat', …)</code>, routed by namespace. Send to one peer or broadcast to all.</p>
+          </li>
+          <li>
+            <img class="only-light" src="assets/img/tile-files-light.svg" width="0" height="320" alt="" loading="lazy" decoding="async" /><img aria-hidden="true" class="only-dark" src="assets/img/tile-files-dark.svg" width="0" height="320" alt="" loading="lazy" decoding="async" />
+            <h3>Files</h3>
+            <p>Send a file to a peer. Every transfer is checked with SHA-256.</p>
+          </li>
+          <li>
+            <img class="only-light" src="assets/img/tile-stores-light.svg" width="0" height="320" alt="" loading="lazy" decoding="async" /><img aria-hidden="true" class="only-dark" src="assets/img/tile-stores-dark.svg" width="0" height="320" alt="" loading="lazy" decoding="async" />
+            <h3>Synced stores</h3>
+            <p>Each device owns its slice of the state and sees everyone else's.</p>
+          </li>
+          <li>
+            <img class="only-light" src="assets/img/tile-serve-light.svg" width="0" height="320" alt="" loading="lazy" decoding="async" /><img aria-hidden="true" class="only-dark" src="assets/img/tile-serve-dark.svg" width="0" height="320" alt="" loading="lazy" decoding="async" />
+            <h3>Serve</h3>
+            <p><code>mesh.serve()</code> puts a local port or folder on your tailnet, with HTTPS.</p>
+          </li>
+        </ul>
+        </section>
+        <div class="rule"></div>
+        <section class="sec">
+        <header>
+          <h2>How it works.</h2>
+          <p>The same layers on each device, with Tailscale underneath carrying the bytes.</p>
+        </header>
+        <figure class="plate">
+          <div class="wide"><img class="only-light" src="assets/img/stack-light.svg" width="0" height="1000" alt="truffle's layers on two devices: your app, the Node API, Envelope, Session, Transport, Network and the Go sidecar, with Tailscale carrying the bytes underneath" loading="lazy" decoding="async" /><img aria-hidden="true" class="only-dark" src="assets/img/stack-dark.svg" width="0" height="1000" alt="" loading="lazy" decoding="async" /></div>
+          
+        </figure>
+        <p class="after"><code>appId</code> is the boundary: devices only see peers running the same app. One exception is HTTP you publish with <code>mesh.serve</code>, which your whole tailnet can open.</p>
+        </section>
+        <div class="rule"></div>
+        <section class="sec">
+        <header>
+          <h2>Measure it yourself.</h2>
+          <p>truffle bench runs ten workloads between your own machines.</p>
+        </header>
+        <figure class="plate shot">
+          <div class="wide"><img class="only-light" src="assets/img/bench-light.png" width="2560" height="1600" alt="The truffle bench desktop app during a TCP throughput run, with a live goodput chart" loading="lazy" decoding="async" /><img aria-hidden="true" class="only-dark" src="assets/img/bench-dark.png" width="2560" height="1600" alt="" loading="lazy" decoding="async" /></div>
+          <figcaption>Shown with its built-in demo data. <a href="https://github.com/vibecook-dev/truffle/blob/main/benchmark/README.md">Methods and results</a></figcaption>
+        </figure>
+        </section>
+        <div class="rule"></div>
+        <section class="sec">
+        <header>
+          <h2>Packages.</h2>
+          <p>Runs on macOS, Linux and Windows. The Swift package runs on iOS 18.1 and later.</p>
+        </header>
+        <div class="scroll">
+          <table>
+            <thead><tr><th scope="col">Package</th><th scope="col">Where</th><th scope="col">What</th></tr></thead>
+            <tbody>
+              <tr><td><a href="https://github.com/vibecook-dev/truffle/tree/main/packages/core"><code>@vibecook/truffle</code></a></td><td>npm</td><td>The JavaScript and TypeScript API</td></tr>
+              <tr><td><a href="https://github.com/vibecook-dev/truffle/tree/main/packages/react"><code>@vibecook/truffle-react</code></a></td><td>npm</td><td>React hooks: <code>useMesh</code>, <code>useAuth</code>, <code>useSyncedStore</code></td></tr>
+              <tr><td><a href="https://github.com/vibecook-dev/truffle/tree/main/crates/truffle-cli"><code>truffle</code></a> CLI</td><td>install script</td><td>14 commands and an interactive TUI, with <code>--json</code> for agents</td></tr>
+              <tr><td><a href="https://github.com/vibecook-dev/truffle/tree/main/crates/truffle"><code>truffle</code></a>, <a href="https://github.com/vibecook-dev/truffle/tree/main/crates/truffle-core"><code>truffle-core</code></a></td><td>crates.io</td><td>The Rust core</td></tr>
+              <tr><td><a href="https://github.com/vibecook-dev/truffle/tree/main/apple">Truffle Swift</a></td><td>SwiftPM</td><td>The same mesh on iOS, wire compatible</td></tr>
+              <tr><td><a href="https://github.com/vibecook-dev/truffle/tree/main/crates/truffle-tauri-plugin"><code>truffle-tauri-plugin</code></a></td><td>the repository</td><td>Tauri v2 plugin</td></tr>
+              <tr><td><a href="https://github.com/vibecook-dev/truffle/tree/main/benchmark">truffle bench</a></td><td>the repository</td><td>Benchmark engine, CLI and desktop app</td></tr>
+            </tbody>
+          </table>
+        </div>
+        </section>
+        <div class="rule"></div>
+        <section class="sec">
+        <header>
+          <h2>Keep reading.</h2>
+          
+        </header>
+        <dl class="facts">
+          <dt><a href="api.html">API reference</a></dt>
+          <dd>Every namespace, option and Peer rule.</dd>
+          <dt><a href="https://github.com/vibecook-dev/truffle/tree/main/examples">Examples</a></dt>
+          <dd>Ten runnable demos: discovery, chat, shared state, netcat over TCP, QUIC streams, Express over the mesh, a static site with an API, exposing a dev server, WebSocket chat, and an Electron playground.</dd>
+          <dt><a href="https://github.com/vibecook-dev/truffle/blob/main/docs/guide/serving-http.md">Serving HTTP</a></dt>
+          <dd>Publishing a port, a folder or a set of routes with <code>mesh.serve</code>.</dd>
+          <dt><a href="https://github.com/vibecook-dev/truffle/blob/main/docs/API-STABILITY.md">API stability</a></dt>
+          <dd>What is stable, and what can still change.</dd>
+          <dt><a href="https://github.com/vibecook-dev/truffle/tree/main/docs/rfcs">RFCs</a></dt>
+          <dd>The design record behind each part.</dd>
+          <dt><a href="https://github.com/vibecook-dev/truffle/blob/main/CHANGELOG.md">Changelog</a></dt>
+          <dd>What changed in each release.</dd>
+        </dl>
+        </section>
+      </div>
     </main>
-
-    <footer class="footer">
-      <span>Truffle · MIT License · Simple network programming on Tailscale</span>
-      <span>
-        <a href="./api.html">API</a>
-        ·
-        <a href="https://github.com/vibecook-dev/truffle">GitHub</a>
-        ·
-        <a href="https://github.com/vibecook-dev/truffle/tree/main/docs/rfcs">RFCs</a>
-      </span>
+    <footer class="sheet">
+      <div class="rule"></div>
+      <div class="foot">
+        <h2>From the same kitchen</h2>
+        <ul class="family">
+          <li><a href="./" aria-current="true"><svg viewBox="78 81.6 97.3 92.4" aria-hidden="true"><path d="M98.7047 139.617C106.418 139.221 112.734 142.28 115.58 149.86C117.317 154.6 117.123 159.84 115.043 164.441C112.429 170.124 109.319 171.949 103.904 173.973C78.6944 173.479 77.9612 146.947 98.7047 139.617Z"/><path d="M150.179 139.544C157.989 139.03 165.208 141.278 169.298 148.47C171.499 152.293 172.023 156.854 170.749 161.073C169.041 166.544 165.457 169.115 160.681 171.462C156.545 172.556 152.986 173.024 148.906 171.363C144.771 169.682 141.551 166.314 140.057 162.115C136.569 152.556 140.327 142.88 150.179 139.544Z"/><path d="M153.255 82.222C156.898 81.932 159.93 81.6024 163.312 83.5272C171.276 88.0557 175.255 100.719 170.344 108.734C167.683 113.078 164.427 114.014 159.814 115.174C136.98 115.254 132.989 91.3912 153.255 82.222Z"/><path d="M100.043 82.3538C108.871 81.6419 116.625 88.1679 117.433 96.9877C118.24 105.808 111.801 113.632 102.991 114.542C97.2021 115.135 91.5383 112.577 88.1625 107.838C84.7874 103.098 84.2203 96.9086 86.679 91.6351C89.137 86.3617 94.241 82.8153 100.043 82.3538Z"/></svg><b>truffle</b><span>Your devices, talking to each other directly.</span></a></li>
+          <li><a href="https://vibecook-dev.github.io/ghosttea/"><svg viewBox="58.38 83 143.05 89.17" aria-hidden="true"><path d="M171.248 132.926C177.368 132.314 188.177 132.91 193.706 136.051C201.428 140.438 195.492 150.182 191.834 155.314C184.652 165.39 175.461 168.599 163.661 170.443C152.434 171.701 127.066 171.966 138.553 153.451C146.292 140.978 157.66 136.293 171.248 132.926Z"/><path d="M79.2576 134.961C88.7607 134.158 97.3116 136.73 104.744 142.678C121.595 156.162 129.11 170.343 100.815 172.174C85.6558 171.268 70.2767 165.523 62.1029 151.863C60.5804 149.319 58.3782 145.378 59.1648 142.448C63.407 138.277 73.4771 136.182 79.2576 134.961Z"/><path d="M127.372 83C140.064 88.2326 149.556 122.874 141.698 134.595C138.354 139.583 133.449 144.51 128.724 148.158C118.647 147.63 113.299 133.04 112.116 124.546C110.012 109.454 118.522 94.4875 127.372 83Z"/></svg><b>ghosttea</b><span>The Ghostty terminal experience, inside your app.</span></a></li>
+          <li><a href="https://vibecook-dev.github.io/mille/"><svg viewBox="70.57 75 120.63 107.34" aria-hidden="true"><path d="M128.651 75C131.634 75.6963 177.883 133.951 183.236 141.676L182.39 143.16C174.875 146.964 142.347 143.352 131.518 143.016C111.446 142.892 91.469 144.227 71.3885 143.567C80.4137 131.043 91.0678 118.833 101.109 107.046C109.988 96.6225 119.374 84.9839 128.651 75Z"/><path d="M167.846 154.381C185.143 154.085 191.201 172.394 175.234 180.899C156.801 182.342 152.991 159.248 167.846 154.381Z"/><path d="M79.8215 156.238C91.3465 155.191 98.2357 162.371 95.0299 174.588C94.0348 178.379 89.9894 179.932 86.5509 181.46C84.6362 181.589 81.6823 181.454 79.8997 180.847C76.6053 179.752 73.8849 177.388 72.3402 174.28C70.7738 171.143 70.5714 167.499 71.781 164.208C73.4846 159.473 75.7031 158.27 79.8215 156.238Z"/><path d="M125.393 154.309C141.945 154.48 145.686 171.751 130.892 179.889C111.89 178.768 110.897 163.247 125.393 154.309Z"/></svg><b>mille</b><span>The file tree for the editor you are building.</span></a></li>
+        </ul>
+        <dl class="block">
+          <div><dt>part</dt><dd class="title">truffle</dd></div>
+          <div><dt>version</dt><dd><a href="https://www.npmjs.com/package/@vibecook/truffle" data-npm="@vibecook/truffle">latest</a></dd></div>
+          <div><dt>licence</dt><dd><a href="https://github.com/vibecook-dev/truffle/blob/main/LICENSE">MIT</a></dd></div>
+          <div><dt>drawn by</dt><dd><a href="https://github.com/jamesyong-42"><svg class="jy" viewBox="0 0 14107.04 1105.36" role="img" aria-label="James Yong"><path d="M0 555.36a531 531 0 1 1 1062 0a531 531 0 1 1 -1062 0ZM1122 1065.36L2285 1065.36L1703.5 3.36ZM2463 1055.36L3463 1055.36L3463 55.36L2463 55.36ZM5063 55.36L5063 776.79L5062.64 791.51L5061.56 806.19L5059.75 820.8L5057.24 835.31L5054.01 849.68L5050.08 863.87L5045.46 877.85L5040.16 891.59L5034.2 905.05L5027.58 918.2L5020.32 931.02L5012.44 943.46L5003.96 955.5L4994.9 967.1L4985.29 978.25L4975.13 988.92L4964.47 999.07L4953.32 1008.69L4941.71 1017.75L4929.67 1026.23L4917.23 1034.1L4904.42 1041.36L4891.27 1047.98L4877.81 1053.95L4864.07 1059.25L4850.09 1063.87L4835.89 1067.8L4821.53 1071.02L4807.02 1073.54L4792.41 1075.34L4777.72 1076.42L4763 1076.79L4748.28 1076.42L4733.59 1075.34L4718.98 1073.54L4704.47 1071.02L4690.11 1067.8L4675.91 1063.87L4661.93 1059.25L4648.19 1053.95L4634.73 1047.98L4621.58 1041.36L4608.77 1034.1L4596.33 1026.23L4584.29 1017.75L4572.68 1008.69L4561.53 999.07L4550.87 988.92L4540.71 978.25L4531.1 967.1L4522.04 955.5L4513.56 943.46L4505.68 931.02L4498.42 918.2L4491.8 905.05L4485.84 891.59L4480.54 877.85L4475.92 863.87L4471.99 849.68L4468.76 835.31L4466.25 820.8L4464.44 806.19L4463.36 791.51L4463 776.79L4636.29 776.79L4636.44 783.89L4636.9 790.97L4637.66 798.02L4638.72 805.02L4640.08 811.95L4641.74 818.79L4643.69 825.54L4645.93 832.17L4648.45 838.66L4651.25 845L4654.31 851.18L4657.64 857.18L4661.22 862.99L4665.05 868.59L4669.11 873.97L4673.4 879.11L4677.9 884.01L4682.61 888.65L4687.52 893.02L4692.6 897.11L4697.86 900.91L4703.27 904.41L4708.82 907.61L4714.51 910.48L4720.31 913.04L4726.22 915.27L4732.21 917.16L4738.28 918.72L4744.41 919.93L4750.58 920.8L4756.78 921.33L4763 921.5L4769.22 921.33L4775.42 920.8L4781.59 919.93L4787.72 918.72L4793.79 917.16L4799.78 915.27L4805.69 913.04L4811.49 910.48L4817.18 907.61L4822.73 904.41L4828.14 900.91L4833.4 897.11L4838.48 893.02L4843.39 888.65L4848.1 884.01L4852.6 879.11L4856.89 873.97L4860.95 868.59L4864.78 862.99L4868.36 857.18L4871.69 851.18L4874.75 845L4877.55 838.66L4880.07 832.17L4882.31 825.54L4884.26 818.79L4885.92 811.95L4887.28 805.02L4888.34 798.02L4889.1 790.97L4889.56 783.89L4889.71 776.79L4889.71 55.36ZM5473.07 798.21H6001.64L5969.5 656.07H5505.21ZM5734.5 338.21 5893.78 709.29 5897 751.07 6032.71 1055.36H6223.78L5734.5 0L5245.21 1055.36H5436.28L5574.86 742.14L5577.36 705ZM6597.87 446.43 6902.51 962.5 7207.15 446.43 7275.72 1055.36H7450.72L7313.22 5.36L6902.51 683.57L6491.8 5.36L6354.3 1055.36H6529.3ZM7790.35 1055.36H8294.63V907.14H7790.35ZM7790.35 203.57H8294.63V55.36H7790.35ZM7790.35 592.86H8266.06V446.43H7790.35ZM7685.71 55.36V1055.36H7851.78V55.36ZM8559.37 733.21 8433.65 821.07Q8466.87 889.29 8522.76 948.04Q8578.65 1006.79 8653.65 1041.79Q8728.65 1076.79 8816.51 1076.79Q8880.8 1076.79 8940.26 1056.43Q8999.72 1036.07 9046.87 997.86Q9094.01 959.64 9121.33 904.11Q9148.65 848.57 9148.65 778.57Q9148.65 712.5 9126.15 663.57Q9103.65 614.64 9066.87 578.75Q9030.08 542.86 8985.08 518.39Q8940.08 493.93 8895.08 477.86Q8815.08 450 8764.9 422.86Q8714.72 395.71 8691.33 364.64Q8667.94 333.57 8667.94 295Q8667.94 252.5 8700.97 220.18Q8734.01 187.86 8803.3 187.86Q8854.01 187.86 8891.69 207.5Q8929.37 227.14 8957.76 259.11Q8986.15 291.07 9005.8 327.86L9142.22 250.71Q9117.22 198.21 9072.05 149.46Q9026.87 100.71 8961.15 69.11Q8895.44 37.5 8806.15 37.5Q8716.87 37.5 8645.8 71.25Q8574.72 105 8533.65 165.71Q8492.58 226.43 8492.58 306.79Q8492.58 377.14 8519.37 426.43Q8546.15 475.71 8587.76 509.46Q8629.37 543.21 8675.26 564.82Q8721.15 586.43 8757.94 599.64Q8821.15 622.5 8869.19 645.89Q8917.22 669.29 8944.19 702.86Q8971.15 736.43 8971.15 791.79Q8971.15 851.43 8928.3 888.39Q8885.44 925.36 8816.15 925.36Q8760.08 925.36 8713.83 901.43Q8667.58 877.5 8629.9 834.11Q8592.22 790.71 8559.37 733.21ZM10360.17 55.36 10126.96 483.21 9894.82 55.36H9701.96L10041.96 635.36V1055.36H10213.39V633.57L10553.03 55.36ZM10861.69 555.36Q10861.69 452.14 10905.44 371.96Q10949.19 291.79 11025.98 245.54Q11102.76 199.29 11201.69 199.29Q11302.76 199.29 11378.84 245.54Q11454.91 291.79 11498.3 371.96Q11541.69 452.14 11541.69 555.36Q11541.69 658.21 11497.94 738.57Q11454.19 818.93 11377.94 865.18Q11301.69 911.43 11201.69 911.43Q11102.76 911.43 11025.98 865.18Q10949.19 818.93 10905.44 738.57Q10861.69 658.21 10861.69 555.36ZM10682.05 555.36Q10682.05 666.79 10720.62 762.32Q10759.19 857.86 10829.19 928.04Q10899.19 998.21 10994.37 1037.5Q11089.55 1076.79 11201.69 1076.79Q11314.91 1076.79 11409.55 1037.5Q11504.19 998.21 11574.19 928.04Q11644.19 857.86 11682.76 762.32Q11721.34 666.79 11721.34 555.36Q11721.34 442.86 11682.59 348.39Q11643.84 253.93 11573.48 184.46Q11503.12 115 11408.66 76.25Q11314.19 37.5 11201.69 37.5Q11090.98 37.5 10995.98 76.25Q10900.98 115 10830.62 184.46Q10760.26 253.93 10721.16 348.39Q10682.05 442.86 10682.05 555.36ZM12688.55 55.36V726.79L11958.2 5.36V1055.36H12124.27V383.93L12854.63 1105.36V55.36ZM13625.73 675H13931.8Q13918.95 725.71 13893.41 770Q13867.87 814.29 13829.48 848.21Q13791.09 882.14 13738.05 900.89Q13685.02 919.64 13618.59 919.64Q13520.02 919.64 13441.27 873.93Q13362.52 828.21 13316.45 746.07Q13270.37 663.93 13270.37 555.36Q13270.37 445.36 13317.16 364.82Q13363.95 284.29 13442.87 239.46Q13521.8 194.64 13618.59 194.64Q13722.16 194.64 13795.73 237.32Q13869.3 280 13911.09 351.79L14048.59 260Q14003.95 190 13940.73 140.54Q13877.52 91.07 13797.16 64.29Q13716.8 37.5 13618.59 37.5Q13505.73 37.5 13409.48 75Q13313.23 112.5 13241.98 181.61Q13170.73 250.71 13131.27 345.89Q13091.8 441.07 13091.8 555.36Q13091.8 669.64 13130.73 765.36Q13169.66 861.07 13240.2 930.89Q13310.73 1000.71 13406.45 1038.75Q13502.16 1076.79 13615.02 1076.79Q13734.66 1076.79 13827.7 1033.39Q13920.73 990 13983.95 914.29Q14047.16 838.57 14078.41 740.54Q14109.66 642.5 14106.8 532.14H13625.73Z"/></svg></a></dd></div>
+          <div><dt>sheet</dt><dd><a href="./" aria-current="page">Guide</a> &nbsp; <a href="api.html">API</a></dd></div>
+        </dl>
+        <p class="legal"><a href="https://github.com/vibecook-dev/truffle/blob/main/LICENSE">MIT</a> © 2026 James Yong. truffle is a <a href="https://github.com/vibecook-dev">vibecook</a> project, built independently on Tailscale and not affiliated with Tailscale Inc.</p>
+      </div>
     </footer>
-
-    <script>
-      (function () {
-        "use strict";
-        var KW =
-          "\\b(?:import|from|export|default|const|let|var|for|of|in|return|if|else|switch|case|break|new|function|type|interface|extends|implements|as|await|async|typeof|instanceof|void|true|false|null|undefined|this|readonly|satisfies|try|catch|throw|while|do|class)\\b";
-        var JS_RE = new RegExp(
-          "(\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/)" +
-            "|(`(?:\\\\.|[^`\\\\])*`|\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*')" +
-            "|(\\b\\d[\\d_.eExXa-fA-F]*\\b)" +
-            "|(" + KW + ")" +
-            "|(\\b[A-Z][A-Za-z0-9_]*\\b)" +
-            "|([a-z_$][\\w$]*)(?=\\s*\\()",
-          "g"
-        );
-        var SH_RE =
-          /(#.*$)|("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|(\b\d[\d_.]*\b)|(\b(?:pnpm|npm|yarn|curl|iwr|brew|truffle|node|npx|sh|iex)\b)/gm;
-        var LT = String.fromCharCode(60);
-        var GT = String.fromCharCode(62);
-
-        function esc(s) {
-          return s.replace(/&/g, "&amp;").split(LT).join("&lt;").split(GT).join("&gt;");
-        }
-        function tok(cls, text) {
-          return LT + 'span class="' + cls + '">' + text + LT + "/span" + GT;
-        }
-        function highlight(raw, re, shell) {
-          var out = "";
-          var last = 0;
-          var m;
-          re.lastIndex = 0;
-          while ((m = re.exec(raw))) {
-            out += esc(raw.slice(last, m.index));
-            if (m[1]) out += tok("tok-c", esc(m[1]));
-            else if (m[2]) out += tok("tok-s", esc(m[2]));
-            else if (m[3]) out += tok("tok-n", esc(m[3]));
-            else if (m[4]) out += tok(shell ? "tok-f" : "tok-k", esc(m[4]));
-            else if (m[5]) out += tok("tok-t", esc(m[5]));
-            else if (m[6]) out += tok("tok-f", esc(m[6]));
-            last = re.lastIndex;
-          }
-          return out + esc(raw.slice(last));
-        }
-        function looksShell(raw, code) {
-          return (
-            code.classList.contains("shell") ||
-            /^(\s*#|pnpm |npm |yarn |curl |iwr |brew |truffle )/m.test(raw)
-          );
-        }
-        document.querySelectorAll("pre > code").forEach(function (code) {
-          if (code.dataset.hl === "1") return;
-          var raw = code.textContent || "";
-          code.innerHTML = looksShell(raw, code)
-            ? highlight(raw, SH_RE, true)
-            : highlight(raw, JS_RE, false);
-          code.dataset.hl = "1";
-        });
-      })();
-    </script>
   </body>
 </html>
