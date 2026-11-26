@@ -265,8 +265,7 @@ export function toMeshPeerEvent(reg: PeerRegistry, raw: NapiPeerEvent): MeshPeer
  * @internal — exported for unit tests only.
  */
 export function wrapFileTransfer(ft: NapiFileTransfer): MeshFileTransfer {
-  // Same shadowing rule as the node itself: bind the native method before
-  // the own-property assignment or the wrapper calls itself.
+  // Capture the native methods before replacing them on this file-transfer handle.
   const nativeSendFile = ft.sendFile.bind(ft);
   const nativePullFile = ft.pullFile.bind(ft);
   const nativePullNamedFile = ft.pullNamedFile.bind(ft);

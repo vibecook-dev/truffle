@@ -60,10 +60,9 @@ Pass a different stream count as a third argument: `bench device-a-name 9420 16`
 All diagnostics (connection status, errors) print to **stderr**; timing
 results print to **stdout**.
 
-Ports 443 and 9417 are reserved by truffle's internal transports, and
-`mesh.quic.listen` doesn't support port `0` (no ephemeral-port allocation
-over the tsnet relay yet) — pick an explicit port; this example suggests
-9420+.
+Run `serve 0` to let the tailnet assign a port. Use the port printed by the
+server for `bench <peer> <port>`. You can also choose a port such as 443 or
+9420. Only the configured session WebSocket port (default 9417) is reserved.
 
 ## Caveats
 

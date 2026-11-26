@@ -866,9 +866,8 @@ pub(crate) async fn connect_raw<N: NetworkProvider + 'static>(
 
 /// Listen for raw QUIC connections on `port`.
 ///
-/// Port 0 is only meaningful on the direct-socket fallback path (tests) —
-/// over the tsnet relay the actual ephemeral port cannot be reported back,
-/// so `Node::listen_quic` rejects port 0 before reaching here.
+/// Port 0 requests an ephemeral port. The listener reports the port assigned
+/// by tsnet, or the local socket port for loopback test providers.
 pub(crate) async fn listen_raw<N: NetworkProvider + 'static>(
     network: &Arc<N>,
     port: u16,

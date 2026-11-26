@@ -18,8 +18,8 @@
 //! short string id (`uuid` v4 with a kind prefix, matching the file-transfer
 //! token scheme).
 //!
-//! Ports 443 and 9417 are reserved and rejected by the core `listen_*` calls;
-//! errors surface verbatim as `Result<_, String>` strings.
+//! The core listener APIs reserve the configured session WebSocket port
+//! (default 9417). Their errors surface as `Result<_, String>`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -337,7 +337,7 @@ pub async fn tcp_close(state: State<'_, TruffleState>, socket_id: String) -> Res
 /// Listen for raw TCP connections on a port (RFC 021).
 ///
 /// Port 0 binds an ephemeral port — read the resolved value from the returned
-/// `port`. Ports 443 and 9417 are reserved.
+/// `port`. Only the session WebSocket port (default 9417) is reserved.
 #[command]
 pub async fn tcp_listen(
     state: State<'_, TruffleState>,
@@ -816,8 +816,8 @@ pub async fn quic_close(
 
 /// Listen for raw QUIC connections on a port (RFC 021).
 ///
-/// Ports 443 and 9417 are reserved; port 0 is not supported over the tsnet
-/// relay — choose an explicit port.
+/// Pass 0 to choose an ephemeral tailnet port. The result contains the
+/// assigned port. Only the session WebSocket port (default 9417) is reserved.
 #[command]
 pub async fn quic_listen(
     state: State<'_, TruffleState>,
