@@ -18,7 +18,7 @@ async function load() {
 
 /** A mock NapiProxy recording add/remove and capturing the onEvent callback. */
 function mockProxy() {
-  const state = { added: [], removed: [], eventCb: null };
+  const state = { added: [], updated: [], removed: [], eventCb: null };
   const proxy = {
     async add(config) {
       state.added.push(config);
@@ -33,6 +33,9 @@ function mockProxy() {
         url: `https://myapp.tail1234.ts.net${suffix}`,
         status: 'running',
       };
+    },
+    async update(id, update) {
+      state.updated.push({ id, update });
     },
     async remove(id) {
       state.removed.push(id);
@@ -299,7 +302,7 @@ test('config must have exactly one of target / dir / routes', async () => {
     () => normalizeServeConfig({ port: 443, target: 'http://x', dir: './p' }),
     /exactly one/,
   );
-  assert.throws(() => normalizeServeConfig({ port: 443, routes: {} }), /at least one entry/);
+  assert.deepEqual(normalizeServeConfig({ port: 443, routes: {} }).routes, []);
 });
 
 // ─── handle behavior ─────────────────────────────────────────────────────────
@@ -441,4 +444,25 @@ test('mesh.serve(handle.config) normalizes to an identical NAPI config', async (
   const h2 = await serve(h.config);
   assert.deepEqual(state.added[1], first);
   assert.equal(h2.id, h.id);
+});
+
+test('updating a serve replaces its full table and only changes replay config on success', async () => {
+  const { createServeNamespace } = await load();
+  const { proxy, state } = mockProxy();
+  const serve = createServeNamespace(() => proxy);
+  const handle = await serve({
+    port: 443,
+    target: 'http://localhost:9000',
+    headers: { 'X-Old': '1' },
+  });
+  await handle.update({ routes: { '/app': { dir: '.' } }, headers: { 'X-New': '1' } });
+  assert.equal(state.updated[0].update.routes[0].dir, process.cwd());
+  assert.deepEqual(handle.config.headers, { 'X-New': '1' });
+  const previous = handle.config;
+  proxy.update = async () => {
+    throw new Error('failed bind');
+  };
+  await assert.rejects(handle.update({ routes: {} }), /failed bind/);
+  assert.equal(handle.config, previous);
+  assert.deepEqual(state.removed, []);
 });

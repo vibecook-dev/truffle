@@ -567,6 +567,9 @@ pub enum ProxyEventJs {
         url: String,
         listen_port: u16,
     },
+    Updated {
+        id: String,
+    },
     Stopped {
         id: String,
     },
@@ -590,6 +593,7 @@ impl From<truffle_core::proxy::ProxyEvent> for ProxyEventJs {
                 url,
                 listen_port,
             },
+            ProxyEvent::Updated { id } => ProxyEventJs::Updated { id },
             ProxyEvent::Stopped { id } => ProxyEventJs::Stopped { id },
             ProxyEvent::Error { id, code, message } => ProxyEventJs::Error { id, code, message },
         }

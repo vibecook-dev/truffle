@@ -547,6 +547,18 @@
           "markdownDescription": "Denies the proxy_remove command without any pre-configured scope."
         },
         {
+          "description": "Enables the proxy_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-proxy-update",
+          "markdownDescription": "Enables the proxy_update command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the proxy_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-proxy-update",
+          "markdownDescription": "Denies the proxy_update command without any pre-configured scope."
+        },
+        {
           "description": "Enables the pull_file command without any pre-configured scope.",
           "type": "string",
           "const": "allow-pull-file",
@@ -955,10 +967,10 @@
           "markdownDescription": "Denies the udp_send command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the Truffle plugin\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-is-running`\n- `allow-device-id`\n- `allow-devices`\n- `allow-device-by-id`\n- `allow-is-primary`\n- `allow-primary-id`\n- `allow-role`\n- `allow-send-envelope`\n- `allow-broadcast-envelope`\n- `allow-send-message`\n- `allow-broadcast`\n- `allow-send-json`\n- `allow-send-bytes`\n- `allow-broadcast-json`\n- `allow-broadcast-bytes`\n- `allow-handle-tailnet-peers`\n- `allow-set-local-online`\n- `allow-proxy-add`\n- `allow-proxy-remove`\n- `allow-proxy-list`",
+          "description": "Default permissions for the Truffle plugin\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-is-running`\n- `allow-device-id`\n- `allow-devices`\n- `allow-device-by-id`\n- `allow-is-primary`\n- `allow-primary-id`\n- `allow-role`\n- `allow-send-envelope`\n- `allow-broadcast-envelope`\n- `allow-send-message`\n- `allow-broadcast`\n- `allow-send-json`\n- `allow-send-bytes`\n- `allow-broadcast-json`\n- `allow-broadcast-bytes`\n- `allow-handle-tailnet-peers`\n- `allow-set-local-online`\n- `allow-proxy-add`\n- `allow-proxy-remove`\n- `allow-proxy-update`\n- `allow-proxy-list`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the Truffle plugin\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-is-running`\n- `allow-device-id`\n- `allow-devices`\n- `allow-device-by-id`\n- `allow-is-primary`\n- `allow-primary-id`\n- `allow-role`\n- `allow-send-envelope`\n- `allow-broadcast-envelope`\n- `allow-send-message`\n- `allow-broadcast`\n- `allow-send-json`\n- `allow-send-bytes`\n- `allow-broadcast-json`\n- `allow-broadcast-bytes`\n- `allow-handle-tailnet-peers`\n- `allow-set-local-online`\n- `allow-proxy-add`\n- `allow-proxy-remove`\n- `allow-proxy-list`"
+          "markdownDescription": "Default permissions for the Truffle plugin\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-is-running`\n- `allow-device-id`\n- `allow-devices`\n- `allow-device-by-id`\n- `allow-is-primary`\n- `allow-primary-id`\n- `allow-role`\n- `allow-send-envelope`\n- `allow-broadcast-envelope`\n- `allow-send-message`\n- `allow-broadcast`\n- `allow-send-json`\n- `allow-send-bytes`\n- `allow-broadcast-json`\n- `allow-broadcast-bytes`\n- `allow-handle-tailnet-peers`\n- `allow-set-local-online`\n- `allow-proxy-add`\n- `allow-proxy-remove`\n- `allow-proxy-update`\n- `allow-proxy-list`"
         }
       ]
     }

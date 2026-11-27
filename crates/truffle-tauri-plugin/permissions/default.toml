@@ -22,5 +22,6 @@ permissions = [
     "allow-set-local-online",
     "allow-proxy-add",
     "allow-proxy-remove",
+    "allow-proxy-update",
     "allow-proxy-list",
 ]

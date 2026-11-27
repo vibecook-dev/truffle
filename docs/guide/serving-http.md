@@ -457,3 +457,24 @@ other peers to browse is also future work: there's no `announce` option on
 Throughput note: mesh traffic crosses the userspace tailnet netstack plus a
 loopback hop. It's great for APIs, dashboards, control traffic, and app data —
 not for bulk line-rate transfer.
+
+## Updating a running serve
+
+Sidecar protocol 14 lets you replace a listener’s complete route table. For
+example, this publishes a new frontend while preserving open streams and
+WebSockets on the API route.
+
+```ts
+const api = 'http://127.0.0.1:3000';
+const app = await mesh.serve({ port: 443, routes: { '/': { dir: '/srv/v1' }, '/api': api } });
+await app.update({ routes: { '/': { dir: '/srv/v2' }, '/api': api } });
+```
+
+Supply the complete routes, allow list, capability list and headers on each
+update. A bind or validation failure leaves the old table in service. A
+removed or changed route cancels its proxied requests and WebSockets and lets
+an active file response finish. The listener accepts up to 1,024 routes.
+An empty table keeps the listener open and returns 404 everywhere.
+`handle.config` reflects the last successful update. In Rust use
+`node.proxy().update(id, ProxyUpdate { .. })`. An older sidecar returns
+`Unsupported` before receiving the command.

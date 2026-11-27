@@ -224,6 +224,7 @@ export interface ProxyInfo {
 /** Proxy lifecycle event. Mirrors `ProxyEventJs` (serde tag = "type"). */
 export type ProxyEvent =
   | { type: 'started'; id: string; url: string; listenPort: number }
+  | { type: 'updated'; id: string }
   | { type: 'stopped'; id: string }
   | { type: 'error'; id: string; code: string; message: string };
 
@@ -400,6 +401,17 @@ export async function clearPullRoots(): Promise<void> {
 
 export async function proxyAdd(config: ProxyConfig): Promise<ProxyInfo> {
   return invoke('plugin:truffle|proxy_add', { config });
+}
+
+export interface ProxyUpdate {
+  routes: ProxyRoute[];
+  allow?: string[];
+  headers?: ProxyHeader[];
+  acceptAppCapabilities?: string[];
+}
+
+export async function proxyUpdate(id: string, update: ProxyUpdate): Promise<ProxyInfo> {
+  return invoke('plugin:truffle|proxy_update', { id, update });
 }
 
 export async function proxyRemove(id: string): Promise<void> {

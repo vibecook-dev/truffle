@@ -99,6 +99,7 @@ export {
   type ServeTargetConfig,
   type ServeStaticConfig,
   type ServeRoutesConfig,
+  type ServeUpdate,
   type ServeRouteValue,
   type ServeErrorInfo,
 } from './serve.js';

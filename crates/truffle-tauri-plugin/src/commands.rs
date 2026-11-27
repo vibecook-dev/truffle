@@ -407,6 +407,21 @@ pub async fn proxy_add(
     Ok(info.into())
 }
 
+/// Replace the full route table of a running proxy.
+#[command]
+pub async fn proxy_update(
+    state: State<'_, TruffleState>,
+    id: String,
+    update: truffle_core::proxy::ProxyUpdate,
+) -> Result<ProxyInfoJs, String> {
+    let node = get_node(&state).await?;
+    node.proxy()
+        .update(&id, update)
+        .await
+        .map(Into::into)
+        .map_err(|e| e.to_string())
+}
+
 /// Remove a reverse proxy by ID.
 #[command]
 pub async fn proxy_remove(state: State<'_, TruffleState>, id: String) -> Result<(), String> {

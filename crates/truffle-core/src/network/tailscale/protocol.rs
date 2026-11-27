@@ -190,8 +190,8 @@ pub(crate) struct ProxyAddCommandData {
     pub allow_non_loopback: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub allow: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub routes: Vec<crate::network::ProxyRoute>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routes: Option<Vec<crate::network::ProxyRoute>>,
     /// Application capabilities forwarded as `Tailscale-App-Capabilities`
     /// (v9 sidecars; the provider gates it).
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -203,6 +203,16 @@ pub(crate) struct ProxyAddCommandData {
     /// Correlation id echoed on `proxy:added` / `proxy:error` (v4 sidecars).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
+}
+
+/// A v14 update always serializes `routes`, including an empty table.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProxyUpdateCommandData<'a> {
+    pub id: &'a str,
+    pub request_id: String,
+    #[serde(flatten)]
+    pub update: crate::network::ProxyUpdate,
 }
 
 /// Data payload for `proxy:remove`.
@@ -305,6 +315,7 @@ pub(crate) mod command_type {
     pub const WATCH_PEERS: &str = "tsnet:watchPeers";
     pub const LISTEN_PACKET: &str = "tsnet:listenPacket";
     pub const PROXY_ADD: &str = "proxy:add";
+    pub const PROXY_UPDATE: &str = "proxy:update";
     pub const PROXY_REMOVE: &str = "proxy:remove";
     pub const PROXY_LIST: &str = "proxy:list";
     pub const LOOPBACK: &str = "tsnet:loopback";
@@ -353,6 +364,7 @@ pub(crate) mod event_type {
     pub const PEER_CHANGED: &str = "tsnet:peerChanged";
     pub const LISTENING_PACKET: &str = "tsnet:listeningPacket";
     pub const PROXY_ADDED: &str = "proxy:added";
+    pub const PROXY_UPDATED: &str = "proxy:updated";
     pub const PROXY_REMOVED: &str = "proxy:removed";
     pub const PROXY_LIST_RESULT: &str = "proxy:list";
     pub const PROXY_ERROR: &str = "proxy:error";
@@ -652,6 +664,8 @@ pub(crate) struct ProxyInfoEventData {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProxyErrorEventData {
+    #[serde(default)]
+    pub request_id: Option<String>,
     pub id: String,
     pub code: String,
     pub message: String,
@@ -1068,7 +1082,7 @@ mod tests {
             tls: true,
             allow_non_loopback: false,
             allow: vec![],
-            routes: vec![],
+            routes: None,
             accept_app_caps: vec![],
             headers: vec![],
             request_id: None,
@@ -1104,7 +1118,7 @@ mod tests {
             tls: true,
             allow_non_loopback: false,
             allow: vec!["*@corp.com".to_string()],
-            routes: vec![
+            routes: Some(vec![
                 crate::network::ProxyRoute {
                     prefix: "/api".to_string(),
                     target_url: Some("http://localhost:8000".to_string()),
@@ -1126,7 +1140,7 @@ mod tests {
                     allow: vec![],
                     headers: vec![],
                 },
-            ],
+            ]),
             accept_app_caps: vec!["example.com/cap/media".to_string()],
             headers: vec![
                 crate::network::ProxyHeader {
@@ -1290,6 +1304,19 @@ mod tests {
         assert_eq!(data.id, "dev-server");
         assert_eq!(data.listen_port, 3001);
         assert_eq!(data.url, "https://myhost.ts.net:3001");
+    }
+
+    #[test]
+    fn empty_proxy_update_preserves_its_routes_and_request_id() {
+        let command = ProxyUpdateCommandData {
+            id: "app",
+            request_id: "r".into(),
+            update: Default::default(),
+        };
+        assert_eq!(
+            serde_json::to_value(command).unwrap(),
+            serde_json::json!({"id":"app","requestId":"r","routes":[]})
+        );
     }
 
     #[test]
