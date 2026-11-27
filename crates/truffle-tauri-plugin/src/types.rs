@@ -435,6 +435,8 @@ pub struct ProxyConfigJs {
     /// Permit non-loopback targets (default: false — deny). A LAN target
     /// turns this node into a pivot into its network (RFC 023 §9.3).
     pub allow_non_loopback: Option<bool>,
+    pub funnel: Option<bool>,
+    pub accept_app_capabilities: Option<Vec<String>>,
     /// loginName allow globs, e.g. `["*@corp.com"]` (default: none = the
     /// whole tailnet). Non-matching callers get a bare 403 (RFC 023 §9.7).
     pub allow: Option<Vec<String>>,
@@ -466,6 +468,7 @@ impl From<ProxyConfigJs> for truffle_core::proxy::ProxyConfig {
             // `Proxy::add`) owns the shape rules — this only maps.
             tls: config.tls.unwrap_or(true),
             allow_non_loopback: config.allow_non_loopback.unwrap_or(false),
+            funnel: config.funnel.unwrap_or(false),
             allow: config.allow.unwrap_or_default(),
             routes: config
                 .routes
@@ -473,8 +476,7 @@ impl From<ProxyConfigJs> for truffle_core::proxy::ProxyConfig {
                 .into_iter()
                 .map(Into::into)
                 .collect(),
-            // Not exposed to the frontend yet (protocol 9 capability forwarding).
-            accept_app_capabilities: Vec::new(),
+            accept_app_capabilities: config.accept_app_capabilities.unwrap_or_default(),
             // RFC 030: mapped through, never dropped. Core `validate_config`
             // refuses a bad list and the protocol gate an old sidecar.
             headers: config.headers.unwrap_or_default(),
@@ -528,6 +530,7 @@ impl From<ProxyRouteJs> for truffle_core::network::ProxyRoute {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyInfoJs {
+    pub funnel: bool,
     pub id: String,
     pub name: String,
     pub listen_port: u16,
@@ -541,6 +544,7 @@ pub struct ProxyInfoJs {
 impl From<truffle_core::proxy::ProxyInfo> for ProxyInfoJs {
     fn from(info: truffle_core::proxy::ProxyInfo) -> Self {
         Self {
+            funnel: info.funnel,
             id: info.id,
             name: info.name,
             listen_port: info.listen_port,

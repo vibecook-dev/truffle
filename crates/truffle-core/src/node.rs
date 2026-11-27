@@ -614,6 +614,13 @@ impl<N: NetworkProvider + 'static> Node<N> {
 
     /// Access the reverse proxy subsystem.
     ///
+    /// Inspect the local node's public-serving grant and subscribe to changes.
+    pub fn funnel(&self) -> crate::funnel::Funnel<'_, N> {
+        crate::funnel::Funnel {
+            network: self.network.as_ref(),
+        }
+    }
+
     /// Returns a [`Proxy`](crate::proxy::Proxy) handle that provides
     /// methods for adding, removing, and listing reverse proxies.
     pub fn proxy(&self) -> crate::proxy::Proxy<'_, N> {
@@ -2654,6 +2661,30 @@ mod tests {
             self.peer_event_tx.subscribe()
         }
 
+        async fn proxy_add(
+            &self,
+            p: crate::network::ProxyAddParams,
+        ) -> Result<crate::network::ProxyAddResult, NetworkError> {
+            Ok(crate::network::ProxyAddResult {
+                id: p.id,
+                listen_port: p.listen_port,
+                url: "https://test.example".into(),
+            })
+        }
+        async fn proxy_update(
+            &self,
+            _: &str,
+            update: crate::network::ProxyUpdate,
+        ) -> Result<(), NetworkError> {
+            if update.allow == ["fail"] {
+                return Err(NetworkError::ProxyError("failed update".into()));
+            }
+            Ok(())
+        }
+        async fn proxy_remove(&self, _: &str) -> Result<(), NetworkError> {
+            Ok(())
+        }
+
         async fn peers(&self) -> Vec<NetworkPeer> {
             self.mock_peers.read().await.clone()
         }
@@ -2758,6 +2789,44 @@ mod tests {
     async fn random_port() -> u16 {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         l.local_addr().unwrap().port()
+    }
+
+    #[tokio::test]
+    async fn proxy_update_events_and_failed_update_state() {
+        use crate::proxy::{ProxyConfig, ProxyEvent, ProxyStatus, ProxyUpdate};
+        let (node, _, _) = make_test_node("routes", 9417).await;
+        let proxy = node.proxy();
+        let mut events = proxy.subscribe();
+        let config: ProxyConfig = serde_json::from_value(
+            serde_json::json!({"id":"apps","name":"apps","listen_port":443}),
+        )
+        .unwrap();
+        let added = proxy.add(config).await.unwrap();
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            ProxyEvent::Started { .. }
+        ));
+        assert!(proxy
+            .update(
+                "apps",
+                ProxyUpdate {
+                    allow: vec!["fail".into()],
+                    ..Default::default()
+                }
+            )
+            .await
+            .is_err());
+        assert!(matches!(proxy.list()[0].status, ProxyStatus::Running));
+        let (update, remove) = tokio::join!(
+            proxy.update("apps", ProxyUpdate::default()),
+            proxy.remove("apps")
+        );
+        assert_eq!(update.unwrap().url, added.url);
+        remove.unwrap();
+        assert!(matches!(events.recv().await.unwrap(),ProxyEvent::Updated{id} if id=="apps"));
+        assert!(matches!(events.recv().await.unwrap(),ProxyEvent::Stopped{id} if id=="apps"));
+        assert!(proxy.list().is_empty());
+        node.stop().await;
     }
 
     /// Create a Node backed by a mock provider for testing.

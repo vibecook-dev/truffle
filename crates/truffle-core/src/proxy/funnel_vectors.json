@@ -1,0 +1,12 @@
+[
+  {"name":"private port", "funnel":false,"listenPort":7001,"tls":false,"valid":true},
+  {"name":"public default TLS","funnel":true,"listenPort":443,"valid":true},
+  {"name":"alternate TLS port","funnel":true,"listenPort":8443,"valid":true},
+  {"name":"ten thousand","funnel":true,"listenPort":10000,"valid":true},
+  {"name":"plain HTTP","funnel":true,"listenPort":443,"tls":false,"valid":false},
+  {"name":"outside Funnel ports","funnel":true,"listenPort":80,"valid":false},
+  {"name":"serve login gate","funnel":true,"listenPort":443,"allow":["alice@example.com"],"valid":false},
+  {"name":"route login gate","funnel":true,"listenPort":443,"routes":[{"prefix":"/api","targetUrl":"http://127.0.0.1:8000","allow":["alice@example.com"]}],"valid":false},
+  {"name":"capabilities","funnel":true,"listenPort":443,"acceptAppCaps":["example.com/cap/test"],"valid":false},
+  {"name":"LAN opt-in","funnel":true,"listenPort":443,"allowNonLoopback":true,"valid":false}
+]

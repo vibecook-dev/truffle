@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-funnel-status"
+description = "Enables the funnel_status command without any pre-configured scope."
+commands.allow = ["funnel_status"]
+
+[[permission]]
+identifier = "deny-funnel-status"
+description = "Denies the funnel_status command without any pre-configured scope."
+commands.deny = ["funnel_status"]

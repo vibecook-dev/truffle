@@ -26,6 +26,7 @@ Default permissions for the Truffle plugin
 - `allow-proxy-add`
 - `allow-proxy-remove`
 - `allow-proxy-update`
+- `allow-funnel-status`
 - `allow-proxy-list`
 
 ## Permission Table
@@ -293,6 +294,32 @@ Enables the devices command without any pre-configured scope.
 <td>
 
 Denies the devices command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`truffle-tauri-plugin:allow-funnel-status`
+
+</td>
+<td>
+
+Enables the funnel_status command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`truffle-tauri-plugin:deny-funnel-status`
+
+</td>
+<td>
+
+Denies the funnel_status command without any pre-configured scope.
 
 </td>
 </tr>

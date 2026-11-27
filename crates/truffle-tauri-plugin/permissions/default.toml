@@ -23,5 +23,6 @@ permissions = [
     "allow-proxy-add",
     "allow-proxy-remove",
     "allow-proxy-update",
+    "allow-funnel-status",
     "allow-proxy-list",
 ]

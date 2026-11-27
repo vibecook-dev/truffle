@@ -170,7 +170,8 @@ type dialResultData struct {
 // Bump on any addition to the command surface the core must not send blind,
 // or to an event the core relies on.
 // v14: proxy:update replaces a live route table.
-const sidecarProtocolVersion = 14
+// v15: public-only serves and Funnel status/change notifications.
+const sidecarProtocolVersion = 15
 
 type statusData struct {
 	State       string `json:"state"`
@@ -443,6 +444,7 @@ type healthWarningData struct {
 
 // proxyAddData is the payload for proxy:add commands.
 type proxyAddData struct {
+	Funnel       bool   `json:"funnel,omitempty"`
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	ListenPort   uint16 `json:"listenPort"`
@@ -536,6 +538,7 @@ type proxyErrorEventData struct {
 
 // proxyInfoData is the payload for each proxy in proxy:list events.
 type proxyInfoData struct {
+	Funnel       bool   `json:"funnel,omitempty"`
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	ListenPort   uint16 `json:"listenPort"`
@@ -577,6 +580,8 @@ var openStaticRoot = func(name string) (staticRoot, error) {
 // or cancel function created while an add is still in flight. handleStop can
 // abort these owners directly, even while listener creation is blocked.
 type pendingProxyAdd struct {
+	port        uint16
+	funnel      bool
 	mu          sync.Mutex
 	resources   *proxyTable
 	listener    net.Listener
@@ -658,6 +663,7 @@ type proxyAddFailure struct {
 
 // proxyEntry is the internal state for a running reverse proxy.
 type proxyEntry struct {
+	funnel           bool
 	id               string
 	name             string
 	listenPort       uint16
@@ -715,6 +721,8 @@ type listeningPacketData struct {
 
 // shim is the main application state.
 type shim struct {
+	funnelMu        sync.Mutex // serializes tsnet ServeConfig edits
+	funnelRecovered bool
 	// serverMu guards server, dnsName, sessionToken, bridgePort, idleTimeout,
 	// controlURL, ctx, and cancel — all written from the dispatch loop
 	// (start/stop) and read from many spawned goroutines.
@@ -1048,6 +1056,8 @@ func main() {
 			s.handleGetWaitingFile(cmd.Data)
 		case "tsnet:deleteWaitingFile":
 			s.handleDeleteWaitingFile(cmd.Data)
+		case "funnel:status":
+			s.handleFunnelStatus(cmd.Data)
 		case "proxy:add":
 			s.handleProxyAdd(cmd.Data)
 		case "proxy:update":
@@ -1129,6 +1139,9 @@ func (s *shim) handleStart(data json.RawMessage) {
 		return
 	}
 	ctx := s.armLifecycle(token, d.BridgePort)
+	s.funnelMu.Lock()
+	s.funnelRecovered = false
+	s.funnelMu.Unlock()
 	s.setIdleTimeout(resolveIdleTimeout(d.IdleTimeoutSecs))
 	// v11: before srv.Start(), which starts tsnet's log uploader.
 	if d.ClientLogUpload != nil && !*d.ClientLogUpload {
@@ -1259,6 +1272,9 @@ func (s *shim) pollUntilRunning(ctx context.Context, lc *local.Client, hostname 
 			// logged-in node.
 			running := runningStatus(status, hostname)
 			s.setDNSName(running.DNSName)
+			if err := s.recoverFunnel(ctx, lc, status.CertDomains); err != nil {
+				log.Printf("recovering Funnel listener marks: %v", err)
+			}
 
 			// v11: a node Tailnet Lock has not signed reaches Running too, cut
 			// off from every peer, so its lock state goes out before the
@@ -2449,6 +2465,9 @@ func (s *shim) handleProxyAdd(raw json.RawMessage) {
 	}
 
 	s.startProxyAdd(srv, lc, data, func(tlsOn bool, addr string) (net.Listener, error) {
+		if data.Funnel {
+			return s.listenFunnel(s.lifecycleCtx(), srv, lc, addr, data.ListenPort)
+		}
 		if tlsOn {
 			return srv.ListenTLS("tcp", addr)
 		}
@@ -2763,6 +2782,7 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 		return
 	}
 	pending := newPendingProxyAdd(table)
+	pending.port, pending.funnel = data.ListenPort, data.Funnel
 	handedToAsync := false
 	defer func() {
 		if !handedToAsync {
@@ -2782,9 +2802,16 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 		return
 	}
 	for _, entry := range s.proxies {
-		if entry != nil && entry.listenPort == data.ListenPort {
+		if entry != nil && entry.listenPort == data.ListenPort && entry.funnel == data.Funnel {
 			s.proxyMu.Unlock()
 			fail("PORT_IN_USE", fmt.Sprintf("port %d already used by proxy %s", data.ListenPort, entry.id))
+			return
+		}
+	}
+	for _, p := range s.pendingProxyAdds {
+		if p.port == data.ListenPort && p.funnel == data.Funnel && p.port != 0 {
+			s.proxyMu.Unlock()
+			fail("PORT_IN_USE", "listener already starting on this port")
 			return
 		}
 	}
@@ -2800,7 +2827,7 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 	s.dynamicListenerMu.Lock()
 	_, dynamicPortExists := s.dynamicListeners[data.ListenPort]
 	s.dynamicListenerMu.Unlock()
-	if dynamicPortExists {
+	if dynamicPortExists && !data.Funnel {
 		s.removeProxyPlaceholder(data.ID, pending)
 		fail("PORT_IN_USE", fmt.Sprintf("port %d already used by a dynamic listener", data.ListenPort))
 		return
@@ -2811,14 +2838,17 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 		forwardedProto = "https"
 	}
 
-	entry := &proxyEntry{id: data.ID, name: data.Name, listenPort: data.ListenPort, targetHost: data.TargetHost, targetPort: data.TargetPort, targetScheme: data.TargetScheme, tlsOn: tlsOn, allowNonLoopback: data.AllowNonLoopback}
+	entry := &proxyEntry{funnel: data.Funnel, id: data.ID, name: data.Name, listenPort: data.ListenPort, targetHost: data.TargetHost, targetPort: data.TargetPort, targetScheme: data.TargetScheme, tlsOn: tlsOn, allowNonLoopback: data.AllowNonLoopback}
 	entry.table.Store(table)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Identity first (§9.2): resolve who is calling from the WireGuard
 		// tunnel, strip anything they claimed in our header namespace, gate,
 		// then inject the verified values for the backend.
-		identity := s.proxyWhois(lc, r.RemoteAddr)
+		var identity peerIdentityData
+		if !entry.funnel {
+			identity = s.proxyWhois(lc, r.RemoteAddr)
+		}
 		sanitizeTailscaleHeaders(r.Header)
 
 		route, unmatchedHeaders := entry.match(r.URL.Path)
@@ -2846,13 +2876,26 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 			return
 		}
 
-		injectIdentityHeaders(r.Header, identity)
-		injectAppCapabilities(r.Header, identity, route.caps)
-		r.Header.Set("X-Forwarded-Proto", forwardedProto)
+		if entry.funnel {
+			visitor, ok := r.Context().Value(funnelAddrKey{}).(netip.Addr)
+			if !ok || !visitor.IsValid() {
+				applyResponseHeaders(w.Header(), route.headers)
+				http.Error(w, "Bad Gateway", http.StatusBadGateway)
+				return
+			}
+			setFunnelHeaders(r.Header, visitor)
+		} else {
+			injectIdentityHeaders(r.Header, identity)
+			injectAppCapabilities(r.Header, identity, route.caps)
+			r.Header.Set("X-Forwarded-Proto", forwardedProto)
+		}
 
 		// WebSocket upgrades bypass ReverseProxy via hijack — only for URL
 		// targets (an upgrade against a static dir just gets the file 404s).
 		if route.target != nil && isProxyWebSocketRequest(r) {
+			if entry.funnel {
+				r.Header.Set("Connection", "Upgrade")
+			}
 			route.rewriteRequest(r)
 			// The route's headers ride this path's own 502 and 500; a hijacked
 			// upgrade is a byte relay, and its 101 is the backend's own.
@@ -2898,7 +2941,12 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 			if ln != nil {
 				_ = ln.Close()
 			}
-			fail("LISTEN_ERROR", err.Error())
+			var refusal *proxyAddFailure
+			if errors.As(err, &refusal) {
+				fail(refusal.code, refusal.message)
+			} else {
+				fail("LISTEN_ERROR", err.Error())
+			}
 			return
 		}
 		if ln == nil {
@@ -2934,6 +2982,17 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 			BaseContext:       func(net.Listener) context.Context { return ctx },
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       120 * time.Second,
+		}
+		if data.Funnel {
+			httpSrv.ConnContext = funnelSource
+			httpSrv.MaxHeaderBytes = funnelHeaderLimit
+			logger := &funnelErrorLog{}
+			httpSrv.ErrorLog = log.New(logger, "", 0)
+			defer func() {
+				if count := logger.handshakes.Load(); count > 0 {
+					log.Printf("Funnel listener %s closed with %d failed TLS handshakes", data.ID, count)
+				}
+			}()
 		}
 		entry.listener, entry.server, entry.cancel = ln, httpSrv, cancel
 
@@ -3061,7 +3120,7 @@ func (s *shim) handleProxyList(raw json.RawMessage) {
 		}
 		proxyURL := publicURL(entry.tlsOn, s.getDNSName(), entry.listenPort)
 		proxies = append(proxies, proxyInfoData{
-			ID: entry.id, Name: entry.name,
+			ID: entry.id, Name: entry.name, Funnel: entry.funnel,
 			ListenPort: entry.listenPort,
 			TargetHost: entry.targetHost, TargetPort: entry.targetPort,
 			TargetScheme: entry.targetScheme, URL: proxyURL,
@@ -3950,7 +4009,9 @@ func (s *shim) monitorStateEvery(ctx context.Context, lc *local.Client, hostname
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	kick := make(chan struct{}, 1)
-	go s.watchBackendChanges(ctx, lc, kick)
+	funnelChanges := make(chan struct{}, 1)
+	go s.watchFunnelChanges(ctx, lc, funnelChanges)
+	go s.watchBackendChanges(ctx, lc, kick, funnelChanges)
 
 	lastState := "Running"
 	lastKeyExpiry := keyExpiry
@@ -4039,7 +4100,7 @@ func (s *shim) monitorStateEvery(ctx context.Context, lc *local.Client, hostname
 // fields whatever its mask; NotifyNoNetMap keeps full network maps off this
 // stream. The poll stays as the safety net, and a broken watch reconnects with
 // backoff, as the peer watcher's does.
-func (s *shim) watchBackendChanges(ctx context.Context, lc *local.Client, kick chan<- struct{}) {
+func (s *shim) watchBackendChanges(ctx context.Context, lc *local.Client, kick chan<- struct{}, funnelChanges chan<- struct{}) {
 	defer s.recoverPanic("watchBackendChanges")
 
 	backoff := time.Second
@@ -4061,6 +4122,10 @@ func (s *shim) watchBackendChanges(ctx context.Context, lc *local.Client, kick c
 			continue
 		}
 		backoff = time.Second
+		select {
+		case funnelChanges <- struct{}{}:
+		default:
+		} // baseline after each reconnect
 		for {
 			n, err := watcher.Next()
 			if err != nil {
@@ -4068,6 +4133,12 @@ func (s *shim) watchBackendChanges(ctx context.Context, lc *local.Client, kick c
 					log.Printf("state watch: %v", err)
 				}
 				break
+			}
+			if n.SelfChange != nil {
+				select {
+				case funnelChanges <- struct{}{}:
+				default:
+				}
 			}
 			if n.State == nil && n.Health == nil && n.ErrMessage == nil {
 				continue

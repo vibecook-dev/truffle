@@ -20,3 +20,27 @@ An explicitly empty table returns 404 on every path. On add, a nonzero
 single-target port retains the legacy meaning. Both sides bound a table to
 1,024 routes. The core rejects a serialized command that would exceed the
 sidecar’s 8 MiB line limit before writing it.
+
+## Public serving
+
+Protocol 15 adds `funnel:status` and `funnel:statusResult` correlated by
+`requestId`. The sidecar publishes `funnel:changed` when the status differs
+after a self-change on the IPN bus. The status carries a state, the granted
+ports, and any enable URL and instructions supplied by control. An unavailable
+state includes a reason. Subscribe before reading status to cover an approval
+that arrives during the read.
+
+`proxy:add` with `funnel: true` uses a Funnel-only TLS listener on 443, 8443 or
+10000. Private and public listeners can share a port using separate IDs.
+Public serves refuse login gates, capability forwarding and non-loopback
+backends. These rules also apply when a route table changes.
+
+Public visitors are anonymous. The engine strips incoming Tailscale identity
+headers, sets `Tailscale-Funnel-Request: ?1` and forwards the visitor address
+from the accepted Funnel connection as the sole `X-Forwarded-For` value.
+HTTP/2 and HTTP/1.1 are offered. Each public listener allows 256 connections
+and configures a 64 KiB header limit. Closing the listener revokes its public
+mark. The sidecar clears stale marks for its own node on startup.
+
+The real-tailnet test exercises simultaneous public and private port 443,
+public DNS, TLS, HTTP/2, stream continuity, revocation and listener removal.

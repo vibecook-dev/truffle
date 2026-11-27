@@ -74,6 +74,20 @@ pub fn start_event_forwarding<R: Runtime>(
         }
     });
 
+    let mut grants = node.funnel().subscribe();
+    let funnel_app = app.clone();
+    tokio::spawn(async move {
+        loop {
+            match grants.recv().await {
+                Ok(status) => {
+                    let _ = funnel_app.emit("truffle://funnel-changed", status);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
     // Forward ProxyEvents
     let mut proxy_rx = node.proxy().subscribe();
     let proxy_app = app.clone();

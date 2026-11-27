@@ -389,3 +389,17 @@ Hosted-runner numbers are directional (±20-40%) and every suite report is
 - [RFC 027 — Benchmark hub](rfcs/027-benchmark-hub.md) and [benchmark/README.md](../benchmark/README.md)
 - [RFC 012 — Layered architecture](rfcs/012-layered-architecture-redesign.md)
 - [RFC 016 — SyncedStore](rfcs/016-synced-store-and-request-reply.md)
+
+## Public Funnel integration
+
+Run from a host with an internet connection, `dig`, and a build of `curl`
+with HTTP/2. Set the usual `TRUFFLE_TEST_AUTHKEY` for an ephemeral test node
+granted Funnel on port 443. The test resolves the public address, verifies
+the public listener and keeps a live stream open through a route update.
+It allows ten minutes for a new public name and removes both listeners.
+
+```sh
+cargo test --locked -p truffle-core --test integration_funnel -- --ignored --nocapture
+```
+
+The Funnel workflow runs nightly and can also be dispatched manually.

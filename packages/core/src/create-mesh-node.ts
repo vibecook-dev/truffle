@@ -488,6 +488,7 @@ function wrapStartedNode(node: NapiNode): MeshNode {
     listenQuic: node.listenQuic.bind(node),
     bindUdp: node.bindUdp.bind(node),
     proxy: node.proxy.bind(node),
+    funnel: () => node.funnel(),
     loopback: node.loopback.bind(node),
     loopbackWithLocalApi: node.loopbackWithLocalApi.bind(node),
     egressAdd: node.egressAdd.bind(node),

@@ -107,6 +107,13 @@ export declare class NapiFileTransfer {
   removeNamedPullRoot(name: string): boolean
 }
 
+/** Funnel access for this node. */
+export declare class NapiFunnel {
+  status(): Promise<NapiFunnelStatus>
+  /** Subscribe before reading status. Close the returned subscription to stop. */
+  subscribe(callback: (status: NapiFunnelStatus) => void): NapiSubscription
+}
+
 /**
  * The main truffle node exposed to JavaScript.
  *
@@ -294,6 +301,8 @@ export declare class NapiNode {
   onMessage(namespace: string, callback: (msg: NamespacedMessage) => void): NapiSubscription
   /** Get a `NapiFileTransfer` handle for file transfer operations. */
   fileTransfer(): NapiFileTransfer
+  /** Inspect this node's Funnel grant and watch for approval changes. */
+  funnel(): NapiFunnel
   /** Get a `NapiProxy` handle for reverse proxy operations. */
   proxy(): NapiProxy
   /**
@@ -788,6 +797,15 @@ export interface NapiFileTransferEvent {
   totalBytes?: number
 }
 
+/** The control plane's current grant for public HTTP serving. */
+export interface NapiFunnelStatus {
+  state: string
+  ports: Array<number>
+  enableUrl?: string
+  text?: string
+  reason?: string
+}
+
 /** Health information from the network layer. */
 export interface NapiHealthInfo {
   /** Current backend state (e.g., "Running", "NeedsLogin"). */
@@ -1067,6 +1085,8 @@ export interface NapiProxyConfig {
    * turns this node into a pivot into its network (RFC 023 §9.3).
    */
   allowNonLoopback?: boolean
+  /** Listen exclusively on the public internet through Funnel. Requires TLS. */
+  funnel?: boolean
   /**
    * loginName allow globs, e.g. `["*@corp.com"]` (default: none = the
    * whole tailnet). Non-matching callers get a bare 403 (RFC 023 §9.7).
@@ -1115,6 +1135,7 @@ export interface NapiProxyHeader {
 
 /** Information about a running or configured proxy, returned to JavaScript. */
 export interface NapiProxyInfo {
+  funnel: boolean
   id: string
   name: string
   listenPort: number

@@ -190,6 +190,8 @@ export interface ProxyRoute {
 
 /** Reverse-proxy config. Mirrors `ProxyConfigJs`. */
 export interface ProxyConfig {
+  funnel?: boolean;
+  acceptAppCapabilities?: string[];
   id: string;
   name: string;
   listenPort: number;
@@ -211,6 +213,7 @@ export interface ProxyConfig {
 
 /** Reverse-proxy info. Mirrors `ProxyInfoJs`. */
 export interface ProxyInfo {
+  funnel: boolean;
   id: string;
   name: string;
   listenPort: number;
@@ -401,6 +404,22 @@ export async function clearPullRoots(): Promise<void> {
 
 export async function proxyAdd(config: ProxyConfig): Promise<ProxyInfo> {
   return invoke('plugin:truffle|proxy_add', { config });
+}
+
+export interface FunnelStatus {
+  state: 'ready' | 'needsHttps' | 'needsGrant' | 'unavailable';
+  ports: number[];
+  enableUrl?: string;
+  text?: string;
+  reason?: string;
+}
+
+export function funnelStatus(): Promise<FunnelStatus> {
+  return invoke('plugin:truffle|funnel_status');
+}
+
+export function onFunnelChanged(callback: (status: FunnelStatus) => void): Promise<UnlistenFn> {
+  return listen<FunnelStatus>('truffle://funnel-changed', (event) => callback(event.payload));
 }
 
 export interface ProxyUpdate {

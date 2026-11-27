@@ -847,6 +847,7 @@ pub async fn prepare(
             for attempt in 0..PROXY_ATTEMPTS {
                 let listen_port = proxy_port(r.run_tag, attempt);
                 let cfg = ProxyConfig {
+                    funnel: false,
                     id: id.clone(),
                     name: id.clone(),
                     listen_port,

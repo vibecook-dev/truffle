@@ -170,6 +170,8 @@ pub(crate) enum SidecarInternalEvent {
         code: String,
         message: String,
     },
+    FunnelStatus(crate::network::FunnelStatus),
+    FunnelChanged(crate::network::FunnelStatus),
     /// A reverse proxy was successfully started.
     ProxyAdded {
         id: String,
@@ -825,6 +827,12 @@ impl GoSidecar {
                     code: d.code,
                     message: d.message,
                 }),
+            event_type::FUNNEL_STATUS_RESULT => serde_json::from_value(event.data)
+                .ok()
+                .map(SidecarInternalEvent::FunnelStatus),
+            event_type::FUNNEL_CHANGED => serde_json::from_value(event.data)
+                .ok()
+                .map(SidecarInternalEvent::FunnelChanged),
             event_type::PROXY_ADDED => serde_json::from_value::<ProxyAddedEventData>(event.data)
                 .ok()
                 .map(|d| SidecarInternalEvent::ProxyAdded {
@@ -1378,6 +1386,23 @@ mod pid_tests {
 #[cfg(test)]
 mod status_wire_tests {
     use super::*;
+
+    #[test]
+    fn funnel_wire_status_and_change_use_the_same_shape() {
+        use crate::network::FunnelState;
+        let changed = map_line(
+            r#"{"event":"funnel:changed","data":{"state":"needsGrant","ports":[443],"enableUrl":"https://example.test/enable","text":"Enable sharing"}}"#,
+        );
+        assert!(
+            matches!(changed,Some(SidecarInternalEvent::FunnelChanged(ref s)) if s.state==FunnelState::NeedsGrant && s.enable_url.is_some())
+        );
+        let status = map_line(
+            r#"{"event":"funnel:statusResult","data":{"state":"unavailable","reason":"control declined","ports":[],"requestId":"r"}}"#,
+        );
+        assert!(
+            matches!(status,Some(SidecarInternalEvent::FunnelStatus(ref s)) if s.state==FunnelState::Unavailable("control declined".into()))
+        );
+    }
 
     fn map_line(line: &str) -> Option<SidecarInternalEvent> {
         GoSidecar::map_event(GoSidecar::parse_stdout_event(line)?)
