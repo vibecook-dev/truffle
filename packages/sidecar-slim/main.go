@@ -3047,6 +3047,18 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 		// Dir mounts always strip their prefix: the mount point maps to the
 		// directory ROOT. URL targets keep stripping explicit (D11).
 		if route.target == nil && route.prefix != "/" {
+			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && r.URL.Path == route.prefix && !strings.HasSuffix(route.prefix, "/") {
+				// Use an origin-relative Location, even for a prefix beginning
+				// with two slashes. Preserve escaping and the original query.
+				location := "/" + strings.TrimLeft(r.URL.EscapedPath(), "/") + "/"
+				if r.URL.RawQuery != "" || r.URL.ForceQuery {
+					location += "?" + r.URL.RawQuery
+				}
+				applyResponseHeaders(w.Header(), route.headers)
+				w.Header().Set("Location", location)
+				w.WriteHeader(http.StatusPermanentRedirect)
+				return
+			}
 			r.URL.Path = stripPathPrefix(r.URL.Path, route.prefix)
 		}
 
