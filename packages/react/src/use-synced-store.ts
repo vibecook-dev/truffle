@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { NapiNode } from '@vibecook/truffle';
+import type { MeshNode, NapiNode } from '@vibecook/truffle';
+import { getNativeNode } from './native-node.js';
 import {
   subscribeSyncedStore,
   type SyncedStoreController,
@@ -52,7 +53,11 @@ export interface UseSyncedStoreResult<T> {
  * }
  * ```
  */
-export function useSyncedStore<T>(node: NapiNode | null, storeId: string): UseSyncedStoreResult<T> {
+export function useSyncedStore<T>(
+  input: MeshNode | NapiNode | null,
+  storeId: string,
+): UseSyncedStoreResult<T> {
+  const node = getNativeNode(input);
   const [localData, setLocalData] = useState<T | null>(null);
   const [allSlices, setAllSlices] = useState<Map<string, Slice<T>>>(new Map());
   const [version, setVersion] = useState(0);

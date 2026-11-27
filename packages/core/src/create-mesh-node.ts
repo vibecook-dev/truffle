@@ -46,6 +46,7 @@ export type MeshNode = Omit<
   quic: TruffleQuic;
   dgram: TruffleDgram;
   ws: TruffleWs;
+  /** The underlying started node, with native peer snapshots, events and subscriptions. */
   native: NapiNode;
 
   /**
@@ -264,8 +265,7 @@ export function toMeshPeerEvent(reg: PeerRegistry, raw: NapiPeerEvent): MeshPeer
  * @internal — exported for unit tests only.
  */
 export function wrapFileTransfer(ft: NapiFileTransfer): MeshFileTransfer {
-  // Same shadowing rule as the node itself: bind the native method before
-  // the own-property assignment or the wrapper calls itself.
+  // Capture the native methods before replacing them on this file-transfer handle.
   const nativeSendFile = ft.sendFile.bind(ft);
   const nativePullFile = ft.pullFile.bind(ft);
   const nativePullNamedFile = ft.pullNamedFile.bind(ft);
@@ -348,6 +348,9 @@ export async function createMeshNode(options: CreateMeshNodeOptions): Promise<Me
 
   try {
     await node.start(config);
+    const mesh = wrapStartedNode(node);
+    if (onPeerChange) mesh.onPeerChange(onPeerChange);
+    return mesh;
   } catch (err) {
     try {
       await node.stop();
@@ -356,72 +359,10 @@ export async function createMeshNode(options: CreateMeshNodeOptions): Promise<Me
     }
     throw err;
   }
+}
 
+function wrapStartedNode(node: NapiNode): MeshNode {
   const registry = new PeerRegistry(node);
-  const mesh = node as unknown as MeshNode;
-
-  // Live accessor, not a snapshot: dnsName may be granted after start and
-  // goes away when the node stops (getLocalInfo throws → null).
-  Object.defineProperty(mesh, 'dnsName', {
-    configurable: true,
-    get: (): string | null => {
-      try {
-        return node.getLocalInfo().dnsName ?? null;
-      } catch {
-        return null;
-      }
-    },
-  });
-
-  // Same shape for the node's own login (RFC 025 §3.6): learned when the
-  // sidecar reports the running status, gone when the node stops.
-  Object.defineProperty(mesh, 'loginName', {
-    configurable: true,
-    get: (): string | null => {
-      try {
-        return node.getLocalInfo().loginName ?? null;
-      } catch {
-        return null;
-      }
-    },
-  });
-
-  // `mesh` IS the native node object, so each wrapper assignment shadows the
-  // NAPI prototype method — the native method must be bound BEFORE the
-  // assignment or the wrapper calls itself (infinite recursion).
-  const nativeGetPeers = node.getPeers.bind(node);
-  mesh.getPeers = async () => {
-    const snaps = await nativeGetPeers();
-    return registry.upsertAll(snaps);
-  };
-
-  const nativePeer = node.peer.bind(node);
-  mesh.peer = async (query: string, opts?: { waitMs?: number }) => {
-    const snap = await nativePeer(query, opts?.waitMs);
-    if (!snap) return null;
-    return registry.upsert(snap);
-  };
-
-  const nativeSend = node.send.bind(node);
-  mesh.send = async (to: PeerLike, namespace: string, data: Buffer | Uint8Array) => {
-    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    return nativeSend(peerLikeToQuery(to), namespace, buf);
-  };
-
-  const nativePing = node.ping.bind(node);
-  mesh.ping = async (to: PeerLike) => nativePing(peerLikeToQuery(to));
-
-  const nativeWhois = node.whois.bind(node);
-  mesh.whois = async (to: PeerLike) => nativeWhois(peerLikeToQuery(to));
-
-  const nativeOpenTcp = node.openTcp.bind(node);
-  mesh.openTcp = (to: PeerLike, port: number) => nativeOpenTcp(peerLikeToQuery(to), port);
-
-  const nativeConnectQuic = node.connectQuic.bind(node);
-  mesh.connectQuic = (to: PeerLike, port: number) => nativeConnectQuic(peerLikeToQuery(to), port);
-
-  const nativeFileTransfer = node.fileTransfer.bind(node);
-  mesh.fileTransfer = () => wrapFileTransfer(nativeFileTransfer());
 
   // One unconditional native subscription maintains the registry — intern on
   // every snapshot-bearing event, retire on `left` — so `msg.from` resolves
@@ -431,8 +372,7 @@ export async function createMeshNode(options: CreateMeshNodeOptions): Promise<Me
   const peerListeners = new Map<number, (event: MeshPeerEvent) => void>();
   const messageSubscriptions = new Set<NapiSubscription>();
   let nextPeerListenerId = 0;
-  const nativeOnPeerChange = node.onPeerChange.bind(node);
-  const registrySubscription = nativeOnPeerChange((raw: NapiPeerEvent) => {
+  const registrySubscription = node.onPeerChange((raw: NapiPeerEvent) => {
     const ev = toMeshPeerEvent(registry, raw);
     for (const cb of peerListeners.values()) {
       try {
@@ -446,61 +386,114 @@ export async function createMeshNode(options: CreateMeshNodeOptions): Promise<Me
       }
     }
   });
-  mesh.onPeerChange = (callback: (event: MeshPeerEvent) => void) => {
-    const listenerId = nextPeerListenerId++;
-    peerListeners.set(listenerId, callback);
-    return () => {
-      peerListeners.delete(listenerId);
-    };
-  };
 
-  const nativeOnMessage = node.onMessage.bind(node);
-  mesh.onMessage = (namespace: string, callback: (msg: MeshNamespacedMessage) => void) => {
-    const subscription = nativeOnMessage(namespace, (raw: NapiNamespacedMessage) => {
-      // Attribution is Tailscale id; intern when we already know the peer.
-      const from: Peer | string = registry.getByTailscaleId(raw.from) ?? raw.from;
-      callback({
-        from,
-        namespace: raw.namespace,
-        msgType: raw.msgType,
-        payload: raw.payload,
-        timestamp: raw.timestamp,
-      });
-    });
-    messageSubscriptions.add(subscription);
-    return () => {
-      messageSubscriptions.delete(subscription);
-      subscription.close();
-    };
-  };
-
+  // Both views stop the same node and release the JS subscriptions it owns.
   const nativeStop = node.stop.bind(node);
-  mesh.stop = async () => {
+  let stopping: Promise<void> | undefined;
+  node.stop = async () => {
+    if (stopping) return stopping;
     registrySubscription.close();
     peerListeners.clear();
     for (const subscription of messageSubscriptions) {
       subscription.close();
     }
     messageSubscriptions.clear();
-    await nativeStop();
+    stopping = nativeStop();
+    try {
+      await stopping;
+    } finally {
+      stopping = undefined;
+    }
   };
 
-  if (onPeerChange) {
-    mesh.onPeerChange(onPeerChange);
-  }
-
-  mesh.net = createNetNamespace(node, {
-    // Live registry lookup behind TruffleSocket.remotePeer (RFC 023 §6.1).
+  const net = createNetNamespace(node, {
     resolvePeer: (tailscaleId) => registry.getByTailscaleId(tailscaleId) ?? null,
   });
-  mesh.http = createHttpNamespace(mesh.net);
-  mesh.quic = createQuicNamespace(node);
-  mesh.dgram = createDgramNamespace(node);
-  mesh.ws = createWsNamespace(mesh.net);
-  // `serve` is a new property (NapiNode has no such method), so no shadowing
-  // rule applies. A fresh NapiProxy per call — its handles are per-call.
-  mesh.serve = createServeNamespace(() => node.proxy());
-  mesh.native = node;
+  return {
+    native: node,
+    net,
+    http: createHttpNamespace(net),
+    quic: createQuicNamespace(node),
+    dgram: createDgramNamespace(node),
+    ws: createWsNamespace(net),
+    serve: createServeNamespace(() => node.proxy()),
 
-  return mesh;
+    get dnsName() {
+      try {
+        return node.getLocalInfo().dnsName ?? null;
+      } catch {
+        return null;
+      }
+    },
+    get loginName() {
+      try {
+        return node.getLocalInfo().loginName ?? null;
+      } catch {
+        return null;
+      }
+    },
+    async getPeers() {
+      return registry.upsertAll(await node.getPeers());
+    },
+    async peer(query, opts) {
+      const snap = await node.peer(query, opts?.waitMs);
+      return snap ? registry.upsert(snap) : null;
+    },
+    async send(to, namespace, data) {
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      return node.send(peerLikeToQuery(to), namespace, buf);
+    },
+    ping: async (to) => node.ping(peerLikeToQuery(to)),
+    whois: async (to) => node.whois(peerLikeToQuery(to)),
+    openTcp: (to, port) => node.openTcp(peerLikeToQuery(to), port),
+    connectQuic: (to, port) => node.connectQuic(peerLikeToQuery(to), port),
+    fileTransfer: () => wrapFileTransfer(node.fileTransfer()),
+    onPeerChange(callback) {
+      const id = nextPeerListenerId++;
+      peerListeners.set(id, callback);
+      return () => {
+        peerListeners.delete(id);
+      };
+    },
+    onMessage(namespace, callback) {
+      const subscription = node.onMessage(namespace, (raw: NapiNamespacedMessage) => {
+        callback({
+          from: registry.getByTailscaleId(raw.from) ?? raw.from,
+          namespace: raw.namespace,
+          msgType: raw.msgType,
+          payload: raw.payload,
+          timestamp: raw.timestamp,
+        });
+      });
+      messageSubscriptions.add(subscription);
+      return () => {
+        messageSubscriptions.delete(subscription);
+        subscription.close();
+      };
+    },
+
+    // NAPI methods require the actual native instance as their receiver.
+    onAuthRequired: node.onAuthRequired.bind(node),
+    start: node.start.bind(node),
+    stop: node.stop,
+    getLocalInfo: node.getLocalInfo.bind(node),
+    resolvePeerId: node.resolvePeerId.bind(node),
+    health: node.health.bind(node),
+    sendJson: node.sendJson.bind(node),
+    sendBytes: node.sendBytes.bind(node),
+    broadcast: node.broadcast.bind(node),
+    broadcastJson: node.broadcastJson.bind(node),
+    broadcastBytes: node.broadcastBytes.bind(node),
+    listenTcp: node.listenTcp.bind(node),
+    listenQuic: node.listenQuic.bind(node),
+    bindUdp: node.bindUdp.bind(node),
+    proxy: node.proxy.bind(node),
+    loopback: node.loopback.bind(node),
+    loopbackWithLocalApi: node.loopbackWithLocalApi.bind(node),
+    egressAdd: node.egressAdd.bind(node),
+    egressRemove: node.egressRemove.bind(node),
+    egressList: node.egressList.bind(node),
+    egressHttpProxy: node.egressHttpProxy.bind(node),
+    syncedStore: node.syncedStore.bind(node),
+  };
 }

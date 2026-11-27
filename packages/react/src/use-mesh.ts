@@ -1,5 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { NapiNode, NapiPeer, NapiPeerEvent, NapiNodeIdentity } from '@vibecook/truffle';
+import type {
+  MeshNode,
+  NapiNode,
+  NapiPeer,
+  NapiPeerEvent,
+  NapiNodeIdentity,
+} from '@vibecook/truffle';
+import { getNativeNode } from './native-node.js';
 
 export interface UseMeshResult {
   /** All known peers (from Tailscale discovery). */
@@ -17,10 +24,8 @@ export interface UseMeshResult {
 /**
  * React hook for Truffle mesh networking.
  *
- * Provides reactive peer state and messaging helpers built on the new
- * Node API (RFC 012). The NapiNode must already be started. When using
- * `createMeshNode()` from `@vibecook/truffle`, pass `mesh.native` — this
- * hook consumes the raw NAPI event shape.
+ * Pass the mesh returned by `createMeshNode()` or an already-started
+ * `NapiNode`. The hook returns native peer snapshots.
  *
  * @example
  * ```tsx
@@ -30,7 +35,8 @@ export interface UseMeshResult {
  * await broadcast('chat', { text: 'hello everyone' });
  * ```
  */
-export function useMesh(node: NapiNode | null): UseMeshResult {
+export function useMesh(input: MeshNode | NapiNode | null): UseMeshResult {
+  const node = getNativeNode(input);
   const [peers, setPeers] = useState<NapiPeer[]>([]);
   const [localInfo, setLocalInfo] = useState<NapiNodeIdentity | null>(null);
   const [isStarted, setIsStarted] = useState(false);

@@ -272,8 +272,9 @@ export declare class NapiNode {
   /**
    * Listen for raw QUIC connections on a port (RFC 021).
    *
-   * Ports 443 and 9417 are reserved; port 0 is not supported over the
-   * tsnet relay — choose an explicit port.
+   * Pass 0 to choose an ephemeral tailnet port and read it from the
+   * returned listener's `port()`. Only the session WebSocket port
+   * (default 9417) is reserved.
    */
   listenQuic(port: number): Promise<NapiQuicListener>
   /**

@@ -680,7 +680,10 @@ export async function quicConnect(
   );
 }
 
-/** Listen for raw QUIC connections. Requires an explicit (non-zero) port. */
+/**
+ * Listen for raw QUIC connections. Pass 0 to choose a tailnet port and read
+ * it from `listener.port`. Only the session WebSocket port (default 9417) is reserved.
+ */
 export async function quicListen(port: number): Promise<TruffleQuicListener> {
   const res = await invoke<QuicListenResult>('plugin:truffle|quic_listen', { port });
   return new TruffleQuicListener(res.listenerId, res.port);

@@ -105,3 +105,51 @@ test('left for an unknown peer yields no handle and does not throw', async () =>
   assert.equal(ev.peer, undefined);
   assert.equal(ev.peerId, 'ts-9');
 });
+
+test('mesh and native callers keep their peer and message contracts', async (t) => {
+  const { createMeshNode, NapiNode } = await import('../dist/index.js');
+  const snapshot = snap();
+  const messageListeners = new Set();
+  const rawStop = t.mock.method(NapiNode.prototype, 'stop', async () => {});
+  t.mock.method(NapiNode.prototype, 'start', async () => {});
+  t.mock.method(NapiNode.prototype, 'onAuthRequired', () => {});
+  t.mock.method(NapiNode.prototype, 'onPeerChange', () => ({ close() {} }));
+  t.mock.method(NapiNode.prototype, 'peer', async (query, waitMs) => {
+    assert.equal(query, 'bob');
+    assert.equal(waitMs, 42);
+    return snapshot;
+  });
+  t.mock.method(NapiNode.prototype, 'onMessage', (namespace, callback) => {
+    assert.equal(namespace, 'chat');
+    messageListeners.add(callback);
+    return { close: () => messageListeners.delete(callback) };
+  });
+
+  const mesh = await createMeshNode({ appId: 'mesh-test', sidecarPath: '/unused' });
+  assert.equal(await mesh.native.peer('bob', 42), snapshot);
+  const bob = await mesh.peer('bob', { waitMs: 42 });
+  assert.equal(bob.ref, snapshot.peerRef);
+
+  const rawMessages = [];
+  const meshMessages = [];
+  const sub = mesh.native.onMessage('chat', (message) => rawMessages.push(message));
+  const unsubscribe = mesh.onMessage('chat', (message) => meshMessages.push(message));
+  const message = {
+    from: snapshot.tailscaleId,
+    namespace: 'chat',
+    msgType: 'text',
+    payload: Buffer.from('hi'),
+  };
+  for (const listener of messageListeners) listener(message);
+  assert.equal(rawMessages[0].from, snapshot.tailscaleId);
+  assert.equal(meshMessages[0].from, bob);
+  sub.close();
+  assert.equal(messageListeners.size, 1);
+  unsubscribe();
+  assert.equal(messageListeners.size, 0);
+
+  mesh.onMessage('chat', () => {});
+  await Promise.all([mesh.native.stop(), mesh.stop()]);
+  assert.equal(messageListeners.size, 0);
+  assert.equal(rawStop.mock.callCount(), 1);
+});

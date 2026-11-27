@@ -124,8 +124,8 @@ test('TruffleQuicConnection iterates peer streams and exposes metadata', async (
   assert.equal(state.closed, true);
 });
 
-test('TruffleQuicServer iterates connections until closed', async () => {
-  const { TruffleQuicServer } = await loadQuic();
+test('listen(0) exposes the assigned port and iterates connections until closed', async () => {
+  const { createQuicNamespace } = await loadQuic();
   const connMocks = [mockNativeConnection([]).native, mockNativeConnection([]).native];
   let acceptIndex = 0;
   let closed = false;
@@ -142,7 +142,13 @@ test('TruffleQuicServer iterates connections until closed', async () => {
     },
   };
 
-  const server = new TruffleQuicServer(nativeListener);
+  const quic = createQuicNamespace({
+    async listenQuic(port) {
+      assert.equal(port, 0);
+      return nativeListener;
+    },
+  });
+  const server = await quic.listen(0);
   assert.equal(server.port, 9420);
 
   const conns = [];

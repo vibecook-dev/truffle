@@ -6,9 +6,10 @@
 **Depends on**: RFC 012 (layered architecture), RFC 015 (bindings rewrite), RFC 017 (identity & namespacing)
 **Reverses**: RFC 015's decision to exclude raw TCP/UDP from the JS surface ("too low-level")
 
-> **Stale note (2026-07-07):** One incidental reference below to `NapiCrdtDoc`
-> is stale — the CrdtDoc / Loro feature (RFC 018) was removed. The rest of this
-> RFC is current.
+> The CrdtDoc / Loro feature (RFC 018) was removed. The original design in
+> sections 4 and 6 also predates the release of port 443 for applications.
+> TCP and QUIC listeners now reserve only the configured session WebSocket port
+> (default 9417). [RFC 023, section 8.1](023-http-serving.md#81-port-443-reclamation)
 
 ---
 
@@ -323,7 +324,7 @@ Also in this layer: fix `packages/core/src/index.ts` re-export drift (`NapiProxy
 | Datagram addressing | IPv4 (100.x) only | v6-only peers unreachable for UDP/QUIC until Phase 5 |
 | Bridge concurrency | 256 TCP conns | `MAX_CONCURRENT_CONNECTIONS`, make configurable if hit |
 | Idle reap | 10 min default | configurable via §6.5; send keepalives on quiet sockets |
-| Reserved ports | 443, 9417 | rejected at `listen_*`; 9420 = suggested QUIC default |
+| Reserved port | Configured session WebSocket port (default 9417) | TCP and QUIC reject this port. Pass 0 for an ephemeral port and read the assigned port from the listener. |
 | Throughput | userspace netstack | no GSO/GRO; loopback hop per direction; "good, not line-rate" |
 | WS envelope cap | 16 MiB/frame | unchanged; raw streams have no frame cap |
 

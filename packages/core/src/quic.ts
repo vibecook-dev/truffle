@@ -190,9 +190,9 @@ export interface TruffleQuic {
    */
   connect(host: PeerLike, port: number): Promise<TruffleQuicConnection>;
   /**
-   * Listen for QUIC connections. Ports 443/9417 are reserved; port 0 is
-   * not supported over the tsnet relay — choose an explicit port
-   * (suggested default: 9420+).
+   * Listen for QUIC connections. Pass 0 to choose an ephemeral tailnet port
+   * and read it from `server.port`. Only the session WebSocket port
+   * (default 9417) is reserved.
    */
   listen(port: number): Promise<TruffleQuicServer>;
 }
