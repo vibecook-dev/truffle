@@ -147,14 +147,18 @@ rule hostname-from-identity "By default a node's hostname is truffle-{appId}-{sl
   see "crates/truffle-core/src/node.rs#L2135-L2136"
 }
 
-rule apps-isolated "Discovery admits only truffle-{appId}- hostnames, and the hello refuses another app's id" {
+rule apps-isolated "Discovery matches the app tag when present and uses the hostname prefix for untagged peers. The hello rejects a different app id." {
+  require text "!is_app_row(&peer.hostname, peer.app.as_deref(), app_id)" in sym:truffle_core::network::tailscale::provider::TailscaleProvider::classify_row
+  require text ".strip_prefix(APP_TAG_PREFIX)", "id == app_id", "None => is_app_peer(hostname, app_id)" in sym:truffle_core::network::tailscale::provider::is_app_row
   require text "\"truffle-{app_id}-\"" in sym:truffle_core::network::tailscale::provider::is_app_peer
   require text "TransportError::AppMismatch" in sym:truffle_core::transport::websocket::validate_hello
-  require text "guard Hostname.isAppPeer(" in file:apple/Sources/Truffle/Mesh/MeshNode.swift
+  require text "guard Hostname.isAppRow(hostname: peer.hostname, app: peer.app, appId: appId.value)" in file:apple/Sources/Truffle/Mesh/MeshNode.swift
+  require text "return app == appTag(appId: appId)", "return isAppPeer(hostname: hostname, appId: appId)" in file:apple/Sources/Truffle/Identity/Slug.swift
   require text "HelloValidationError.appMismatch(" in file:apple/Sources/Truffle/Wire/HelloEnvelope.swift
   see "docs/rfcs/017-identity-and-namespacing.md#4-design-two-namespaces"
   see "docs/rfcs/017-identity-and-namespacing.md#8-wire-protocol-peer-metadata-exchange"
-  see "crates/truffle-core/src/network/tailscale/provider.rs#L1125-L1128"
+  see "apple/README.md#wire-compatibility-rfc-024-8"
+  see "crates/truffle-core/src/network/tailscale/provider.rs#L1159-L1166"
 }
 
 rule device-id-honest "deviceId is a ULID or absent, never a Tailscale id in its place" {
