@@ -365,6 +365,8 @@ export declare class NapiProxy {
    * to a local target.
    */
   add(config: NapiProxyConfig): Promise<NapiProxyInfo>
+  /** Replace all routes without restarting the listener (sidecar protocol 14). */
+  update(id: string, update: NapiProxyUpdate): Promise<NapiProxyInfo>
   /** Remove a reverse proxy by ID. */
   remove(id: string): Promise<void>
   /** List all active proxies on this node. */
@@ -1075,6 +1077,7 @@ export interface NapiProxyConfig {
    * single `targetHost`/`targetPort`/`targetScheme` target.
    */
   routes?: Array<NapiProxyRoute>
+  acceptAppCapabilities?: Array<string>
   /**
    * Response headers set on every response of the serve (RFC 030), e.g.
    * `Content-Security-Policy`. A route's own `headers` replace these by
@@ -1161,6 +1164,14 @@ export interface NapiProxyRoute {
    * config-level header of the same name (default: none = inherit).
    */
   headers?: Array<NapiProxyHeader>
+}
+
+/** Full replacement for a running serve's routes and policies. */
+export interface NapiProxyUpdate {
+  routes: Array<NapiProxyRoute>
+  allow?: Array<string>
+  headers?: Array<NapiProxyHeader>
+  acceptAppCapabilities?: Array<string>
 }
 
 /** A versioned slice of data owned by a single device. */

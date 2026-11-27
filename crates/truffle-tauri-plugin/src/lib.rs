@@ -142,6 +142,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             commands::pull_roots,
             commands::clear_pull_roots,
             commands::proxy_add,
+            commands::proxy_update,
             commands::proxy_remove,
             commands::proxy_list,
             // Raw transport (RFC 021 §7, Phase 4) — NAPI parity.

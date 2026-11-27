@@ -70,6 +70,8 @@ export interface ServeOptions {
    * serving without them.
    */
   headers?: Record<string, string>;
+  /** Tailnet app capabilities to forward to the backend. */
+  acceptAppCapabilities?: string[];
 }
 
 /** Forward a whole tailnet port to one local backend. */
@@ -122,6 +124,12 @@ export interface ServeRoutesConfig extends ServeOptions {
   routes: Record<string, string | ServeRouteValue>;
 }
 
+/** Full replacement for the routes and request policies of a running serve. */
+export type ServeUpdate = Pick<
+  ServeRoutesConfig,
+  'routes' | 'allow' | 'headers' | 'acceptAppCapabilities'
+>;
+
 /** The union accepted by {@link TruffleServe}. */
 export type ServeConfig = ServeTargetConfig | ServeStaticConfig | ServeRoutesConfig;
 
@@ -159,12 +167,18 @@ export class ServeHandle extends EventEmitter {
   /** The proxy id backing this serve. */
   readonly id: string;
   /**
-   * The normalized, frozen config that created this handle — every default
+   * The last successfully installed, normalized and frozen config — every default
    * filled and every `dir` resolved to an absolute path. Persist it and
    * replay `mesh.serve(handle.config)` to recreate an identical serve
    * (RFC 023 D16); the library never persists on its own.
    */
-  readonly config: ServeConfig;
+  #config: ServeConfig;
+
+  get config(): ServeConfig {
+    return this.#config;
+  }
+
+  #updates: Promise<void> = Promise.resolve();
 
   #url = '';
   #port = 0;
@@ -177,9 +191,39 @@ export class ServeHandle extends EventEmitter {
   constructor(id: string, config: ServeConfig, proxy: NapiProxy, retire: () => void) {
     super();
     this.id = id;
-    this.config = config;
+    this.#config = config;
     this.#proxy = proxy;
     this.#retire = retire;
+  }
+
+  /** Install a full route table. Empty routes keep the listener up with all paths returning 404. */
+  async update(update: ServeUpdate): Promise<void> {
+    if (this.#closed) throw new Error('serve is closed');
+    const { port, id, name, tls, allowNonLoopback } = this.#config;
+    const canonical = canonicalServeConfig({
+      port,
+      id,
+      name,
+      tls,
+      allowNonLoopback,
+      routes: update.routes,
+      allow: update.allow,
+      headers: update.headers,
+      acceptAppCapabilities: update.acceptAppCapabilities,
+    });
+    const config = canonicalToNapi(canonical);
+    const next = this.#updates.then(async () => {
+      if (this.#closed) throw new Error('serve is closed');
+      await this.#proxy.update(this.id, {
+        routes: config.routes ?? [],
+        allow: config.allow,
+        headers: config.headers,
+        acceptAppCapabilities: config.acceptAppCapabilities,
+      });
+      this.#config = deepFreeze(canonical);
+    });
+    this.#updates = next.catch(() => {});
+    return next;
   }
 
   /** Public serving URL from the `add()` result (`https://name.tailnet.ts.net[:port]`). */
@@ -357,6 +401,8 @@ function canonicalServeConfig(config: ServeConfig): ServeConfig {
     name: c.name ?? id,
     tls: c.tls ?? true,
   };
+  if (c.acceptAppCapabilities !== undefined)
+    common.acceptAppCapabilities = [...c.acceptAppCapabilities];
   if (c.allow !== undefined) common.allow = [...c.allow];
   if (c.allowNonLoopback !== undefined) common.allowNonLoopback = c.allowNonLoopback;
   if (c.headers !== undefined) common.headers = canonicalHeaders(c.headers, 'serve');
@@ -370,9 +416,6 @@ function canonicalServeConfig(config: ServeConfig): ServeConfig {
     return out;
   }
   const routesIn = c.routes as Record<string, string | ServeRouteValue>;
-  if (Object.keys(routesIn).length === 0) {
-    throw new TypeError('serve: `routes` must have at least one entry');
-  }
   const routes: Record<string, string | ServeRouteValue> = {};
   for (const [prefix, value] of Object.entries(routesIn)) {
     routes[prefix] = canonicalRouteValue(prefix, value);
@@ -444,6 +487,8 @@ function canonicalToNapi(config: ServeConfig): NapiProxyConfig {
     targetPort: 0,
     tls: c.tls as boolean,
   };
+  if (c.acceptAppCapabilities !== undefined)
+    napi.acceptAppCapabilities = [...c.acceptAppCapabilities];
   if (c.allow !== undefined) napi.allow = [...c.allow];
   if (c.allowNonLoopback !== undefined) napi.allowNonLoopback = c.allowNonLoopback;
   if (c.headers !== undefined) napi.headers = headersToNapi(c.headers);

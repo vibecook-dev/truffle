@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-proxy-update"
+description = "Enables the proxy_update command without any pre-configured scope."
+commands.allow = ["proxy_update"]
+
+[[permission]]
+identifier = "deny-proxy-update"
+description = "Denies the proxy_update command without any pre-configured scope."
+commands.deny = ["proxy_update"]

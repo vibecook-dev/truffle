@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Re-exported from the network layer: the wire-shaped path route
 /// (RFC 023 §7) and response header (RFC 030). Defined there because the
 /// provider command payloads embed them verbatim.
-pub use crate::network::{ProxyHeader, ProxyRoute};
+pub use crate::network::{ProxyHeader, ProxyRoute, ProxyUpdate};
 
 /// Target backend for the reverse proxy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,7 +62,8 @@ pub struct ProxyConfig {
     /// bare 403, on the proxy and WebSocket-hijack paths alike.
     #[serde(default)]
     pub allow: Vec<String>,
-    /// Path-prefix routes (RFC 023 §7). Empty = single-target v1 shape.
+    /// Path-prefix routes (RFC 023 §7). With no routes, a nonzero target port
+    /// selects a single backend. A zero target port starts an empty table (v14).
     /// Longest prefix wins, order-independent (D11).
     #[serde(default)]
     pub routes: Vec<ProxyRoute>,
@@ -128,6 +129,9 @@ pub enum ProxyEvent {
         id: String,
         url: String,
         listen_port: u16,
+    },
+    Updated {
+        id: String,
     },
     Stopped {
         id: String,

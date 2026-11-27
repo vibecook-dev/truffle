@@ -985,7 +985,12 @@ impl TailscaleProvider {
                                 }
                                 return;
                             }
-                            SidecarInternalEvent::ProxyError { id, code, message } => {
+                            SidecarInternalEvent::ProxyError {
+                                id,
+                                code,
+                                message,
+                                correlated: false,
+                            } => {
                                 // Runtime engine errors (RFC 023 G5). Add-time
                                 // failures are also seen (and returned) by the
                                 // proxy_add wait loop; the Node-side forwarder
@@ -1235,7 +1240,8 @@ fn proxy_add_command(config: &ProxyAddParams) -> ProxyAddCommandData {
         tls: config.tls,
         allow_non_loopback: config.allow_non_loopback,
         allow: config.allow.clone(),
-        routes: config.routes.clone(),
+        routes: (!config.routes.is_empty() || config.target_port == 0)
+            .then(|| config.routes.clone()),
         accept_app_caps: config.accept_app_capabilities.clone(),
         headers: config.headers.clone(),
         request_id: None,
@@ -1895,6 +1901,9 @@ impl super::super::NetworkProvider for TailscaleProvider {
             )));
         }
 
+        if config.routes.is_empty() && config.target_port == 0 {
+            self.require_protocol("empty route table", 14).await?;
+        }
         let command = proxy_add_command(&config);
 
         // v4 sidecars echo a correlation id on proxy:added / proxy:error,
@@ -1959,9 +1968,9 @@ impl super::super::NetworkProvider for TailscaleProvider {
                             url,
                         });
                     }
-                    Ok(SidecarInternalEvent::ProxyError { id, code, message })
-                        if id == config.id =>
-                    {
+                    Ok(SidecarInternalEvent::ProxyError {
+                        id, code, message, ..
+                    }) if id == config.id => {
                         return Err(NetworkError::ProxyError(format!("[{code}] {message}")));
                     }
                     Ok(SidecarInternalEvent::Error { code, message }) => {
@@ -1981,6 +1990,31 @@ impl super::super::NetworkProvider for TailscaleProvider {
         })
         .await
         .map_err(|_| NetworkError::ProxyError("proxy add timed out".into()))?
+    }
+
+    async fn proxy_update(
+        &self,
+        id: &str,
+        update: crate::network::ProxyUpdate,
+    ) -> Result<(), NetworkError> {
+        self.require_protocol("proxy:update", 14).await?;
+        let reply = self
+            .command_rpc(command_type::PROXY_UPDATE, |request_id| {
+                serde_json::to_value(super::protocol::ProxyUpdateCommandData {
+                    id,
+                    request_id,
+                    update,
+                })
+            })
+            .await?;
+        match reply {
+            SidecarInternalEvent::ProxyUpdated { id: received } if received == id => Ok(()),
+            SidecarInternalEvent::ProxyError { code, message, .. }
+            | SidecarInternalEvent::Error { code, message } => {
+                Err(NetworkError::ProxyError(format!("[{code}] {message}")))
+            }
+            other => Err(Self::unexpected_reply("proxy update", other)),
+        }
     }
 
     async fn proxy_remove(&self, id: &str) -> Result<(), NetworkError> {
@@ -2032,9 +2066,9 @@ impl super::super::NetworkProvider for TailscaleProvider {
                     Ok(SidecarInternalEvent::ProxyRemoved { id }) if id == target_id => {
                         return Ok(());
                     }
-                    Ok(SidecarInternalEvent::ProxyError { id, code, message })
-                        if id == target_id =>
-                    {
+                    Ok(SidecarInternalEvent::ProxyError {
+                        id, code, message, ..
+                    }) if id == target_id => {
                         return Err(NetworkError::ProxyError(format!("[{code}] {message}")));
                     }
                     Ok(SidecarInternalEvent::Error { code, message }) => {
@@ -2203,6 +2237,19 @@ impl TailscaleProvider {
         Ok(())
     }
 
+    async fn require_protocol(&self, verb: &str, minimum: u32) -> Result<(), NetworkError> {
+        if *self.state.read().await != ProviderState::Running {
+            return Err(NetworkError::NotRunning);
+        }
+        let version = self.sidecar_version();
+        if version < minimum {
+            return Err(NetworkError::Unsupported(format!(
+                "{verb} needs sidecar protocol v{minimum}; running v{version}"
+            )));
+        }
+        Ok(())
+    }
+
     /// One correlated RFC 026 request: build the payload around a fresh
     /// `requestId`, gate, register the reply slot BEFORE sending (the answer
     /// can never race the registration), send, and await the routed answer.
@@ -2215,19 +2262,30 @@ impl TailscaleProvider {
     where
         F: FnOnce(String) -> Result<serde_json::Value, serde_json::Error>,
     {
+        self.egress_ready(verb).await?;
+        self.command_rpc(command, build).await
+    }
+
+    async fn command_rpc<F>(
+        &self,
+        command: &'static str,
+        build: F,
+    ) -> Result<SidecarInternalEvent, NetworkError>
+    where
+        F: FnOnce(String) -> Result<serde_json::Value, serde_json::Error>,
+    {
         let request_id = uuid::Uuid::new_v4().to_string();
         let data = build(request_id.clone())?;
-        self.egress_ready(verb).await?;
         let mut reply = {
             let sidecar_guard = self.sidecar.lock().await;
             let sidecar = sidecar_guard.as_ref().ok_or(NetworkError::NotRunning)?;
             let reply = sidecar.register_reply(&request_id);
-            sidecar.send_egress(command, &data).await?;
+            sidecar.send_payload(command, &data).await?;
             reply
         };
         tokio::time::timeout(Self::EGRESS_REPLY_TIMEOUT, reply.recv())
             .await
-            .map_err(|_| NetworkError::SidecarError(format!("{verb} timed out")))?
+            .map_err(|_| NetworkError::SidecarError(format!("{command} timed out")))?
     }
 
     /// The `egress:add` payload. The node's RFC 025 gate rides along as
@@ -2684,6 +2742,13 @@ mod diagnostic_tests {
         });
         *provider.state.write().await = ProviderState::Running;
 
+        provider
+            .sidecar_protocol_version
+            .store(13, Ordering::Relaxed);
+        assert!(
+            matches!(provider.proxy_update("app",Default::default()).await, Err(NetworkError::Unsupported(ref msg)) if msg.contains("v13") && msg.contains("v14"))
+        );
+
         let old = RESPONSE_HEADERS_PROTOCOL_VERSION - 1;
         provider
             .sidecar_protocol_version
@@ -2764,12 +2829,10 @@ mod diagnostic_tests {
 
         let command = proxy_add_command(&params);
         assert_eq!(command.headers, params.headers);
-        assert_eq!(command.routes, params.routes);
-        assert_eq!(
-            command.routes[0].headers,
-            vec![header("X-Frame-Options", "DENY")]
-        );
-        assert!(command.routes[1].headers.is_empty());
+        let routes = command.routes.unwrap();
+        assert_eq!(routes, params.routes);
+        assert_eq!(routes[0].headers, vec![header("X-Frame-Options", "DENY")]);
+        assert!(routes[1].headers.is_empty());
         assert_eq!(command.accept_app_caps, params.accept_app_capabilities);
         assert!(command.request_id.is_none());
     }

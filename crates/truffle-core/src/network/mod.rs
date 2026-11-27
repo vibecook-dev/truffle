@@ -225,6 +225,19 @@ pub trait NetworkProvider: Send + Sync {
         )))
     }
 
+    /// Atomically replace a running proxy's routes and request policies (protocol 14).
+    fn proxy_update(
+        &self,
+        _id: &str,
+        _update: ProxyUpdate,
+    ) -> impl std::future::Future<Output = Result<(), NetworkError>> + Send {
+        async {
+            Err(NetworkError::Unsupported(
+                "proxy_update not supported by this provider".into(),
+            ))
+        }
+    }
+
     /// Stop a reverse proxy.
     fn proxy_remove(
         &self,
@@ -1161,6 +1174,25 @@ pub struct ProxyAddParams {
     /// Response headers set on every response of the serve (sidecar
     /// protocol 13, RFC 030). A route's own `headers` replace these by name.
     pub headers: Vec<ProxyHeader>,
+}
+
+/// Full replacement for the mutable part of a running serve. An empty table
+/// keeps the listener open and returns 404 for every path.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyUpdate {
+    pub routes: Vec<ProxyRoute>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<ProxyHeader>,
+    #[serde(
+        default,
+        rename = "acceptAppCaps",
+        alias = "acceptAppCapabilities",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub accept_app_capabilities: Vec<String>,
 }
 
 /// One response header a serve or a route sets on every response it writes

@@ -92,7 +92,9 @@ pub(crate) enum SidecarInternalEvent {
     /// Sidecar stopped.
     Stopped,
     /// Auth required.
-    AuthRequired { auth_url: String },
+    AuthRequired {
+        auth_url: String,
+    },
     /// Needs admin approval.
     NeedsApproval,
     /// A non-running status (`starting`, …). A `starting` status (protocol
@@ -105,7 +107,9 @@ pub(crate) enum SidecarInternalEvent {
     },
     /// The Tailscale backend's state changed after start
     /// (`tsnet:stateChange`, an `ipn.State` name such as `NeedsLogin`).
-    BackendStateChanged { state: String },
+    BackendStateChanged {
+        state: String,
+    },
     /// `tsnet:logout` succeeded (protocol 11).
     LoggedOut,
     /// The answer to `tsnet:version` (protocol 11).
@@ -115,14 +119,21 @@ pub(crate) enum SidecarInternalEvent {
     },
     /// Tailnet Lock's state for this node: when it first runs, and on every
     /// change (protocol 11).
-    LockStatus { enabled: bool, signed: bool },
+    LockStatus {
+        enabled: bool,
+        signed: bool,
+    },
     /// The tailnet requires client logs, and this node opted out
     /// (protocol 11).
     LoggingRequired,
     /// Key expiring.
-    KeyExpiring { expires_at: String },
+    KeyExpiring {
+        expires_at: String,
+    },
     /// Health warnings.
-    HealthWarning { warnings: Vec<String> },
+    HealthWarning {
+        warnings: Vec<String>,
+    },
     /// Peer list received (from getPeers).
     PeersReceived(Vec<SidecarPeer>),
     /// A single peer changed (from WatchIPNBus).
@@ -133,20 +144,32 @@ pub(crate) enum SidecarInternalEvent {
     /// [`GoSidecar::dispatch_event`], before typed parsing.
     DialSucceeded,
     /// Dial result (failure — no bridge connection coming).
-    DialFailed { error: String },
+    DialFailed {
+        error: String,
+    },
     /// Listening on a port succeeded.
-    Listening { port: u16 },
+    Listening {
+        port: u16,
+    },
     /// Unlistened from a port.
     #[allow(dead_code)]
-    Unlistened { port: u16 },
+    Unlistened {
+        port: u16,
+    },
     /// UDP listening on a port succeeded. `local_port` is the localhost relay port.
-    ListeningPacket { port: u16, local_port: u16 },
+    ListeningPacket {
+        port: u16,
+        local_port: u16,
+    },
     /// Ping result.
     PingResult(PingResultEventData),
     /// WhoIs query result.
     WhoisResult(WhoisResultEventData),
     /// Error from sidecar.
-    Error { code: String, message: String },
+    Error {
+        code: String,
+        message: String,
+    },
     /// A reverse proxy was successfully started.
     ProxyAdded {
         id: String,
@@ -154,11 +177,19 @@ pub(crate) enum SidecarInternalEvent {
         url: String,
     },
     /// A reverse proxy was stopped.
-    ProxyRemoved { id: String },
+    ProxyRemoved {
+        id: String,
+    },
+    ProxyUpdated {
+        id: String,
+    },
     /// List of active proxies.
-    ProxyList { proxies: Vec<ProxyInfoEventData> },
+    ProxyList {
+        proxies: Vec<ProxyInfoEventData>,
+    },
     /// A proxy encountered an error.
     ProxyError {
+        correlated: bool,
         id: String,
         code: String,
         message: String,
@@ -167,11 +198,18 @@ pub(crate) enum SidecarInternalEvent {
     /// both credentials.
     Loopback(LoopbackEventData),
     /// An egress route was bound (RFC 026 E2).
-    EgressAdded { id: String, listen: String },
+    EgressAdded {
+        id: String,
+        listen: String,
+    },
     /// An egress route was removed (RFC 026 E2).
-    EgressRemoved { id: String },
+    EgressRemoved {
+        id: String,
+    },
     /// The live egress routes (RFC 026 E2).
-    EgressList { routes: Vec<EgressRouteEventData> },
+    EgressList {
+        routes: Vec<EgressRouteEventData>,
+    },
     /// The node's CONNECT proxy (RFC 026 E3). Its data's `Debug` redacts
     /// the credential.
     EgressProxy(EgressProxyEventData),
@@ -183,7 +221,9 @@ pub(crate) enum SidecarInternalEvent {
         message: String,
     },
     /// Sidecar process exited unexpectedly.
-    ProcessExited { exit_code: Option<i32> },
+    ProcessExited {
+        exit_code: Option<i32>,
+    },
 }
 
 /// Pending request/reply slots, keyed by the wire-level `requestId`.
@@ -792,6 +832,11 @@ impl GoSidecar {
                     listen_port: d.listen_port,
                     url: d.url,
                 }),
+            event_type::PROXY_UPDATED => {
+                serde_json::from_value::<ProxyRemovedEventData>(event.data)
+                    .ok()
+                    .map(|d| SidecarInternalEvent::ProxyUpdated { id: d.id })
+            }
             event_type::PROXY_REMOVED => {
                 serde_json::from_value::<ProxyRemovedEventData>(event.data)
                     .ok()
@@ -805,6 +850,7 @@ impl GoSidecar {
             event_type::PROXY_ERROR => serde_json::from_value::<ProxyErrorEventData>(event.data)
                 .ok()
                 .map(|d| SidecarInternalEvent::ProxyError {
+                    correlated: d.request_id.is_some(),
                     id: d.id,
                     code: d.code,
                     message: d.message,
@@ -850,6 +896,13 @@ impl GoSidecar {
     /// Send a JSON command to the sidecar.
     pub async fn send_command(&self, cmd: SidecarCommand) -> Result<(), NetworkError> {
         let json = serde_json::to_string(&cmd)?;
+        // Go uses an 8 MiB Scanner including the newline. Reject the request
+        // locally instead of terminating the command stream for every serve.
+        if json.len() >= 8 * 1024 * 1024 {
+            return Err(NetworkError::SidecarError(
+                "[COMMAND_TOO_LARGE] sidecar command exceeds 8 MiB".into(),
+            ));
+        }
         self.stdin_tx
             .send(json)
             .await
@@ -1073,7 +1126,7 @@ impl GoSidecar {
     /// Send one RFC 026 egress command (`tsnet:loopback`, `egress:*`). Every
     /// payload carries its `requestId`; the caller registers the reply slot
     /// first.
-    pub async fn send_egress<T: serde::Serialize>(
+    pub async fn send_payload<T: serde::Serialize>(
         &self,
         command: &'static str,
         data: &T,

@@ -9,7 +9,7 @@ pub mod discovery;
 pub mod types;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::broadcast;
 
 pub use types::*;
@@ -26,6 +26,7 @@ use crate::node::{Node, NodeError};
 pub(crate) struct ProxyState {
     /// Broadcast channel for proxy lifecycle events.
     pub(crate) event_tx: broadcast::Sender<ProxyEvent>,
+    operations: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
     /// Currently active proxies (local to this node).
     pub(crate) proxies: Mutex<HashMap<String, ProxyInfo>>,
 }
@@ -36,7 +37,26 @@ impl ProxyState {
         Self {
             event_tx,
             proxies: Mutex::new(HashMap::new()),
+            operations: Mutex::new(HashMap::new()),
         }
+    }
+
+    // Hold across the provider reply and local state update. Operations on a
+    // different listener never wait for this one to bind or drain.
+    async fn lock_id(&self, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.operations.lock().expect("proxy operations poisoned");
+            locks.retain(|_, lock| lock.strong_count() != 0);
+            match locks.get(id).and_then(Weak::upgrade) {
+                Some(lock) => lock,
+                None => {
+                    let lock = Arc::new(tokio::sync::Mutex::new(()));
+                    locks.insert(id.to_owned(), Arc::downgrade(&lock));
+                    lock
+                }
+            }
+        };
+        lock.lock_owned().await
     }
 
     /// Record a runtime engine error: mark the proxy `Error` and emit
@@ -101,6 +121,7 @@ impl<'a, N: NetworkProvider + 'static> Proxy<'a, N> {
         crate::node::ensure_port_unreserved(config.listen_port, self.node.ws_port)?;
         validate_config(&config).map_err(NodeError::ConnectionFailed)?;
 
+        let _operation = self.state().lock_id(&config.id).await;
         let params = proxy_add_params(&config);
         let result = self.node.network.proxy_add(params).await?;
 
@@ -130,12 +151,40 @@ impl<'a, N: NetworkProvider + 'static> Proxy<'a, N> {
         Ok(info)
     }
 
+    /// Replace the complete route table without restarting the listener.
+    /// Unchanged routes retain their requests, WebSockets and resources.
+    pub async fn update(&self, id: &str, update: ProxyUpdate) -> Result<ProxyInfo, NodeError> {
+        validate_table(
+            &update.routes,
+            &update.allow,
+            &update.accept_app_capabilities,
+            &update.headers,
+        )
+        .map_err(NodeError::ConnectionFailed)?;
+        let _operation = self.state().lock_id(id).await;
+        self.node.network.proxy_update(id, update).await?;
+        let info = {
+            let mut proxies = self.state().proxies.lock().expect("proxy state poisoned");
+            let info = proxies
+                .get_mut(id)
+                .ok_or_else(|| NodeError::ConnectionFailed(format!("[NOT_FOUND] proxy {id}")))?;
+            info.target = ProxyTarget::default();
+            info.clone()
+        };
+        let _ = self
+            .state()
+            .event_tx
+            .send(ProxyEvent::Updated { id: id.to_owned() });
+        Ok(info)
+    }
+
     /// Remove a reverse proxy by ID.
     ///
     /// Sends the `proxy:remove` command to the sidecar and waits for
     /// confirmation. On success, removes the proxy from local state and
     /// emits a [`ProxyEvent::Stopped`] event.
     pub async fn remove(&self, id: &str) -> Result<(), NodeError> {
+        let _operation = self.state().lock_id(id).await;
         self.node.network.proxy_remove(id).await?;
 
         // Remove from local state
@@ -180,7 +229,24 @@ fn proxy_add_params(config: &ProxyConfig) -> ProxyAddParams {
 /// combinations that would silently do nothing are rejected here rather
 /// than half-applied by the engine.
 fn validate_config(config: &ProxyConfig) -> Result<(), String> {
-    for route in &config.routes {
+    validate_table(
+        &config.routes,
+        &config.allow,
+        &config.accept_app_capabilities,
+        &config.headers,
+    )
+}
+
+fn validate_table(
+    routes: &[ProxyRoute],
+    allow: &[String],
+    caps: &[String],
+    headers: &[ProxyHeader],
+) -> Result<(), String> {
+    if routes.len() > 1024 {
+        return Err("[TOO_MANY_ROUTES] a serve supports at most 1024 routes".into());
+    }
+    for route in routes {
         if !route.prefix.starts_with('/') {
             return Err(format!(
                 "route prefix {:?} must start with '/'",
@@ -215,27 +281,22 @@ fn validate_config(config: &ProxyConfig) -> Result<(), String> {
             ));
         }
     }
-    if config.allow.iter().any(|glob| glob.trim().is_empty()) {
+    if allow.iter().any(|glob| glob.trim().is_empty()) {
         return Err("allow globs must be non-empty strings".into());
     }
-    if config
-        .routes
+    if routes
         .iter()
         .flat_map(|r| r.allow.iter())
         .any(|glob| glob.trim().is_empty())
     {
         return Err("route allow globs must be non-empty strings".into());
     }
-    if let Some(bad) = config
-        .accept_app_capabilities
-        .iter()
-        .find(|name| !is_app_capability_name(name))
-    {
+    if let Some(bad) = caps.iter().find(|name| !is_app_capability_name(name)) {
         return Err(format!(
             "accept_app_capabilities entry {bad:?} is not a capability name ({{domain}}/{{path}})"
         ));
     }
-    validate_response_headers(config)
+    validate_response_headers(headers, routes)
 }
 
 /// Tailscale application-capability names are `{domain}/{path}` (KB 1537).
@@ -298,16 +359,16 @@ const REFUSED_RESPONSE_HEADER_PREFIX: &str = "proxy-";
 /// an unmatched path) and each route's merged over it. The sidecar's
 /// `validateResponseHeaders` checks the same rules in the same order; both are
 /// tested against `response_headers_vectors.json`.
-fn validate_response_headers(config: &ProxyConfig) -> Result<(), String> {
-    validate_header_list("serve headers", &config.headers)?;
-    validate_effective_headers("serve headers", &config.headers, &[])?;
-    for route in &config.routes {
+fn validate_response_headers(headers: &[ProxyHeader], routes: &[ProxyRoute]) -> Result<(), String> {
+    validate_header_list("serve headers", headers)?;
+    validate_effective_headers("serve headers", headers, &[])?;
+    for route in routes {
         if route.headers.is_empty() {
             continue;
         }
         let scope = format!("route {:?} headers", route.prefix);
         validate_header_list(&scope, &route.headers)?;
-        validate_effective_headers(&scope, &config.headers, &route.headers)?;
+        validate_effective_headers(&scope, headers, &route.headers)?;
     }
     Ok(())
 }

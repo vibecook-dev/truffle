@@ -25,6 +25,7 @@ Default permissions for the Truffle plugin
 - `allow-set-local-online`
 - `allow-proxy-add`
 - `allow-proxy-remove`
+- `allow-proxy-update`
 - `allow-proxy-list`
 
 ## Permission Table
@@ -578,6 +579,32 @@ Enables the proxy_remove command without any pre-configured scope.
 <td>
 
 Denies the proxy_remove command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`truffle-tauri-plugin:allow-proxy-update`
+
+</td>
+<td>
+
+Enables the proxy_update command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`truffle-tauri-plugin:deny-proxy-update`
+
+</td>
+<td>
+
+Denies the proxy_update command without any pre-configured scope.
 
 </td>
 </tr>

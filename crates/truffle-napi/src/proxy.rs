@@ -46,10 +46,20 @@ pub struct NapiProxyConfig {
     /// Path-prefix routes (RFC 023 §7). When non-empty they replace the
     /// single `targetHost`/`targetPort`/`targetScheme` target.
     pub routes: Option<Vec<NapiProxyRoute>>,
+    pub accept_app_capabilities: Option<Vec<String>>,
     /// Response headers set on every response of the serve (RFC 030), e.g.
     /// `Content-Security-Policy`. A route's own `headers` replace these by
     /// name. Needs sidecar protocol 13 (default: none).
     pub headers: Option<Vec<NapiProxyHeader>>,
+}
+
+/// Full replacement for a running serve's routes and policies.
+#[napi(object)]
+pub struct NapiProxyUpdate {
+    pub routes: Vec<NapiProxyRoute>,
+    pub allow: Option<Vec<String>>,
+    pub headers: Option<Vec<NapiProxyHeader>>,
+    pub accept_app_capabilities: Option<Vec<String>>,
 }
 
 /// One response header of a serve or a route (RFC 030). Validation lives in
@@ -183,6 +193,14 @@ impl From<ProxyEvent> for NapiProxyEvent {
                 code: None,
                 message: None,
             },
+            ProxyEvent::Updated { id } => Self {
+                event_type: "updated".to_string(),
+                id,
+                url: None,
+                listen_port: None,
+                code: None,
+                message: None,
+            },
             ProxyEvent::Stopped { id } => Self {
                 event_type: "stopped".to_string(),
                 id,
@@ -260,8 +278,7 @@ impl NapiProxy {
                 .into_iter()
                 .map(Into::into)
                 .collect(),
-            // Not exposed to JS yet (protocol 9 capability forwarding).
-            accept_app_capabilities: Vec::new(),
+            accept_app_capabilities: config.accept_app_capabilities.unwrap_or_default(),
             headers: config
                 .headers
                 .unwrap_or_default()
@@ -274,6 +291,30 @@ impl NapiProxy {
             .await
             .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(NapiProxyInfo::from(info))
+    }
+
+    /// Replace all routes without restarting the listener (sidecar protocol 14).
+    #[napi]
+    pub async fn update(&self, id: String, update: NapiProxyUpdate) -> Result<NapiProxyInfo> {
+        self.node
+            .proxy()
+            .update(
+                &id,
+                truffle_core::proxy::ProxyUpdate {
+                    routes: update.routes.into_iter().map(Into::into).collect(),
+                    allow: update.allow.unwrap_or_default(),
+                    headers: update
+                        .headers
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(Into::into)
+                        .collect(),
+                    accept_app_capabilities: update.accept_app_capabilities.unwrap_or_default(),
+                },
+            )
+            .await
+            .map(Into::into)
+            .map_err(|e| Error::from_reason(e.to_string()))
     }
 
     /// Remove a reverse proxy by ID.

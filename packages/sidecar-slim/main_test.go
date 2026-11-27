@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -473,8 +474,8 @@ func TestShouldWrapTLS(t *testing.T) {
 // Update this test AND provider.rs capability gates when bumping the version.
 // Login gating still requires v5; authenticated UDP still requires v6.
 func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
-	if sidecarProtocolVersion != 13 {
-		t.Fatalf("sidecarProtocolVersion = %d, want 13 (response headers on proxy:add, RFC 030)", sidecarProtocolVersion)
+	if sidecarProtocolVersion != 14 {
+		t.Fatalf("sidecarProtocolVersion = %d, want 14 (live route updates)", sidecarProtocolVersion)
 	}
 
 	var buf bytes.Buffer
@@ -482,7 +483,7 @@ func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
 	s.sendStatus("running", "host", "host.tail.ts.net", "100.64.0.1", "", "")
 
 	// The core matches the camelCase key exactly, as a JSON integer.
-	if !bytes.Contains(buf.Bytes(), []byte(`"protocolVersion":13`)) {
+	if !bytes.Contains(buf.Bytes(), []byte(fmt.Sprintf(`"protocolVersion":%d`, sidecarProtocolVersion))) {
 		t.Errorf("status payload missing protocolVersion on the wire: %s", strings.TrimSpace(buf.String()))
 	}
 
@@ -1340,7 +1341,7 @@ func TestBindProxyRoutesValidatesRootsAndCleansResources(t *testing.T) {
 
 	t.Run("missing root", func(t *testing.T) {
 		missing := filepath.Join(t.TempDir(), "missing")
-		_, _, failure := s.bindProxyRoutes(staticProxyAddData("missing", 8443, missing))
+		_, failure := s.bindProxyRoutes(staticProxyAddData("missing", 8443, missing), nil, true)
 		if failure == nil || failure.code != "STATIC_ROOT_INVALID" {
 			t.Fatalf("failure = %#v, want STATIC_ROOT_INVALID", failure)
 		}
@@ -1352,7 +1353,7 @@ func TestBindProxyRoutesValidatesRootsAndCleansResources(t *testing.T) {
 		if err := os.WriteFile(file, []byte("not a directory"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		_, _, failure := s.bindProxyRoutes(staticProxyAddData("file", 8444, file))
+		_, failure := s.bindProxyRoutes(staticProxyAddData("file", 8444, file), nil, true)
 		if failure == nil || failure.code != "STATIC_ROOT_INVALID" {
 			t.Fatalf("failure = %#v, want STATIC_ROOT_INVALID", failure)
 		}
@@ -1362,7 +1363,7 @@ func TestBindProxyRoutesValidatesRootsAndCleansResources(t *testing.T) {
 		setStaticRootOpener(t, func(string) (staticRoot, error) {
 			return nil, fs.ErrPermission
 		})
-		_, _, failure := s.bindProxyRoutes(staticProxyAddData("denied", 8445, t.TempDir()))
+		_, failure := s.bindProxyRoutes(staticProxyAddData("denied", 8445, t.TempDir()), nil, true)
 		if failure == nil || failure.code != "STATIC_ROOT_INVALID" {
 			t.Fatalf("failure = %#v, want STATIC_ROOT_INVALID", failure)
 		}
@@ -1373,7 +1374,7 @@ func TestBindProxyRoutesValidatesRootsAndCleansResources(t *testing.T) {
 		setStaticRootOpener(t, func(string) (staticRoot, error) { return root, nil })
 		data := staticProxyAddData("later-invalid", 8446, t.TempDir())
 		data.Routes = append(data.Routes, proxyRouteData{Prefix: "not-absolute", TargetURL: "http://localhost:3000"})
-		_, _, failure := s.bindProxyRoutes(data)
+		_, failure := s.bindProxyRoutes(data, nil, true)
 		if failure == nil || failure.code != "INVALID_ROUTE" {
 			t.Fatalf("failure = %#v, want INVALID_ROUTE", failure)
 		}
@@ -1395,7 +1396,7 @@ func TestBindProxyRoutesValidatesRootsAndCleansResources(t *testing.T) {
 		})
 		data := staticProxyAddData("later-root", 8447, t.TempDir())
 		data.Routes = append(data.Routes, proxyRouteData{Prefix: "/second", Dir: t.TempDir()})
-		_, _, failure := s.bindProxyRoutes(data)
+		_, failure := s.bindProxyRoutes(data, nil, true)
 		if failure == nil || failure.code != "STATIC_ROOT_INVALID" {
 			t.Fatalf("failure = %#v, want STATIC_ROOT_INVALID", failure)
 		}
@@ -1405,7 +1406,7 @@ func TestBindProxyRoutesValidatesRootsAndCleansResources(t *testing.T) {
 	t.Run("successful binding transfers an idempotent owner", func(t *testing.T) {
 		root := newTrackingStaticRoot()
 		setStaticRootOpener(t, func(string) (staticRoot, error) { return root, nil })
-		_, resources, failure := s.bindProxyRoutes(staticProxyAddData("success", 8448, t.TempDir()))
+		resources, failure := s.bindProxyRoutes(staticProxyAddData("success", 8448, t.TempDir()), nil, true)
 		if failure != nil {
 			t.Fatalf("bind failure: %#v", failure)
 		}
@@ -1414,8 +1415,8 @@ func TestBindProxyRoutesValidatesRootsAndCleansResources(t *testing.T) {
 			t.Fatal("root closed before owner teardown")
 		default:
 		}
-		resources.close()
-		resources.close()
+		resources.retireExcept(nil)
+		resources.retireExcept(nil)
 		waitForSignal(t, root.closed, "resource owner close")
 		if got := root.closeCalls.Load(); got != 1 {
 			t.Errorf("root Close calls = %d, want 1", got)
@@ -1588,8 +1589,8 @@ func TestPendingProxyAddCannotInstallAfterShutdown(t *testing.T) {
 func TestOldPendingCleanupCannotDeleteNewPlaceholder(t *testing.T) {
 	s := newTestShim()
 	t.Cleanup(s.cancel)
-	oldPending := newPendingProxyAdd(&proxyResources{})
-	newPending := newPendingProxyAdd(&proxyResources{})
+	oldPending := newPendingProxyAdd(&proxyTable{})
+	newPending := newPendingProxyAdd(&proxyTable{})
 	s.proxies["same-id"] = nil
 	s.pendingProxyAdds["same-id"] = newPending
 
@@ -1617,7 +1618,7 @@ func TestProxyRootOwnershipTransferRemoveAndShutdown(t *testing.T) {
 			ln := newTrackingListener()
 			s.startProxyAdd(nil, nil, data, func(bool, string) (net.Listener, error) { return ln, nil })
 			entry := waitForProxyEntry(t, s, data.ID)
-			if entry.resources == nil {
+			if entry.table.Load() == nil {
 				t.Fatal("live proxy did not own rooted resources")
 			}
 			select {
@@ -1646,8 +1647,8 @@ func TestProxyRootOwnershipTransferRemoveAndShutdown(t *testing.T) {
 
 func TestProxyShutdownDrainsHTTPBeforeClosingRoots(t *testing.T) {
 	root := newTrackingStaticRoot()
-	resources := &proxyResources{}
-	resources.addRoot(root)
+	resources := &proxyTable{}
+	resources.routes = []*boundRoute{{root: root}}
 	requestStarted := make(chan struct{})
 	releaseRequest := make(chan struct{})
 	var releaseOnce sync.Once
@@ -1662,7 +1663,8 @@ func TestProxyShutdownDrainsHTTPBeforeClosingRoots(t *testing.T) {
 		<-releaseRequest
 		_, _ = io.WriteString(w, "DONE")
 	})}
-	entry := &proxyEntry{listener: ln, server: httpSrv, resources: resources}
+	entry := &proxyEntry{listener: ln, server: httpSrv}
+	entry.table.Store(resources)
 	serveDone := make(chan struct{})
 	go func() {
 		_ = httpSrv.Serve(ln)
@@ -1756,7 +1758,7 @@ func TestRootedHandleCountReturnsToBaseline(t *testing.T) {
 		}
 		data := staticProxyAddData("rejected-"+strconv.Itoa(i), uint16(9100+i), t.TempDir())
 		data.Routes = append(data.Routes, proxyRouteData{Prefix: "/second", Dir: t.TempDir()})
-		_, _, failure := s.bindProxyRoutes(data)
+		_, failure := s.bindProxyRoutes(data, nil, true)
 		if failure == nil || failure.code != "STATIC_ROOT_INVALID" {
 			t.Fatalf("failure = %#v, want STATIC_ROOT_INVALID", failure)
 		}

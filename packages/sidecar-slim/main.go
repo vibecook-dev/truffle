@@ -27,9 +27,7 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -171,7 +169,8 @@ type dialResultData struct {
 // An absent value makes the core treat the sidecar as v1.
 // Bump on any addition to the command surface the core must not send blind,
 // or to an event the core relies on.
-const sidecarProtocolVersion = 13
+// v14: proxy:update replaces a live route table.
+const sidecarProtocolVersion = 14
 
 type statusData struct {
 	State       string `json:"state"`
@@ -574,43 +573,19 @@ var openStaticRoot = func(name string) (staticRoot, error) {
 	return root, nil
 }
 
-// proxyResources owns every rooted directory handle opened while binding one
-// proxy. It starts with the pending add and transfers to proxyEntry exactly
-// once. Close is idempotent because failure, removal, and shutdown paths may
-// converge during teardown.
-type proxyResources struct {
-	closeOnce sync.Once
-	roots     []staticRoot
-}
-
-func (r *proxyResources) addRoot(root staticRoot) {
-	r.roots = append(r.roots, root)
-}
-
-func (r *proxyResources) close() {
-	if r == nil {
-		return
-	}
-	r.closeOnce.Do(func() {
-		for _, root := range r.roots {
-			_ = root.Close()
-		}
-	})
-}
-
 // pendingProxyAdd is the pre-transfer owner of rooted handles and any listener
 // or cancel function created while an add is still in flight. handleStop can
 // abort these owners directly, even while listener creation is blocked.
 type pendingProxyAdd struct {
 	mu          sync.Mutex
-	resources   *proxyResources
+	resources   *proxyTable
 	listener    net.Listener
 	cancel      context.CancelFunc
 	aborted     bool
 	transferred bool
 }
 
-func newPendingProxyAdd(resources *proxyResources) *pendingProxyAdd {
+func newPendingProxyAdd(resources *proxyTable) *pendingProxyAdd {
 	return &pendingProxyAdd{resources: resources}
 }
 
@@ -673,23 +648,7 @@ func (p *pendingProxyAdd) abort() {
 	if ln != nil {
 		_ = ln.Close()
 	}
-	resources.close()
-}
-
-// boundRoute is a validated, ready-to-serve mount. v1 single-target configs
-// become one "/" route so a single handler path serves both generations.
-type boundRoute struct {
-	prefix  string
-	allow   []string
-	handler http.Handler
-	target  *url.URL // nil for dir routes (no WebSocket dispatch)
-	// Hijacked upgrades must apply the same target path/query rewrite as HTTP.
-	rewriteRequest func(*http.Request)
-	// headers is the route's effective response-header list (RFC 030): the
-	// serve's, each replaced by the route's own of the same name. handler
-	// already sets it; the request handler sets it on the engine's own 403
-	// and on the WebSocket path's errors.
-	headers http.Header
+	resources.retireExcept(nil)
 }
 
 type proxyAddFailure struct {
@@ -699,39 +658,19 @@ type proxyAddFailure struct {
 
 // proxyEntry is the internal state for a running reverse proxy.
 type proxyEntry struct {
-	id           string
-	name         string
-	listenPort   uint16
-	targetHost   string
-	targetPort   uint16
-	targetScheme string
-	targetURL    *url.URL // first URL target; nil in routes mode (RFC 023)
-	tlsOn        bool     // whether the tailnet listener terminates TLS
-	listener     net.Listener
-	server       *http.Server
-	cancel       context.CancelFunc
-	resources    *proxyResources
-	shutdownOnce sync.Once
-
-	// wsConns tracks live hijacked WebSocket connections. http.Server.Shutdown
-	// does NOT close hijacked conns, so we close them explicitly on teardown (P1).
-	wsMu    sync.Mutex
-	wsConns map[net.Conn]struct{}
-}
-
-func (e *proxyEntry) addWS(c net.Conn) {
-	e.wsMu.Lock()
-	if e.wsConns == nil {
-		e.wsConns = make(map[net.Conn]struct{})
-	}
-	e.wsConns[c] = struct{}{}
-	e.wsMu.Unlock()
-}
-
-func (e *proxyEntry) removeWS(c net.Conn) {
-	e.wsMu.Lock()
-	delete(e.wsConns, c)
-	e.wsMu.Unlock()
+	id               string
+	name             string
+	listenPort       uint16
+	targetHost       string
+	targetPort       uint16
+	targetScheme     string
+	allowNonLoopback bool
+	table            atomic.Pointer[proxyTable]
+	tlsOn            bool // whether the tailnet listener terminates TLS
+	listener         net.Listener
+	server           *http.Server
+	cancel           context.CancelFunc
+	shutdownOnce     sync.Once
 }
 
 // shutdown tears the proxy down in the correct order (P5): cancel in-flight
@@ -754,13 +693,7 @@ func (e *proxyEntry) shutdown(timeout time.Duration) {
 		if e.listener != nil {
 			_ = e.listener.Close()
 		}
-		e.wsMu.Lock()
-		for c := range e.wsConns {
-			_ = c.Close()
-			delete(e.wsConns, c)
-		}
-		e.wsMu.Unlock()
-		e.resources.close()
+		e.table.Load().retireExcept(nil)
 	})
 }
 
@@ -1117,6 +1050,8 @@ func main() {
 			s.handleDeleteWaitingFile(cmd.Data)
 		case "proxy:add":
 			s.handleProxyAdd(cmd.Data)
+		case "proxy:update":
+			s.handleProxyUpdate(cmd.Data)
 		case "proxy:remove":
 			s.handleProxyRemove(cmd.Data)
 		case "proxy:list":
@@ -2773,111 +2708,6 @@ func withStaticResponseHeaders(next http.Handler, h http.Header) http.Handler {
 	})
 }
 
-// bindProxyRoutes validates every route and opens all static roots before any
-// proxy state or listener is installed. On any failure, including a panic, it
-// closes roots accumulated from earlier routes.
-func (s *shim) bindProxyRoutes(data proxyAddData) (routes []boundRoute, resources *proxyResources, failure *proxyAddFailure) {
-	resources = &proxyResources{}
-	succeeded := false
-	defer func() {
-		if !succeeded {
-			resources.close()
-		}
-	}()
-
-	if len(data.Routes) == 0 {
-		targetURL := &url.URL{Scheme: data.TargetScheme, Host: fmt.Sprintf("%s:%d", data.TargetHost, data.TargetPort)}
-		if !data.AllowNonLoopback && !isLoopbackHost(data.TargetHost) {
-			return nil, resources, &proxyAddFailure{
-				code:    "TARGET_NOT_LOOPBACK",
-				message: fmt.Sprintf("target %q is not loopback; a non-loopback target makes this node a pivot into its network — set allowNonLoopback to opt in (RFC 023 §9.3)", data.TargetHost),
-			}
-		}
-		proxy := s.buildReverseProxy(data.ID, targetURL, "")
-		headers := mergeResponseHeaders(data.Headers, nil)
-		withResponseHeaders(proxy, headers)
-		routes = append(routes, boundRoute{
-			prefix:         "/",
-			handler:        proxy,
-			target:         targetURL,
-			rewriteRequest: proxy.Director,
-			headers:        headers,
-		})
-	} else {
-		for _, rt := range data.Routes {
-			if !strings.HasPrefix(rt.Prefix, "/") {
-				return nil, resources, &proxyAddFailure{code: "INVALID_ROUTE", message: fmt.Sprintf("route prefix %q must start with '/'", rt.Prefix)}
-			}
-			switch {
-			case rt.TargetURL != "" && rt.Dir != "":
-				return nil, resources, &proxyAddFailure{code: "INVALID_ROUTE", message: fmt.Sprintf("route %q sets both targetUrl and dir", rt.Prefix)}
-			case rt.TargetURL != "":
-				u, err := url.Parse(rt.TargetURL)
-				if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-					return nil, resources, &proxyAddFailure{code: "INVALID_ROUTE", message: fmt.Sprintf("route %q: targetUrl must be an absolute http(s) URL", rt.Prefix)}
-				}
-				if !data.AllowNonLoopback && !isLoopbackHost(u.Hostname()) {
-					return nil, resources, &proxyAddFailure{
-						code:    "TARGET_NOT_LOOPBACK",
-						message: fmt.Sprintf("route %q target %q is not loopback — set allowNonLoopback to opt in (RFC 023 §9.3)", rt.Prefix, u.Hostname()),
-					}
-				}
-				strip := ""
-				if rt.StripPrefix {
-					strip = rt.Prefix
-				}
-				proxy := s.buildReverseProxy(data.ID, u, strip)
-				headers := mergeResponseHeaders(data.Headers, rt.Headers)
-				withResponseHeaders(proxy, headers)
-				routes = append(routes, boundRoute{
-					prefix:         rt.Prefix,
-					allow:          rt.Allow,
-					handler:        proxy,
-					target:         u,
-					rewriteRequest: proxy.Director,
-					headers:        headers,
-				})
-			case rt.Dir != "":
-				if !filepath.IsAbs(rt.Dir) {
-					return nil, resources, &proxyAddFailure{code: "INVALID_ROUTE", message: fmt.Sprintf("route %q: dir must be an absolute path", rt.Prefix)}
-				}
-				root, err := openStaticRoot(rt.Dir)
-				if err != nil {
-					if root != nil {
-						_ = root.Close()
-					}
-					return nil, resources, &proxyAddFailure{
-						code:    "STATIC_ROOT_INVALID",
-						message: fmt.Sprintf("route %q static root %q cannot be opened: %v", rt.Prefix, rt.Dir, err),
-					}
-				}
-				if root == nil {
-					return nil, resources, &proxyAddFailure{
-						code:    "STATIC_ROOT_INVALID",
-						message: fmt.Sprintf("route %q static root %q returned no handle", rt.Prefix, rt.Dir),
-					}
-				}
-				resources.addRoot(root)
-				headers := mergeResponseHeaders(data.Headers, rt.Headers)
-				routes = append(routes, boundRoute{
-					prefix:  rt.Prefix,
-					allow:   rt.Allow,
-					handler: withStaticResponseHeaders(newSPAFileServer(root, rt.Fallback), headers),
-					headers: headers,
-				})
-			default:
-				return nil, resources, &proxyAddFailure{code: "INVALID_ROUTE", message: fmt.Sprintf("route %q needs a targetUrl or a dir", rt.Prefix)}
-			}
-		}
-		// Longest prefix wins, order-independent (D11): sort once, match
-		// first-hit at request time.
-		sort.Slice(routes, func(i, j int) bool { return len(routes[i].prefix) > len(routes[j].prefix) })
-	}
-
-	succeeded = true
-	return routes, resources, nil
-}
-
 type proxyListenFunc func(tlsOn bool, addr string) (net.Listener, error)
 
 // removeProxyPlaceholder removes only a still-pending entry. It must never
@@ -2927,20 +2757,12 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 	// validates shapes too, but the sidecar re-checks — it must not trust the
 	// wire (§9). Opening static roots here intentionally makes invalid roots an
 	// add-time failure rather than a later request-time 404.
-	if failure := validateAcceptAppCaps(data.AcceptAppCaps); failure != nil {
+	table, failure := s.bindProxyRoutes(data, nil, data.Routes == nil || data.TargetPort != 0)
+	if failure != nil {
 		fail(failure.code, failure.message)
 		return
 	}
-	if failure := validateResponseHeaders(data); failure != nil {
-		fail(failure.code, failure.message)
-		return
-	}
-	routes, resources, bindFailure := s.bindProxyRoutes(data)
-	if bindFailure != nil {
-		fail(bindFailure.code, bindFailure.message)
-		return
-	}
-	pending := newPendingProxyAdd(resources)
+	pending := newPendingProxyAdd(table)
 	handedToAsync := false
 	defer func() {
 		if !handedToAsync {
@@ -2989,15 +2811,8 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 		forwardedProto = "https"
 	}
 
-	// The proxyEntry keeps the v1 single-target URL for list/debug; routes
-	// mode has no single target.
-	var entryTargetURL *url.URL
-	if len(data.Routes) == 0 {
-		entryTargetURL = routes[0].target
-	}
-	// The serve's own response headers (RFC 030) ride the engine's 404 for a
-	// path no route matches; a matched route's handler sets its own list.
-	serveHeaders := mergeResponseHeaders(data.Headers, nil)
+	entry := &proxyEntry{id: data.ID, name: data.Name, listenPort: data.ListenPort, targetHost: data.TargetHost, targetPort: data.TargetPort, targetScheme: data.TargetScheme, tlsOn: tlsOn, allowNonLoopback: data.AllowNonLoopback}
+	entry.table.Store(table)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Identity first (§9.2): resolve who is calling from the WireGuard
@@ -3006,20 +2821,25 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 		identity := s.proxyWhois(lc, r.RemoteAddr)
 		sanitizeTailscaleHeaders(r.Header)
 
-		var route *boundRoute
-		for i := range routes {
-			if pathMatchesPrefix(r.URL.Path, routes[i].prefix) {
-				route = &routes[i]
-				break
-			}
-		}
+		route, unmatchedHeaders := entry.match(r.URL.Path)
 		if route == nil {
-			applyResponseHeaders(w.Header(), serveHeaders)
+			applyResponseHeaders(w.Header(), unmatchedHeaders)
 			http.NotFound(w, r)
 			return
 		}
 
-		if !allowedLogin(effectiveAllow(route.allow, data.Allow), identity.LoginName) {
+		if route.root != nil {
+			defer route.releaseFile()
+		} else {
+			ctx, cancel := context.WithCancel(r.Context())
+			stop := context.AfterFunc(route.ctx, cancel)
+			if route.ctx.Err() != nil {
+				cancel()
+			}
+			defer func() { stop(); cancel() }()
+			r = r.WithContext(ctx)
+		}
+		if !allowedLogin(route.allow, identity.LoginName) {
 			// Bare 403 (§9.7): no detail about the gate to non-matching callers.
 			applyResponseHeaders(w.Header(), route.headers)
 			http.Error(w, "Forbidden", http.StatusForbidden)
@@ -3027,20 +2847,17 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 		}
 
 		injectIdentityHeaders(r.Header, identity)
-		injectAppCapabilities(r.Header, identity, data.AcceptAppCaps)
+		injectAppCapabilities(r.Header, identity, route.caps)
 		r.Header.Set("X-Forwarded-Proto", forwardedProto)
 
 		// WebSocket upgrades bypass ReverseProxy via hijack — only for URL
 		// targets (an upgrade against a static dir just gets the file 404s).
 		if route.target != nil && isProxyWebSocketRequest(r) {
 			route.rewriteRequest(r)
-			s.proxyMu.Lock()
-			entry := s.proxies[data.ID]
-			s.proxyMu.Unlock()
 			// The route's headers ride this path's own 502 and 500; a hijacked
 			// upgrade is a byte relay, and its 101 is the backend's own.
 			applyResponseHeaders(w.Header(), route.headers)
-			s.handleProxyWebSocket(w, r, entry, route.target.Hostname(), urlPort(route.target), route.target.Scheme)
+			s.handleProxyWebSocket(w, r, route, route.target.Hostname(), urlPort(route.target), route.target.Scheme)
 			return
 		}
 
@@ -3106,12 +2923,7 @@ func (s *shim) startProxyAdd(srv *tsnet.Server, lc *local.Client, data proxyAddD
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       120 * time.Second,
 		}
-		entry := &proxyEntry{
-			id: data.ID, name: data.Name, listenPort: data.ListenPort,
-			targetHost: data.TargetHost, targetPort: data.TargetPort,
-			targetScheme: data.TargetScheme, targetURL: entryTargetURL, tlsOn: tlsOn,
-			listener: ln, server: httpSrv, cancel: cancel, resources: resources,
-		}
+		entry.listener, entry.server, entry.cancel = ln, httpSrv, cancel
 
 		if !s.installProxyEntry(data.ID, lifecycle, pending, entry) {
 			fail("NOT_READY", "node lifecycle ended before proxy became ready")
@@ -3135,7 +2947,7 @@ func isProxyWebSocketRequest(r *http.Request) bool {
 	return strings.Contains(connection, "upgrade") && upgrade == "websocket"
 }
 
-func (s *shim) handleProxyWebSocket(w http.ResponseWriter, r *http.Request, entry *proxyEntry, targetHost string, targetPort uint16, targetScheme string) {
+func (s *shim) handleProxyWebSocket(w http.ResponseWriter, r *http.Request, route *boundRoute, targetHost string, targetPort uint16, targetScheme string) {
 	targetAddr := net.JoinHostPort(targetHost, strconv.Itoa(int(targetPort)))
 
 	var targetConn net.Conn
@@ -3143,9 +2955,9 @@ func (s *shim) handleProxyWebSocket(w http.ResponseWriter, r *http.Request, entr
 	if targetScheme == "https" {
 		dialer := &net.Dialer{Timeout: 10 * time.Second}
 		// P6: only skip TLS verification for loopback targets.
-		targetConn, err = tls.DialWithDialer(dialer, "tcp", targetAddr, &tls.Config{InsecureSkipVerify: isLoopbackHost(targetHost)})
+		targetConn, err = (&tls.Dialer{NetDialer: dialer, Config: &tls.Config{InsecureSkipVerify: isLoopbackHost(targetHost)}}).DialContext(r.Context(), "tcp", targetAddr)
 	} else {
-		targetConn, err = net.DialTimeout("tcp", targetAddr, 10*time.Second)
+		targetConn, err = (&net.Dialer{Timeout: 10 * time.Second}).DialContext(r.Context(), "tcp", targetAddr)
 	}
 	if err != nil {
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
@@ -3169,14 +2981,12 @@ func (s *shim) handleProxyWebSocket(w http.ResponseWriter, r *http.Request, entr
 
 	// P1: register both conns so proxy:remove / tsnet:stop can force them closed
 	// (http.Server.Shutdown does not touch hijacked connections).
-	if entry != nil {
-		entry.addWS(clientConn)
-		entry.addWS(targetConn)
-		defer func() {
-			entry.removeWS(clientConn)
-			entry.removeWS(targetConn)
-		}()
+	if !route.trackSockets(clientConn, targetConn) {
+		_ = clientConn.Close()
+		_ = targetConn.Close()
+		return
 	}
+	defer route.untrackSockets(clientConn, targetConn)
 
 	// Rewrite Host header for the target
 	r.Host = targetAddr

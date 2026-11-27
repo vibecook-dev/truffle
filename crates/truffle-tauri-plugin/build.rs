@@ -2,6 +2,7 @@ const COMMANDS: &[&str] = &[
     "start",
     "stop",
     "get_local_info",
+    "proxy_update",
     "get_peers",
     "ping",
     "health",
