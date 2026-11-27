@@ -441,6 +441,10 @@ a pointer to RFC 023 §9.6 — it lands in a later phase. Announcing serves for
 other peers to browse is also future work: there's no `announce` option on
 `serve` yet.
 
+A GET or HEAD for a static directory’s bare mount (for example `/app?q=1`)
+returns a 308 redirect to `/app/?q=1`. Relative asset URLs then resolve inside
+the mount. A directory mounted at `/` serves its index directly.
+
 ## Constraints
 
 | Constraint | Detail |
