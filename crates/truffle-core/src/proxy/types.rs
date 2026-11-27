@@ -56,6 +56,9 @@ pub struct ProxyConfig {
     /// with a LAN target turns this node into a pivot into its network.
     #[serde(default)]
     pub allow_non_loopback: bool,
+    /// Listen exclusively for anonymous visitors through Tailscale Funnel (protocol 15).
+    #[serde(default)]
+    pub funnel: bool,
     /// loginName allow globs (RFC 023 §9.7), e.g. `["*@corp.com"]`. Empty =
     /// the whole tailnet (subject to tailnet ACLs). Evaluated by the sidecar
     /// against the connection's WhoIs identity; non-matching requests get a
@@ -104,6 +107,8 @@ fn default_true() -> bool {
 /// Information about a running or configured proxy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyInfo {
+    #[serde(default)]
+    pub funnel: bool,
     pub id: String,
     pub name: String,
     pub listen_port: u16,

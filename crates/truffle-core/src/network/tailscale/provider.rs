@@ -195,6 +195,7 @@ pub struct TailscaleProvider {
 /// Where the event processor reports the node's own status changes.
 #[derive(Clone)]
 pub(crate) struct StatusReporting {
+    funnel: broadcast::Sender<crate::network::FunnelStatus>,
     /// [`NetworkStatusEvent`] fan-out (`status_events()`).
     pub(crate) tx: broadcast::Sender<NetworkStatusEvent>,
     /// Set while the device waits for admin approval, so a start timeout
@@ -214,6 +215,7 @@ pub(crate) struct StatusReporting {
 impl StatusReporting {
     pub(crate) fn new(tx: broadcast::Sender<NetworkStatusEvent>) -> Self {
         Self {
+            funnel: broadcast::channel(32).0,
             tx,
             needs_approval: Arc::default(),
             key_expiry: Arc::default(),
@@ -819,6 +821,9 @@ impl TailscaleProvider {
                             SidecarInternalEvent::LockStatus { enabled, signed } => {
                                 status.learn_lock(enabled, signed);
                             }
+                            SidecarInternalEvent::FunnelChanged(grant) => {
+                                let _ = status.funnel.send(grant);
+                            }
                             SidecarInternalEvent::LoggingRequired => {
                                 // Only an opted-out node hears this (the
                                 // sidecar checks); tsnet has stopped it.
@@ -1239,6 +1244,7 @@ fn proxy_add_command(config: &ProxyAddParams) -> ProxyAddCommandData {
         target_scheme: config.target_scheme.clone(),
         tls: config.tls,
         allow_non_loopback: config.allow_non_loopback,
+        funnel: config.funnel,
         allow: config.allow.clone(),
         routes: (!config.routes.is_empty() || config.target_port == 0)
             .then(|| config.routes.clone()),
@@ -1863,6 +1869,10 @@ impl super::super::NetworkProvider for TailscaleProvider {
             return Err(NetworkError::NotRunning);
         }
 
+        if config.funnel {
+            self.require_protocol("public serve", 15).await?
+        }
+
         // RFC 023 §8.1: v2-only features must fail loudly on old sidecars.
         // The wire silently drops unknown JSON fields — for `allow` that
         // would be an access gate the user believes exists and doesn't.
@@ -1990,6 +2000,28 @@ impl super::super::NetworkProvider for TailscaleProvider {
         })
         .await
         .map_err(|_| NetworkError::ProxyError("proxy add timed out".into()))?
+    }
+
+    async fn funnel_status(&self) -> Result<crate::network::FunnelStatus, NetworkError> {
+        self.require_protocol("funnel:status", 15).await?;
+        let reply = self
+            .command_rpc(command_type::FUNNEL_STATUS, |request_id| {
+                Ok(serde_json::json!({"requestId":request_id}))
+            })
+            .await?;
+        match reply {
+            SidecarInternalEvent::FunnelStatus(st) => Ok(st),
+            SidecarInternalEvent::Error { code, message } => {
+                Err(NetworkError::SidecarError(format!("[{code}] {message}")))
+            }
+            other => Err(Self::unexpected_reply("funnel status", other)),
+        }
+    }
+    fn funnel_changes(&self) -> broadcast::Receiver<crate::network::FunnelStatus> {
+        if self.sidecar_version() < 15 {
+            return broadcast::channel(1).1;
+        }
+        self.status.funnel.subscribe()
     }
 
     async fn proxy_update(
@@ -2514,6 +2546,7 @@ impl TailscaleProvider {
         proxies
             .into_iter()
             .map(|p| ProxyListEntry {
+                funnel: p.funnel,
                 id: p.id,
                 name: p.name,
                 listen_port: p.listen_port,
@@ -2675,6 +2708,7 @@ mod diagnostic_tests {
             target_scheme: "http".into(),
             tls: true,
             allow_non_loopback: false,
+            funnel: false,
             allow: Vec::new(),
             routes: Vec::new(),
             accept_app_capabilities: vec!["vibecook.dev/cap/flux".into()],
@@ -2710,6 +2744,7 @@ mod diagnostic_tests {
                 target_scheme: "http".into(),
                 tls: true,
                 allow_non_loopback: false,
+                funnel: false,
                 allow: Vec::new(),
                 routes: vec![ProxyRoute {
                     prefix: "/".into(),
@@ -2747,6 +2782,18 @@ mod diagnostic_tests {
             .store(13, Ordering::Relaxed);
         assert!(
             matches!(provider.proxy_update("app",Default::default()).await, Err(NetworkError::Unsupported(ref msg)) if msg.contains("v13") && msg.contains("v14"))
+        );
+
+        provider
+            .sidecar_protocol_version
+            .store(14, Ordering::Relaxed);
+        assert!(
+            matches!(provider.funnel_status().await,Err(NetworkError::Unsupported(ref msg)) if msg.contains("v14") && msg.contains("v15"))
+        );
+        let mut public = params(Vec::new(), Vec::new());
+        public.funnel = true;
+        assert!(
+            matches!(provider.proxy_add(public).await,Err(NetworkError::Unsupported(ref msg)) if msg.contains("v15"))
         );
 
         let old = RESPONSE_HEADERS_PROTOCOL_VERSION - 1;
@@ -2815,6 +2862,7 @@ mod diagnostic_tests {
             target_scheme: "http".into(),
             tls: false,
             allow_non_loopback: false,
+            funnel: false,
             allow: Vec::new(),
             routes: vec![
                 dir_route("/admin", vec![header("X-Frame-Options", "DENY")]),

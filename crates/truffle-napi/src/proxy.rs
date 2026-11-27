@@ -40,6 +40,8 @@ pub struct NapiProxyConfig {
     /// Permit non-loopback targets (default: false — deny). A LAN target
     /// turns this node into a pivot into its network (RFC 023 §9.3).
     pub allow_non_loopback: Option<bool>,
+    /// Listen exclusively on the public internet through Funnel. Requires TLS.
+    pub funnel: Option<bool>,
     /// loginName allow globs, e.g. `["*@corp.com"]` (default: none = the
     /// whole tailnet). Non-matching callers get a bare 403 (RFC 023 §9.7).
     pub allow: Option<Vec<String>>,
@@ -130,6 +132,7 @@ impl From<NapiProxyRoute> for truffle_core::network::ProxyRoute {
 /// Information about a running or configured proxy, returned to JavaScript.
 #[napi(object)]
 pub struct NapiProxyInfo {
+    pub funnel: bool,
     pub id: String,
     pub name: String,
     pub listen_port: i32,
@@ -144,6 +147,7 @@ pub struct NapiProxyInfo {
 impl From<truffle_core::proxy::ProxyInfo> for NapiProxyInfo {
     fn from(info: truffle_core::proxy::ProxyInfo) -> Self {
         Self {
+            funnel: info.funnel,
             id: info.id,
             name: info.name,
             listen_port: info.listen_port as i32,
@@ -271,6 +275,7 @@ impl NapiProxy {
             // `Proxy::add`) owns the shape rules — this only maps.
             tls: config.tls.unwrap_or(true),
             allow_non_loopback: config.allow_non_loopback.unwrap_or(false),
+            funnel: config.funnel.unwrap_or(false),
             allow: config.allow.unwrap_or_default(),
             routes: config
                 .routes
@@ -372,6 +377,82 @@ impl NapiProxy {
             }
         });
 
+        Ok(NapiSubscription::from_task(handle))
+    }
+}
+
+/// The control plane's current grant for public HTTP serving.
+#[napi(object)]
+pub struct NapiFunnelStatus {
+    pub state: String,
+    pub ports: Vec<u16>,
+    pub enable_url: Option<String>,
+    pub text: Option<String>,
+    pub reason: Option<String>,
+}
+impl From<truffle_core::FunnelStatus> for NapiFunnelStatus {
+    fn from(s: truffle_core::FunnelStatus) -> Self {
+        use truffle_core::FunnelState;
+        let (state, reason) = match s.state {
+            FunnelState::Ready => ("ready", None),
+            FunnelState::NeedsHttps => ("needsHttps", None),
+            FunnelState::NeedsGrant => ("needsGrant", None),
+            FunnelState::Unavailable(reason) => ("unavailable", Some(reason)),
+        };
+        Self {
+            state: state.into(),
+            ports: s.ports,
+            enable_url: s.enable_url,
+            text: s.text,
+            reason,
+        }
+    }
+}
+/// Funnel access for this node.
+#[napi]
+pub struct NapiFunnel {
+    pub(crate) node: Arc<Node<TailscaleProvider>>,
+}
+#[napi]
+impl NapiFunnel {
+    #[napi]
+    pub async fn status(&self) -> Result<NapiFunnelStatus> {
+        self.node
+            .funnel()
+            .status()
+            .await
+            .map(Into::into)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Subscribe before reading status. Close the returned subscription to stop.
+    #[napi(ts_args_type = "callback: (status: NapiFunnelStatus) => void")]
+    pub fn subscribe(
+        &self,
+        callback: ThreadsafeFunction<
+            NapiFunnelStatus,
+            Unknown<'static>,
+            NapiFunnelStatus,
+            Status,
+            false,
+        >,
+    ) -> Result<NapiSubscription> {
+        let mut rx = self.node.funnel().subscribe();
+        let handle = napi::bindgen_prelude::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(status) => {
+                        if callback.call(status.into(), ThreadsafeFunctionCallMode::NonBlocking)
+                            != Status::Ok
+                        {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
         Ok(NapiSubscription::from_task(handle))
     }
 }

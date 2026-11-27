@@ -665,11 +665,12 @@ Auth key options: `reusable`, `ephemeral`, `preauthorized`, `tags`, `expirySecon
 ### 3.3 NICE TO HAVE — Advanced Features for Later
 
 #### 14. ListenFunnel — Public Internet Exposure
-**What it does:** Expose a truffle node to the public internet without needing a public IP or port forwarding. Tailscale handles TLS termination and routing.
 
-**Use case:** Access truffle mesh from outside the tailnet (e.g., from a phone without Tailscale installed).
-
-**Ports available:** 443, 8443, 10000.
+Implemented in sidecar protocol 15. Truffle passes `FunnelOnly()` and a TLS
+configuration offering HTTP/2 and HTTP/1.1. TLS terminates at the node. The
+sidecar checks the node's capabilities and granted ports, uses
+`QueryFeature("funnel")` for approval instructions, and reads the public
+visitor's address from `ipn.FunnelConn.Src`. See RFC 033.
 
 #### 15. Taildrop File Transfer
 **What it does:** `PushFile()` / `WaitingFiles()` / `GetWaitingFile()` — native file transfer between Tailscale nodes.
@@ -868,7 +869,7 @@ Auth key options: `reusable`, `ephemeral`, `preauthorized`, `tags`, `expirySecon
 | 11 | **AdvertiseTags for ACL enforcement** | 2 hrs | Security: restrict mesh to `tag:truffle` nodes only. Requires ACL policy changes. |
 | 12 | **Ping diagnostics** | 1 hr | UX: let users test connectivity to specific peers. |
 | 13 | **Metrics export** | 2 hrs | Observability: expose Tailscale metrics via `DaemonMetrics()` / `UserMetrics()`. |
-| 14 | **ListenFunnel for public access** | 3-4 hrs | Feature: access mesh from outside tailnet. Major feature for mobile clients without Tailscale. |
+| 14 | **ListenFunnel for public access** | Implemented | Protocol 15, RFC 033. |
 | 15 | **Taildrop integration** | 4-6 hrs | Feature: native file transfer as fallback/alternative to truffle's file transfer protocol. |
 
 ### Priority 4 — Exploratory (If Needed)

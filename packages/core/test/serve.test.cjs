@@ -280,19 +280,14 @@ test('id defaults to serve-{port}; name defaults to id', async () => {
   );
 });
 
-test('funnel is rejected explicitly (RFC 023 §9.6)', async () => {
+test('public-only serves forward their Funnel flag and preserve it across updates', async () => {
   const { normalizeServeConfig, createServeNamespace } = await load();
-  assert.throws(
-    () => normalizeServeConfig({ port: 443, target: 'http://localhost:3000', funnel: true }),
-    /funnel is not supported yet/,
-  );
-  // Also via the serve() verb.
+  assert.equal(normalizeServeConfig({ port: 443, routes: {}, funnel: true }).funnel, true);
+  assert.throws(() => normalizeServeConfig({ port: 443, routes: {}, funnel: 'yes' }), /boolean/);
   const { proxy } = mockProxy();
-  const serve = createServeNamespace(() => proxy);
-  await assert.rejects(
-    () => serve({ port: 443, target: 'http://localhost:3000', funnel: true }),
-    /funnel is not supported yet/,
-  );
+  const handle = await createServeNamespace(() => proxy)({ port: 443, routes: {}, funnel: true });
+  await handle.update({ routes: {} });
+  assert.equal(handle.config.funnel, true);
 });
 
 test('config must have exactly one of target / dir / routes', async () => {

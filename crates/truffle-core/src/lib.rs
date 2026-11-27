@@ -59,6 +59,7 @@
 pub mod egress;
 pub mod envelope;
 pub mod file_transfer;
+pub mod funnel;
 pub mod identity;
 pub mod network;
 pub mod node;
@@ -86,6 +87,7 @@ pub use file_transfer::{
     OfferResponder, TransferDirection, TransferError, TransferProgress, TransferResult,
     TransferTimings,
 };
+pub use funnel::{Funnel, FunnelState, FunnelStatus};
 pub use identity::{slug, tailscale_hostname, AppId, DeviceId, DeviceName, IdentityError};
 pub use node::{NamespacedMessage, Node, NodeBuilder, NodeError, Peer};
 pub use request_reply::{send_and_wait, RequestError};

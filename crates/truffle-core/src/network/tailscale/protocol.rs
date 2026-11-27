@@ -188,6 +188,8 @@ pub(crate) struct ProxyAddCommandData {
     pub tls: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub allow_non_loopback: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub funnel: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub allow: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -315,6 +317,7 @@ pub(crate) mod command_type {
     pub const WATCH_PEERS: &str = "tsnet:watchPeers";
     pub const LISTEN_PACKET: &str = "tsnet:listenPacket";
     pub const PROXY_ADD: &str = "proxy:add";
+    pub const FUNNEL_STATUS: &str = "funnel:status";
     pub const PROXY_UPDATE: &str = "proxy:update";
     pub const PROXY_REMOVE: &str = "proxy:remove";
     pub const PROXY_LIST: &str = "proxy:list";
@@ -364,6 +367,8 @@ pub(crate) mod event_type {
     pub const PEER_CHANGED: &str = "tsnet:peerChanged";
     pub const LISTENING_PACKET: &str = "tsnet:listeningPacket";
     pub const PROXY_ADDED: &str = "proxy:added";
+    pub const FUNNEL_STATUS_RESULT: &str = "funnel:statusResult";
+    pub const FUNNEL_CHANGED: &str = "funnel:changed";
     pub const PROXY_UPDATED: &str = "proxy:updated";
     pub const PROXY_REMOVED: &str = "proxy:removed";
     pub const PROXY_LIST_RESULT: &str = "proxy:list";
@@ -651,6 +656,8 @@ pub(crate) struct ProxyListEventData {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProxyInfoEventData {
+    #[serde(default)]
+    pub funnel: bool,
     pub id: String,
     pub name: String,
     pub listen_port: u16,
@@ -1081,6 +1088,7 @@ mod tests {
             target_scheme: "http".to_string(),
             tls: true,
             allow_non_loopback: false,
+            funnel: false,
             allow: vec![],
             routes: None,
             accept_app_caps: vec![],
@@ -1117,6 +1125,7 @@ mod tests {
             target_scheme: "http".to_string(),
             tls: true,
             allow_non_loopback: false,
+            funnel: false,
             allow: vec!["*@corp.com".to_string()],
             routes: Some(vec![
                 crate::network::ProxyRoute {

@@ -39,6 +39,8 @@ export interface ServeOptions {
    * `.ts.net` FQDN — use {@link ServeHandle.url} / `mesh.dnsName` in links.
    */
   tls?: boolean;
+  /** Public-only HTTPS through Tailscale Funnel. Defaults to private tailnet serving. */
+  funnel?: boolean;
   /** Human-readable label. Defaults to {@link id}. */
   name?: string;
   /**
@@ -148,7 +150,6 @@ interface ServeConfigFields extends ServeOptions {
   dir?: string;
   fallback?: string;
   routes?: Record<string, string | ServeRouteValue>;
-  funnel?: unknown;
 }
 
 /**
@@ -199,12 +200,13 @@ export class ServeHandle extends EventEmitter {
   /** Install a full route table. Empty routes keep the listener up with all paths returning 404. */
   async update(update: ServeUpdate): Promise<void> {
     if (this.#closed) throw new Error('serve is closed');
-    const { port, id, name, tls, allowNonLoopback } = this.#config;
+    const { port, id, name, tls, funnel, allowNonLoopback } = this.#config;
     const canonical = canonicalServeConfig({
       port,
       id,
       name,
       tls,
+      funnel,
       allowNonLoopback,
       routes: update.routes,
       allow: update.allow,
@@ -290,7 +292,7 @@ export type TruffleServe = (config: ServeConfig) => Promise<ServeHandle>;
 /**
  * Normalize any {@link ServeConfig} shape into the single `NapiProxyConfig`
  * the proxy engine consumes. Pure and deterministic; exported so the shape
- * can be asserted directly. Throws on a `funnel` key (reserved), a malformed
+ * can be asserted directly. Throws on a malformed
  * shape, or a non-http(s) `target`.
  */
 export function normalizeServeConfig(config: ServeConfig): NapiProxyConfig {
@@ -330,7 +332,7 @@ export function createServeNamespace(getProxy: () => NapiProxy): TruffleServe {
   }
 
   return async function serve(config: ServeConfig): Promise<ServeHandle> {
-    const canonical = canonicalServeConfig(config); // throws: funnel / bad shape
+    const canonical = canonicalServeConfig(config); // validates the config shape
     const napiConfig = canonicalToNapi(canonical); // throws: non-http(s) target
     const replayConfig = deepFreeze(canonical);
     const id = napiConfig.id;
@@ -377,9 +379,8 @@ function canonicalServeConfig(config: ServeConfig): ServeConfig {
   }
   const c = config as ServeConfigFields;
 
-  if (c.funnel !== undefined) {
-    throw new Error('funnel is not supported yet — RFC 023 §9.6 reserves it for a future phase');
-  }
+  if (c.funnel !== undefined && typeof c.funnel !== 'boolean')
+    throw new TypeError('serve: funnel must be a boolean');
   if (!Number.isInteger(c.port) || c.port < 0 || c.port > 65535) {
     throw new TypeError(`serve: invalid port ${String(c.port)} (expected an integer 0–65535)`);
   }
@@ -401,6 +402,7 @@ function canonicalServeConfig(config: ServeConfig): ServeConfig {
     name: c.name ?? id,
     tls: c.tls ?? true,
   };
+  if (c.funnel !== undefined) common.funnel = c.funnel;
   if (c.acceptAppCapabilities !== undefined)
     common.acceptAppCapabilities = [...c.acceptAppCapabilities];
   if (c.allow !== undefined) common.allow = [...c.allow];
@@ -487,6 +489,7 @@ function canonicalToNapi(config: ServeConfig): NapiProxyConfig {
     targetPort: 0,
     tls: c.tls as boolean,
   };
+  if (c.funnel !== undefined) napi.funnel = c.funnel;
   if (c.acceptAppCapabilities !== undefined)
     napi.acceptAppCapabilities = [...c.acceptAppCapabilities];
   if (c.allow !== undefined) napi.allow = [...c.allow];

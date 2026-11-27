@@ -126,6 +126,7 @@ impl<'a, N: NetworkProvider + 'static> Proxy<'a, N> {
         let result = self.node.network.proxy_add(params).await?;
 
         let info = ProxyInfo {
+            funnel: config.funnel,
             id: result.id.clone(),
             name: config.name,
             listen_port: result.listen_port,
@@ -162,6 +163,23 @@ impl<'a, N: NetworkProvider + 'static> Proxy<'a, N> {
         )
         .map_err(NodeError::ConnectionFailed)?;
         let _operation = self.state().lock_id(id).await;
+        {
+            let proxies = self.state().proxies.lock().expect("proxy state poisoned");
+            let info = proxies
+                .get(id)
+                .ok_or_else(|| NodeError::ConnectionFailed(format!("[NOT_FOUND] proxy {id}")))?;
+            if info.funnel {
+                validate_public(
+                    info.listen_port,
+                    true,
+                    false,
+                    &update.allow,
+                    &update.accept_app_capabilities,
+                    &update.routes,
+                )
+                .map_err(NodeError::ConnectionFailed)?;
+            }
+        }
         self.node.network.proxy_update(id, update).await?;
         let info = {
             let mut proxies = self.state().proxies.lock().expect("proxy state poisoned");
@@ -217,6 +235,7 @@ fn proxy_add_params(config: &ProxyConfig) -> ProxyAddParams {
         target_scheme: config.target.scheme.clone(),
         tls: config.tls,
         allow_non_loopback: config.allow_non_loopback,
+        funnel: config.funnel,
         allow: config.allow.clone(),
         routes: config.routes.clone(),
         accept_app_capabilities: config.accept_app_capabilities.clone(),
@@ -228,7 +247,67 @@ fn proxy_add_params(config: &ProxyConfig) -> ProxyAddParams {
 /// prefixes are absolute, each route names exactly one backend, and option
 /// combinations that would silently do nothing are rejected here rather
 /// than half-applied by the engine.
+fn is_loopback_backend(host: &str) -> bool {
+    host == "localhost"
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+fn validate_public(
+    port: u16,
+    tls: bool,
+    allow_non_loopback: bool,
+    allow: &[String],
+    caps: &[String],
+    routes: &[ProxyRoute],
+) -> Result<(), String> {
+    let problem = if !tls {
+        Some("Funnel requires TLS")
+    } else if !matches!(port, 443 | 8443 | 10000) {
+        Some("Funnel requires port 443, 8443 or 10000")
+    } else if allow_non_loopback {
+        Some("Funnel accepts only loopback backends")
+    } else if !allow.is_empty() || !caps.is_empty() || routes.iter().any(|r| !r.allow.is_empty()) {
+        Some("public visitors have no tailnet login or capabilities")
+    } else {
+        None
+    };
+    if problem.is_none() {
+        for target in routes.iter().filter_map(|route| route.target_url.as_ref()) {
+            let uri = target
+                .parse::<tokio_tungstenite::tungstenite::http::Uri>()
+                .map_err(|_| "[INVALID_ROUTE] invalid public target URL".to_owned())?;
+            if !uri.host().is_some_and(is_loopback_backend) {
+                return Err("[TARGET_NOT_LOOPBACK] public backends must be loopback".into());
+            }
+        }
+    }
+    match problem {
+        Some(detail) => Err(format!("[INVALID_FUNNEL] {detail}")),
+        None => Ok(()),
+    }
+}
 fn validate_config(config: &ProxyConfig) -> Result<(), String> {
+    if config.funnel {
+        if config.routes.is_empty()
+            && config.target.port != 0
+            && !is_loopback_backend(&config.target.host)
+        {
+            return Err("[TARGET_NOT_LOOPBACK] public backends must be loopback".into());
+        }
+        validate_public(
+            config.listen_port,
+            config.tls,
+            config.allow_non_loopback,
+            &config.allow,
+            &config.accept_app_capabilities,
+            &config.routes,
+        )?;
+    }
+
     validate_table(
         &config.routes,
         &config.allow,
@@ -492,10 +571,42 @@ mod tests {
             announce: true,
             tls: true,
             allow_non_loopback: false,
+            funnel: false,
             allow: vec![],
             routes,
             accept_app_capabilities: vec![],
             headers: vec![],
+        }
+    }
+
+    #[test]
+    fn public_serve_vectors_match_the_sidecar() {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Case {
+            name: String,
+            valid: bool,
+            funnel: bool,
+            listen_port: u16,
+            tls: Option<bool>,
+            #[serde(default)]
+            allow_non_loopback: bool,
+            #[serde(default)]
+            allow: Vec<String>,
+            #[serde(default)]
+            accept_app_caps: Vec<String>,
+            #[serde(default)]
+            routes: Vec<ProxyRoute>,
+        }
+        for c in serde_json::from_str::<Vec<Case>>(include_str!("funnel_vectors.json")).unwrap() {
+            let mut config = base_config(c.routes);
+            config.funnel = c.funnel;
+            config.listen_port = c.listen_port;
+            config.tls = c.tls.unwrap_or(true);
+            config.allow_non_loopback = c.allow_non_loopback;
+            config.allow = c.allow;
+            config.accept_app_capabilities = c.accept_app_caps;
+            assert_eq!(validate_config(&config).is_ok(), c.valid, "{}", c.name);
         }
     }
 
@@ -780,6 +891,7 @@ mod tests {
         state.proxies.lock().unwrap().insert(
             "web".into(),
             ProxyInfo {
+                funnel: false,
                 id: "web".into(),
                 name: "web".into(),
                 listen_port: 8443,

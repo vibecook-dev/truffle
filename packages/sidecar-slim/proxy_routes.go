@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"path/filepath"
 	"slices"
@@ -145,6 +147,9 @@ func sortedNames(names []string) []string {
 // Validate and bind before publication. On failure or panic only the newly
 // acquired resources are retired. Shared routes remain owned by the old table.
 func (s *shim) bindProxyRoutes(data proxyAddData, old *proxyTable, legacy bool) (*proxyTable, *proxyAddFailure) {
+	if failure := validatePublicServe(data); failure != nil {
+		return nil, failure
+	}
 	if len(data.Routes) > maxProxyRoutes {
 		return nil, &proxyAddFailure{"TOO_MANY_ROUTES", fmt.Sprintf("a serve supports at most %d routes", maxProxyRoutes)}
 	}
@@ -234,6 +239,16 @@ func (s *shim) bindRoute(r *boundRoute, data proxyAddData, rt proxyRouteData) *p
 	withResponseHeaders(proxy, r.headers)
 	r.ctx, r.cancel = context.WithCancel(context.Background())
 	r.handler, r.target, r.rewriteRequest = proxy, u, proxy.Director
+	if data.Funnel {
+		// ReverseProxy removes forwarding and hop-by-hop headers before
+		// Rewrite. Restore trusted metadata only after that removal.
+		proxy.Director = nil
+		proxy.Rewrite = func(req *httputil.ProxyRequest) {
+			r.rewriteRequest(req.Out)
+			visitor := req.In.Context().Value(funnelAddrKey{}).(netip.Addr)
+			setFunnelHeaders(req.Out.Header, visitor)
+		}
+	}
 	r.transport = proxy.Transport.(*http.Transport)
 	return nil
 }
@@ -257,6 +272,7 @@ func (s *shim) handleProxyUpdate(raw json.RawMessage) {
 		return
 	}
 	data.AllowNonLoopback = entry.allowNonLoopback
+	data.Funnel, data.ListenPort, data.Tls = entry.funnel, entry.listenPort, &entry.tlsOn
 	old := entry.table.Load()
 	next, failure := s.bindProxyRoutes(data, old, false)
 	if failure != nil {

@@ -31,7 +31,7 @@ layers stack "RFC 012: each layer builds only on the layers below it" exhaustive
     contains crate:truffle-core
     layer node-api "Node API and core subsystems" {
       intent "Node wires Layers 3-6; FileTransfer, SyncedStore, request/reply and the serve proxy are built on it."
-      contains mod:truffle_core, mod:truffle_core::{node, identity, egress}, $subsystems
+      contains mod:truffle_core, mod:truffle_core::{node, identity, egress, funnel}, $subsystems
       note mod:truffle_core "The crate root (lib.rs, the pub use facade). A module not placed in a tier below lands here, so layered still ranks it."
       note mod:truffle_core::egress "egress.rs documents the Node::loopback and egress_* API and lib.rs re-exports its types, yet the NetworkProvider egress verbs name them."
       see "docs/rfcs/012-layered-architecture-redesign.md#4-the-node-api"

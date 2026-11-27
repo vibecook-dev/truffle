@@ -1,0 +1,39 @@
+name: Public Funnel integration
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '27 8 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  public-funnel:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 25
+    env:
+      TRUFFLE_TEST_AUTHKEY: ${{ secrets.TRUFFLE_TEST_AUTHKEY }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        with:
+          # Share cache with ci.yml's cargo-test job for faster runs.
+          shared-key: cargo-test
+
+      - name: Install Go toolchain
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: '1.27.4'
+          cache-dependency-path: packages/sidecar-slim/go.sum
+
+      - name: Check integration key and tools
+        run: |
+          test -n "$TRUFFLE_TEST_AUTHKEY"
+          command -v dig
+          curl --version | grep -q HTTP2
+      - name: Exercise public serving on an ephemeral node
+        run: cargo test --locked -p truffle-core --test integration_funnel -- --ignored --nocapture

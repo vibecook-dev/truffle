@@ -407,6 +407,19 @@ pub async fn proxy_add(
     Ok(info.into())
 }
 
+/// Read public-serving eligibility for this node.
+#[command]
+pub async fn funnel_status(
+    state: State<'_, TruffleState>,
+) -> Result<truffle_core::FunnelStatus, String> {
+    get_node(&state)
+        .await?
+        .funnel()
+        .status()
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Replace the full route table of a running proxy.
 #[command]
 pub async fn proxy_update(

@@ -3,6 +3,7 @@ const COMMANDS: &[&str] = &[
     "stop",
     "get_local_info",
     "proxy_update",
+    "funnel_status",
     "get_peers",
     "ping",
     "health",

@@ -225,6 +225,21 @@ pub trait NetworkProvider: Send + Sync {
         )))
     }
 
+    /// Read the local node’s Funnel access and its control-provided enable link.
+    fn funnel_status(
+        &self,
+    ) -> impl std::future::Future<Output = Result<FunnelStatus, NetworkError>> + Send {
+        async {
+            Err(NetworkError::Unsupported(
+                "Funnel status is unavailable on this provider".into(),
+            ))
+        }
+    }
+    /// Notifications when this node’s Funnel access changes.
+    fn funnel_changes(&self) -> broadcast::Receiver<FunnelStatus> {
+        broadcast::channel(1).1
+    }
+
     /// Atomically replace a running proxy's routes and request policies (protocol 14).
     fn proxy_update(
         &self,
@@ -1164,6 +1179,8 @@ pub struct ProxyAddParams {
     pub tls: bool,
     /// Permit non-loopback targets (RFC 023 §9.3; default deny).
     pub allow_non_loopback: bool,
+    /// Bind exclusively to internet traffic through Funnel.
+    pub funnel: bool,
     /// loginName allow globs; empty = whole tailnet (RFC 023 §9.7).
     pub allow: Vec<String>,
     /// Path-prefix routes; empty = the single-target v1 shape.
@@ -1174,6 +1191,29 @@ pub struct ProxyAddParams {
     /// Response headers set on every response of the serve (sidecar
     /// protocol 13, RFC 030). A route's own `headers` replace these by name.
     pub headers: Vec<ProxyHeader>,
+}
+
+/// Current public-listener grant and instructions returned by tailnet control.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FunnelStatus {
+    #[serde(flatten)]
+    pub state: FunnelState,
+    pub ports: Vec<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// Why this node can or cannot open a public listener.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "reason", rename_all = "camelCase")]
+pub enum FunnelState {
+    Ready,
+    NeedsHttps,
+    NeedsGrant,
+    Unavailable(String),
 }
 
 /// Full replacement for the mutable part of a running serve. An empty table
@@ -1266,6 +1306,7 @@ pub struct ProxyAddResult {
 /// Entry in the proxy list from the network provider.
 #[derive(Debug, Clone)]
 pub struct ProxyListEntry {
+    pub funnel: bool,
     pub id: String,
     pub name: String,
     pub listen_port: u16,

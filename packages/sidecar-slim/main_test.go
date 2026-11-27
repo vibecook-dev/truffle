@@ -474,8 +474,8 @@ func TestShouldWrapTLS(t *testing.T) {
 // Update this test AND provider.rs capability gates when bumping the version.
 // Login gating still requires v5; authenticated UDP still requires v6.
 func TestStatusEventAdvertisesProtocolVersion(t *testing.T) {
-	if sidecarProtocolVersion != 14 {
-		t.Fatalf("sidecarProtocolVersion = %d, want 14 (live route updates)", sidecarProtocolVersion)
+	if sidecarProtocolVersion != 15 {
+		t.Fatalf("sidecarProtocolVersion = %d, want 15 (Funnel status and public serves)", sidecarProtocolVersion)
 	}
 
 	var buf bytes.Buffer

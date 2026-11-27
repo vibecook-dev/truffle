@@ -584,6 +584,14 @@ impl NapiNode {
         Ok(NapiFileTransfer::new(node))
     }
 
+    /// Inspect this node's Funnel grant and watch for approval changes.
+    #[napi]
+    pub fn funnel(&self) -> Result<crate::proxy::NapiFunnel> {
+        Ok(crate::proxy::NapiFunnel {
+            node: self.require_node()?,
+        })
+    }
+
     /// Get a `NapiProxy` handle for reverse proxy operations.
     #[napi]
     pub fn proxy(&self) -> Result<NapiProxy> {

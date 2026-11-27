@@ -1037,6 +1037,7 @@ async fn handle_proxy_add(
     }
 
     let config = truffle_core::proxy::ProxyConfig {
+        funnel: false,
         id: proxy_id,
         name,
         listen_port,

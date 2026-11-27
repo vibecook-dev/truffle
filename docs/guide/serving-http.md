@@ -434,12 +434,30 @@ truffle serve stop <id>     # stop one (id defaults to serve-<port>)
 > does **not** — `new URL('localhost:3000')` reads `localhost:` as a scheme, so
 > `mesh.serve` rejects it with a hint to add `http://`. Pass a full URL in code.
 
-### Not supported yet
+### Public sharing through Funnel
 
-`funnel: true` (public-internet exposure) is reserved and **rejected** today with
-a pointer to RFC 023 §9.6 — it lands in a later phase. Announcing serves for
-other peers to browse is also future work: there's no `announce` option on
-`serve` yet.
+Sidecar protocol 15 can open one public HTTPS listener alongside a private
+tailnet listener using the same port. Give the serves distinct IDs. Check the
+node's grant with `await mesh.funnel().status()`. The result includes its
+allowed ports and any approval link supplied by tailnet control.
+`mesh.funnel().subscribe(callback)` returns a closeable subscription.
+
+```ts
+const sharing = await mesh.serve({
+  id: 'public-apps',
+  port: 443,
+  funnel: true,
+  headers: { 'Referrer-Policy': 'no-referrer' },
+  routes: { '/shared/demo': { dir: '/srv/apps/demo' } },
+});
+```
+
+Public URLs take anonymous visitors. Backends receive the marker
+`Tailscale-Funnel-Request: ?1` and a verified visitor address in
+`X-Forwarded-For`. Public serves require TLS, loopback backends, and a granted
+port from 443, 8443 or 10000. Login allow lists and app-capability forwarding
+are available on private serves. Builds mounted under a path should use
+relative asset URLs. A newly public DNS name can take time to resolve.
 
 A GET or HEAD for a static directory’s bare mount (for example `/app?q=1`)
 returns a 308 redirect to `/app/?q=1`. Relative asset URLs then resolve inside

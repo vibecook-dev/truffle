@@ -62,7 +62,7 @@ domain request-reply "Request/reply (RFC 016)" {
 
 domain serving "HTTP serving over the tailnet (RFC 023)" {
   intent "A JS handler gets the bytes over the bridge; a directory or another process is served by the Go engine."
-  contains mod:truffle_core::proxy, mod:truffle_napi::proxy
+  contains mod:truffle_core::{proxy, funnel}, mod:truffle_napi::proxy
   contains file:packages/core/src/{serve, http}.ts, file:crates/truffle-cli/src/commands/{serve, proxy}.rs
   touches mod:truffle_bench::workloads::http
   note file:packages/sidecar-slim/main.go "The serve engine (routes, reverse proxy, static files, identity headers) runs in the sidecar."

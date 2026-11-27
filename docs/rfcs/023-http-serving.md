@@ -1,6 +1,6 @@
 # RFC 023: HTTP Serving over the Tailnet
 
-**Status**: Phases 1–3 implemented (2026-07-12) on `feat/rfc023-http-serving`; Phases 4 (Funnel) and 5 (service discovery) are future work
+**Status**: Phases 1–3 implemented (2026-07-12) on `feat/rfc023-http-serving`; Phase 4 (Funnel) implemented in RFC 033 (protocol 15, 2026-11-26). Phase 5 (service discovery) remains open
 **Author**: James Yong + Claude
 **Date**: 2026-07-12
 **Depends on**: RFC 012 (layered architecture), RFC 015 (bindings rewrite), RFC 017 (identity & namespacing), RFC 021 (raw transport JS API), RFC 022 (peer handle API)
@@ -50,10 +50,8 @@ call*.
 
 ## 3. Non-Goals
 
-- **Funnel** (public-internet exposure). Deferred to Phase 4; the config key is
-  reserved and its constraints documented (§9.6), but no implementation here.
-- **HTTP/3**, and HTTP/2 *termination inside Node* (§12 D12 — the Go engine gets h2
-  free; the JS path stays HTTP/1.1).
+- **Funnel** (public-internet exposure) was deferred from the initial engine. RFC 033 implements Phase 4.
+- **HTTP/3** and HTTP/2 termination inside Node. The public Go listener negotiates HTTP/2 (RFC 033).
 - **An auth framework.** We expose verified identity; authorization stays app code
   (middleware examples in docs). Route-level allow-lists are future work (§13).
 - **Raw TCP/UDP proxying.** The serve engine is HTTP(S)-shaped; raw streams already
@@ -234,8 +232,8 @@ await mesh.serve({
   boot-time re-serving persist it and replay `mesh.serve(saved)`; the library
   itself never persists (there is nothing to resume: the sidecar dies with the
   process, so "rehydration" is always re-creation).
-- `funnel?: true` is **reserved and rejected** ("not supported yet, see RFC 023
-  §9.6") until Phase 4.
+- `funnel: true` opens the public-only listener in §9.6. `handle.update`
+  replaces its complete table in place. Both are specified in RFC 033.
 
 ### 6.3 `mesh.dnsName: string | null`
 
@@ -255,6 +253,8 @@ they hello (RFC 022 identity resolution is hostname-independent). Serving-centri
 nodes that also participate in the mesh lose nothing in practice.
 
 ## 7. Engine v2 (sidecar changes)
+
+RFC 033 extends this engine with live route replacement and public-only HTTPS listeners.
 
 `proxy:add` payload additions (all optional — absent fields reproduce v1 behavior
 exactly, so old cores work against new sidecars):
@@ -371,10 +371,10 @@ version (same pattern as RFC 021's `tls`/`idleTimeoutSecs`).
    fails by design, `http://short-name/` works.
 5. **Key custody**: TLS private keys live in the Go process and tsnet state dir
    only; with sidecar termination they never cross into Rust or JS memory.
-6. **Funnel runway (future)**: public exposure will be a separate loud opt-in —
-   TLS mandatory, ports 443/8443/10000 only, tailnet policy must grant `funnel`,
-   **no caller identity** (WhoIs fails; headers absent; `remotePeer === null`) —
-   apps relying on identity must handle anonymous before enabling it.
+6. **Funnel** requires an explicit opt-in, TLS and a granted port from 443,
+   8443 or 10000. The listener accepts anonymous public visitors. It strips
+   incoming identity headers and supplies the Funnel marker and verified source
+   address to loopback backends (RFC 033).
 7. **Allow-lists are a gate, not a framework**: the serve engine is the one place
    where user code isn't running (a directory or a proxied backend cannot do its
    own auth), so `allow` exists there — loginName globs, evaluated against WhoIs,
@@ -413,8 +413,7 @@ version (same pattern as RFC 021's `tls`/`idleTimeoutSecs`).
   target, `serve status`, `serve stop`; `truffle proxy` becomes a hidden
   deprecated alias); `mesh.serve()` + `ServeHandle` (incl. `config`); Go
   behavioral tests; guide + examples (`serve-static-spa`, `expose-dev-server`).
-- **Phase 4 — Funnel.** `ListenFunnel`, constraints per §9.6, anonymous-identity
-  semantics, its own examples.
+- **Phase 4 — Funnel. Implemented in RFC 033.** Public-only listeners, status and grant changes ship together in protocol 15.
 - **Phase 5 — service discovery.** Wire `announce` over a SyncedStore
   (`ss:truffle-services`), `mesh.services` browse API; un-deadens `discovery.rs`.
   Gets its own RFC, with three principles pinned now: (1) code-facing API only —
@@ -472,15 +471,14 @@ Deviations and refinements from the spec above, all deliberate:
 - **D7 — loopback-only targets** by default; `allowNonLoopback` opt-out at add time.
 - **D8 — hostname override** ships with TLS (Phase 2), single-label validation,
   tradeoff documented (§6.4).
-- **D9 — Funnel deferred**, key reserved, constraints pre-documented (§9.6).
+- **D9 — Public serving** uses the explicit Funnel opt-in from RFC 033 and the constraints in §9.6.
 - **D10 — discovery kept, not culled**: `announce`/`discovery.rs` stay (already in
   shipped binding types), documented inert, implemented in Phase 5.
 - **D11 — routes**: longest-prefix, order-independent, `stripPrefix` default
   false for URL targets. Dir mounts always strip — the mount point maps to the
   directory root (`/app/x` on a `/app` dir mount serves `dir/x`), which is why
   `stripPrefix` is rejected on dir routes rather than defaulted.
-- **D12 — HTTP/2**: engine path terminates h2 in Go for free; JS path stays h1.1
-  (no ALPN into Node; sidecar-terminated TLS). Revisit only with demand.
+- **D12 — HTTP/2.** The public Go listener explicitly offers HTTP/2 through ALPN (verified 2026-11-26). The JavaScript HTTP server uses HTTP/1.1.
 - **D13 — cert pre-warm is behavior, not an option**: always fire-and-forget on
   TLS-listener creation; non-fatal; doubles as early "HTTPS not enabled" detection
   (§7). A `warmCert: false` knob would only opt out of good error reporting.
