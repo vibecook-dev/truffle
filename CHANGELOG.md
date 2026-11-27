@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.30](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.29...truffle-v0.7.30) (2026-11-27)
+
+
+### Features
+
+* **serve:** add public-only Funnel listeners and grant events ([#276](https://github.com/vibecook-dev/truffle/issues/276)) ([ae2c88b](https://github.com/vibecook-dev/truffle/commit/ae2c88bba9fdac1b78d6b7e243e67a2b044db422))
+* **serve:** replace live route tables without restarting listeners ([#275](https://github.com/vibecook-dev/truffle/issues/275)) ([93dea81](https://github.com/vibecook-dev/truffle/commit/93dea817f816fa90b6122edbb4af95be5991cbcc))
+
+
+### Bug Fixes
+
+* **deps:** update url and cookie for RustSec advisories ([#271](https://github.com/vibecook-dev/truffle/issues/271)) ([00b9ef5](https://github.com/vibecook-dev/truffle/commit/00b9ef56cd99cc99ac52568dd7c5688ff2b754ab))
+* **react:** restore native subscriptions for mesh nodes ([#273](https://github.com/vibecook-dev/truffle/issues/273)) ([dc669f1](https://github.com/vibecook-dev/truffle/commit/dc669f1e48707fc004f525f65c77b93e0cdb0f9e))
+* **serve:** redirect bare directory mounts to their slash URL ([#274](https://github.com/vibecook-dev/truffle/issues/274)) ([ba4f5b6](https://github.com/vibecook-dev/truffle/commit/ba4f5b6a242f133df7d314e95e8788ba9381b100))
+
 ## [0.7.29](https://github.com/vibecook-dev/truffle/compare/truffle-v0.7.28...truffle-v0.7.29) (2026-11-18)
 
 
